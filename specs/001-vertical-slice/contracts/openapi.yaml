@@ -1,0 +1,650 @@
+openapi: 3.1.0
+info:
+  title: RocketDataForge Control Plane API
+  version: 1.0.0
+  description: >
+    API REST para o Control Plane do RocketDataForge.
+    Permite gerenciar workspaces, projetos, conexões, catálogo de componentes,
+    criação visual de drafts, validação, publicação imutável, compilação de planos,
+    execução local assíncrona e observabilidade.
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Servidor de desenvolvimento local
+
+paths:
+  /workspaces:
+    get:
+      summary: Listar workspaces
+      operationId: listWorkspaces
+      responses:
+        '200':
+          description: Lista de workspaces recuperada com sucesso
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Workspace'
+    post:
+      summary: Criar novo workspace
+      operationId: createWorkspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkspaceRequest'
+      responses:
+        '201':
+          description: Workspace criado com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workspace'
+
+  /workspaces/{workspace_id}/projects:
+    get:
+      summary: Listar projetos do workspace
+      operationId: listProjects
+      parameters:
+        - name: workspace_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Lista de projetos
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Project'
+    post:
+      summary: Criar projeto no workspace
+      operationId: createProject
+      parameters:
+        - name: workspace_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequest'
+      responses:
+        '201':
+          description: Projeto criado com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+
+  /components/catalog:
+    get:
+      summary: Listar catálogo de componentes disponíveis
+      operationId: getComponentCatalog
+      responses:
+        '200':
+          description: Catálogo de componentes com portas e schemas
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ComponentDefinition'
+
+  /connections:
+    post:
+      summary: Cadastrar nova conexão segura
+      operationId: createConnection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateConnectionRequest'
+      responses:
+        '201':
+          description: Conexão registrada com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Connection'
+
+  /connections/{connection_id}/test:
+    post:
+      summary: Testar conectividade de uma conexão
+      operationId: testConnection
+      parameters:
+        - name: connection_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Resultado do teste de conectividade
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestConnectionResult'
+
+  /schemas/infer:
+    post:
+      summary: Inferir schema a partir de fonte de dados ou arquivo
+      operationId: inferSchema
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InferSchemaRequest'
+      responses:
+        '200':
+          description: Schema inferido com tipos canônicos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InferredSchema'
+
+  /projects/{project_id}/pipelines:
+    get:
+      summary: Listar pipelines de um projeto
+      operationId: listPipelines
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Lista de pipelines
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PipelineSummary'
+    post:
+      summary: Criar novo pipeline (draft inicial)
+      operationId: createPipeline
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePipelineRequest'
+      responses:
+        '201':
+          description: Pipeline criado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineDraft'
+
+  /pipelines/{pipeline_id}/draft:
+    get:
+      summary: Obter draft do pipeline (lógica e layout)
+      operationId: getPipelineDraft
+      parameters:
+        - name: pipeline_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Draft recuperado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineDraft'
+    put:
+      summary: Salvar alterações no draft
+      operationId: updatePipelineDraft
+      parameters:
+        - name: pipeline_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePipelineDraftRequest'
+      responses:
+        '200':
+          description: Draft salvo com revisão incrementada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineDraft'
+
+  /pipelines/{pipeline_id}/validate:
+    post:
+      summary: Validar grafo e configurações do draft
+      operationId: validatePipelineDraft
+      parameters:
+        - name: pipeline_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Relatório de validação estrutural e semântica
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationReport'
+
+  /pipelines/{pipeline_id}/publish:
+    post:
+      summary: Publicar versão imutável do pipeline
+      operationId: publishPipelineVersion
+      parameters:
+        - name: pipeline_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishVersionRequest'
+      responses:
+        '201':
+          description: PipelineVersion imutável gerada com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineVersion'
+
+  /pipeline-versions/{version_id}/compile:
+    post:
+      summary: Compilar versão em planos (Logical, Optimized, Physical)
+      operationId: compilePipelineVersion
+      parameters:
+        - name: version_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Planos de compilação gerados
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompiledPlans'
+
+  /pipeline-versions/{version_id}/execute:
+    post:
+      summary: Disparar execução assíncrona local
+      operationId: executePipelineVersion
+      parameters:
+        - name: version_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '202':
+          description: Execução enfileirada com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionResponse'
+
+  /executions/{execution_id}:
+    get:
+      summary: Consultar status e métricas de uma execução
+      operationId: getExecutionStatus
+      parameters:
+        - name: execution_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Status atual e métricas de nós da execução
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionDetail'
+
+  /executions/{execution_id}/cancel:
+    post:
+      summary: Cancelar execução de forma cooperativa e idempotente
+      operationId: cancelExecution
+      parameters:
+        - name: execution_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Cancelamento confirmado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionDetail'
+
+  /executions/{execution_id}/logs:
+    get:
+      summary: Obter logs estruturados da execução
+      operationId: getExecutionLogs
+      parameters:
+        - name: execution_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: node_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Logs estruturados
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LogEntry'
+
+  /pipelines/{pipeline_id}/export:
+    get:
+      summary: Exportar pipeline.yaml e layout.json separados
+      operationId: exportPipeline
+      parameters:
+        - name: pipeline_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Pacote textual exportado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportedPipelineBundle'
+
+components:
+  schemas:
+    Workspace:
+      type: object
+      required: [id, name, created_at]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        created_at: { type: string, format: date-time }
+
+    CreateWorkspaceRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        description: { type: string }
+
+    Project:
+      type: object
+      required: [id, workspace_id, name, slug, created_at]
+      properties:
+        id: { type: string }
+        workspace_id: { type: string }
+        name: { type: string }
+        slug: { type: string }
+        description: { type: string }
+        created_at: { type: string, format: date-time }
+
+    CreateProjectRequest:
+      type: object
+      required: [name, slug]
+      properties:
+        name: { type: string }
+        slug: { type: string }
+        description: { type: string }
+
+    ComponentDefinition:
+      type: object
+      required: [type_id, version, name, category, ports, config_schema, capabilities]
+      properties:
+        type_id: { type: string }
+        version: { type: string }
+        name: { type: string }
+        category: { type: string, enum: [source, transform, target, control] }
+        ports:
+          type: array
+          items:
+            type: object
+            required: [name, direction, type]
+            properties:
+              name: { type: string }
+              direction: { type: string, enum: [input, output] }
+              type: { type: string, enum: [dataset, control, reject] }
+        config_schema: { type: object }
+        capabilities:
+          type: object
+          properties:
+            supports_filter_pushdown: { type: boolean }
+            supports_projection_pushdown: { type: boolean }
+            supports_chunked_read: { type: boolean }
+
+    Connection:
+      type: object
+      required: [id, project_id, name, connector_type, endpoint, secret_ref]
+      properties:
+        id: { type: string }
+        project_id: { type: string }
+        name: { type: string }
+        connector_type: { type: string }
+        endpoint: { type: string }
+        secret_ref: { type: string }
+        options: { type: object }
+
+    CreateConnectionRequest:
+      type: object
+      required: [project_id, name, connector_type, endpoint, secret_ref]
+      properties:
+        project_id: { type: string }
+        name: { type: string }
+        connector_type: { type: string }
+        endpoint: { type: string }
+        secret_ref: { type: string, example: "secret://env/POSTGRES_PWD" }
+        options: { type: object }
+
+    TestConnectionResult:
+      type: object
+      required: [success, message]
+      properties:
+        success: { type: boolean }
+        message: { type: string }
+        latency_ms: { type: integer }
+
+    InferSchemaRequest:
+      type: object
+      required: [connector_type]
+      properties:
+        connection_id: { type: string }
+        connector_type: { type: string }
+        path_or_query: { type: string }
+        sample_size: { type: integer, default: 1000 }
+
+    InferredSchema:
+      type: object
+      required: [dataset_name, fields]
+      properties:
+        dataset_name: { type: string }
+        fields:
+          type: array
+          items:
+            type: object
+            required: [name, logical_type, physical_type, nullable]
+            properties:
+              name: { type: string }
+              logical_type: { type: string }
+              physical_type: { type: string }
+              nullable: { type: boolean }
+
+    PipelineSummary:
+      type: object
+      required: [id, project_id, name, revision, updated_at]
+      properties:
+        id: { type: string }
+        project_id: { type: string }
+        name: { type: string }
+        revision: { type: integer }
+        updated_at: { type: string, format: date-time }
+
+    CreatePipelineRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        description: { type: string }
+
+    PipelineDraft:
+      type: object
+      required: [id, project_id, name, revision, definition, layout]
+      properties:
+        id: { type: string }
+        project_id: { type: string }
+        name: { type: string }
+        revision: { type: integer }
+        definition: { type: object }
+        layout: { type: object }
+
+    UpdatePipelineDraftRequest:
+      type: object
+      required: [expected_revision, definition, layout]
+      properties:
+        expected_revision: { type: integer }
+        definition: { type: object }
+        layout: { type: object }
+
+    ValidationReport:
+      type: object
+      required: [is_valid, errors, warnings]
+      properties:
+        is_valid: { type: boolean }
+        errors:
+          type: array
+          items:
+            type: object
+            required: [code, message]
+            properties:
+              code: { type: string }
+              node_id: { type: string }
+              message: { type: string }
+        warnings:
+          type: array
+          items:
+            type: object
+            properties:
+              code: { type: string }
+              message: { type: string }
+
+    PublishVersionRequest:
+      type: object
+      required: [version_tag]
+      properties:
+        version_tag: { type: string, example: "1.0.0" }
+        comment: { type: string }
+
+    PipelineVersion:
+      type: object
+      required: [id, pipeline_id, version_tag, schema_version, definition_hash, published_at]
+      properties:
+        id: { type: string }
+        pipeline_id: { type: string }
+        version_tag: { type: string }
+        schema_version: { type: string }
+        definition_hash: { type: string }
+        published_at: { type: string, format: date-time }
+
+    CompiledPlans:
+      type: object
+      required: [logical_plan, optimized_plan, physical_plan]
+      properties:
+        logical_plan: { type: object }
+        optimized_plan: { type: object }
+        physical_plan: { type: object }
+        optimizations_applied:
+          type: array
+          items:
+            type: object
+            properties:
+              rule: { type: string }
+              description: { type: string }
+              affected_nodes: { type: array, items: { type: string } }
+
+    ExecutionResponse:
+      type: object
+      required: [execution_id, status, correlation_id]
+      properties:
+        execution_id: { type: string }
+        status: { type: string }
+        correlation_id: { type: string }
+
+    ExecutionDetail:
+      type: object
+      required: [execution_id, pipeline_version_id, status, attempt, tasks]
+      properties:
+        execution_id: { type: string }
+        pipeline_version_id: { type: string }
+        status: { type: string }
+        attempt: { type: integer }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+        tasks:
+          type: array
+          items:
+            type: object
+            required: [node_id, status, rows_in, rows_out]
+            properties:
+              node_id: { type: string }
+              status: { type: string }
+              rows_in: { type: integer }
+              rows_out: { type: integer }
+              duration_ms: { type: integer }
+              error_message: { type: string }
+
+    LogEntry:
+      type: object
+      required: [timestamp, level, execution_id, node_id, message]
+      properties:
+        timestamp: { type: string, format: date-time }
+        level: { type: string, enum: [DEBUG, INFO, WARN, ERROR] }
+        execution_id: { type: string }
+        node_id: { type: string }
+        message: { type: string }
+
+    ExportedPipelineBundle:
+      type: object
+      required: [pipeline_yaml, layout_json]
+      properties:
+        pipeline_yaml: { type: string }
+        layout_json: { type: string }

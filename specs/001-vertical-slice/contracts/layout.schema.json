@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rocketdataforge.org/schemas/v1/layout.schema.json",
+  "title": "RocketDataForge Visual Layout Schema",
+  "description": "Esquema normativo para validação do arquivo visual layout.json (React Flow).",
+  "type": "object",
+  "required": ["schemaVersion", "kind", "metadata", "viewport", "nodes"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "rdf.layout/v1",
+      "description": "Versão do formato de layout visual."
+    },
+    "kind": {
+      "type": "string",
+      "const": "Layout",
+      "description": "Identificador do tipo de recurso visual."
+    },
+    "metadata": {
+      "type": "object",
+      "required": ["pipelineId"],
+      "additionalProperties": false,
+      "properties": {
+        "pipelineId": {
+          "type": "string",
+          "description": "ID do pipeline ao qual este layout pertence."
+        }
+      }
+    },
+    "viewport": {
+      "type": "object",
+      "required": ["x", "y", "zoom"],
+      "additionalProperties": false,
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "zoom": { "type": "number", "minimum": 0.1, "maximum": 5.0 }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "position"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "ID do nó funcional correspondente."
+          },
+          "position": {
+            "type": "object",
+            "required": ["x", "y"],
+            "additionalProperties": false,
+            "properties": {
+              "x": { "type": "number" },
+              "y": { "type": "number" }
+            }
+          },
+          "width": { "type": "number" },
+          "height": { "type": "number" },
+          "selected": { "type": "boolean", "default": false },
+          "customLabel": { "type": "string" },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+    "groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "bounds"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "bounds": {
+            "type": "object",
+            "required": ["x", "y", "width", "height"],
+            "properties": {
+              "x": { "type": "number" },
+              "y": { "type": "number" },
+              "width": { "type": "number" },
+              "height": { "type": "number" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,71 @@
+# ============================================================
+# RocketDataForge — .gitignore
+# ============================================================
+
+# ─── Python & Ambientes Virtuais ────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+# ─── Testes, Cobertura & Linters ─────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+
+# ─── Node.js & Frontend (Vite / React) ───────────────────────
+node_modules/
+ui/node_modules/
+dist/
+ui/dist/
+dist-ssr/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ─── Variáveis de Ambiente & Segredos ─────────────────────────
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+
+# ─── Banco de Dados Local & Caches ───────────────────────────
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+
+# ─── Arquivos de Execução, Logs & Saídas Temporárias ─────────
+*.log
+logs/
+data/output/*
+!data/output/.gitkeep
+data/samples/*.tmp
+
+# ─── IDEs & Editores ──────────────────────────────────────────
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+desktop.ini

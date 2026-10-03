@@ -1,0 +1,9 @@
+id,username,email,status
+1,alice_silva,alice@corp.com,ACTIVE
+2,bob_santos,bob@corp.com,INACTIVE
+3,carla_mendonca,carla@corp.com,ACTIVE
+4,diego_oliveira,diego@corp.com,SUSPENDED
+5,elena_rocha,elena@corp.com,ACTIVE
+6,felipe_barros,felipe@corp.com,ACTIVE
+7,gabriela_costa,gabriela@corp.com,INACTIVE
+8,henrique_dias,henrique@corp.com,ACTIVE

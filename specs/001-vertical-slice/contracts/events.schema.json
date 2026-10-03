@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rocketdataforge.org/schemas/v1/events.schema.json",
+  "title": "RocketDataForge Integration Event Envelope Schema",
+  "description": "Esquema normativo para eventos assíncronos de integração e telemetria.",
+  "type": "object",
+  "required": [
+    "eventId",
+    "eventType",
+    "eventVersion",
+    "occurredAt",
+    "correlationId",
+    "payload"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "description": "Identificador único do evento no formato ULID."
+    },
+    "eventType": {
+      "type": "string",
+      "enum": [
+        "PipelineDraftCreated",
+        "PipelineDraftUpdated",
+        "PipelineVersionPublished",
+        "ExecutionRequested",
+        "ExecutionStarted",
+        "TaskStarted",
+        "TaskSucceeded",
+        "TaskFailed",
+        "ExecutionCancellationRequested",
+        "ExecutionSucceeded",
+        "ExecutionFailed",
+        "ExecutionCancelled"
+      ],
+      "description": "Tipo semântico do evento."
+    },
+    "eventVersion": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Versão do esquema do payload."
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Data e hora ISO-8601 de ocorrência do evento em UTC."
+    },
+    "correlationId": {
+      "type": "string",
+      "description": "Identificador de correlação transversal."
+    },
+    "causationId": {
+      "type": "string",
+      "description": "Identificador do evento ou comando causador."
+    },
+    "tenantId": {
+      "type": "string",
+      "description": "Identificador do tenant ou workspace."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Dados específicos do evento, estritamente livres de credenciais e segredos em texto puro."
+    }
+  }
+}
