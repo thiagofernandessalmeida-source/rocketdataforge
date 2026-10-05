@@ -188,6 +188,15 @@ class LocalFileConnector:
         file_exists = os.path.exists(safe_path)
 
         if write_mode == "append" and file_exists:
+            # Se o DataFrame de entrada não contiver linhas ou colunas, não modifica o arquivo
+            if df.width == 0 or df.height == 0:
+                if fmt == "parquet":
+                    try:
+                        return pl.read_parquet(safe_path).height
+                    except Exception:
+                        return 0
+                return 0
+
             # Em modo append, combina com dados pré-existentes
             if fmt == "csv":
                 with open(safe_path, "a", encoding="utf-8") as f:
@@ -195,7 +204,10 @@ class LocalFileConnector:
                 return df.height
             elif fmt == "parquet":
                 existing_df = pl.read_parquet(safe_path)
-                combined = pl.concat([existing_df, df])
+                try:
+                    combined = pl.concat([existing_df, df], how="diagonal")
+                except Exception:
+                    combined = pl.concat([existing_df, df])
                 combined.write_parquet(safe_path)
                 return df.height
 

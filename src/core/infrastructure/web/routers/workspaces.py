@@ -36,11 +36,9 @@ def create_workspace(
     """Cria um novo workspace ou retorna o existente de mesmo nome."""
     existing = session.query(WorkspaceModel).filter(WorkspaceModel.name == payload.name).first()
     if existing:
-        return Workspace(
-            id=existing.id,
-            name=existing.name,
-            description=existing.description,
-            created_at=existing.created_at
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Workspace com o nome '{payload.name}' já existe."
         )
 
     workspace_id = generate_ulid()

@@ -185,3 +185,34 @@ def test_tmap_inner_join_and_rejections(runner):
     assert output_reject.height == 1
     assert output_reject["Name"][0] == "David"
     assert output_reject["Make"][0] == "BMW"
+
+
+def test_tmap_columns_with_spaces_and_special_names(runner):
+    main_df = pl.DataFrame({
+        "Release_Date": ["2020-01-01"],
+        "Movie Title": ["Inception"],
+        "Working URL": ["https://example.com/movie"]
+    })
+
+    outputs = [{
+        "name": "out1",
+        "columns": [
+            {"target": "Release_Date", "expression": "row1.Release_Date"},
+            {"target": "Movie Title", "expression": "row1.Movie Title"},
+            {"target": "Working URL", "expression": "row1.Working URL"}
+        ]
+    }]
+
+    res = runner.execute_tmap_transform(
+        main_df=main_df,
+        lookups=[],
+        lookup_dfs={},
+        variables=[],
+        outputs=outputs
+    )
+
+    out_df = res["out1"]
+    assert out_df.height == 1
+    assert out_df["Working URL"][0] == "https://example.com/movie"
+    assert out_df["Movie Title"][0] == "Inception"
+    assert out_df["Release_Date"][0] == "2020-01-01"

@@ -177,27 +177,51 @@ class DuckDBRunner:
         return self.execute_query_to_polars(query)
 
     @staticmethod
-    def transpile_expression(expr: str) -> str:
+    def transpile_expression(expr: str, known_columns: Optional[List[str]] = None) -> str:
         """Converte expressões com sintaxe mista (Java/Talend/Python/SQL) para DuckDB SQL válido."""
         if not expr or not expr.strip():
             return "NULL"
 
+        import re
         s = expr.strip()
 
-        # 1. Transpila Var.xxx -> "xxx"
-        import re
-        s = re.sub(r'\bVar\.([a-zA-Z0-9_]+)\b', r'"\1"', s)
+        # 0. Se colunas conhecidas forem fornecidas, substitui com prioridade referências a colunas conhecidas
+        # (especialmente colunas com espaços ou caracteres especiais como "Working URL")
+        if known_columns:
+            sorted_cols = sorted(known_columns, key=len, reverse=True)
+            for col in sorted_cols:
+                escaped = re.escape(col)
+                # Match {node.col}
+                s = re.sub(r'\{[a-zA-Z0-9_\-]+\.' + escaped + r'\}', f'"{col}"', s)
+                # Match prefix."col" ou prefix.'col'
+                s = re.sub(r'\b[a-zA-Z0-9_]+\.["\']' + escaped + r'["\']', f'"{col}"', s)
+                # Match prefix.col (mesmo com espaços, desde que case com o nome exato da coluna)
+                s = re.sub(r'\b[a-zA-Z0-9_]+\.' + escaped + r'(?=\b|\s|[\(\)\+\-\*\/\,\<\>\=\!\?]|$)', f'"{col}"', s)
+                # Match Var.col ou Var."col"
+                s = re.sub(r'\bVar\.["\']?' + escaped + r'["\']?(?=\b|\s|[\(\)\+\-\*\/\,\<\>\=\!\?]|$)', f'"{col}"', s)
+                # Se a expressão for exatamente o nome da coluna sem aspas
+                if s == col:
+                    s = f'"{col}"'
 
-        # 2. Transpila prefixos de tabela (rowX.col -> "col")
+        # 1. Tokens genéricos {node.col} -> "col"
+        s = re.sub(r'\{[a-zA-Z0-9_\-]+\.([^\}]+)\}', r'"\1"', s)
+
+        # 2. Transpila Var."xxx" ou Var.xxx -> "xxx"
+        s = re.sub(r'\bVar\.["\']?([a-zA-Z0-9_]+)["\']?\b', r'"\1"', s)
+
+        # 3. Transpila prefixos com aspas: rowX."col name" -> "col name"
+        s = re.sub(r'\b[a-zA-Z0-9_]+\.["\']([^"\']+)["\']', r'"\1"', s)
+
+        # 4. Transpila prefixos de tabela (rowX.col -> "col")
         s = re.sub(r'\b[a-zA-Z0-9_]+\.([a-zA-Z0-9_]+)\b', r'"\1"', s)
 
-        # 3. Igualdades e operadores lógicos comuns
-        s = re.sub(r'==\s*null\b', 'IS NULL', s, flags=re.IGNORECASE)
-        s = re.sub(r'!=\s*null\b', 'IS NOT NULL', s, flags=re.IGNORECASE)
+        # 5. Operadores lógicos e de comparação comuns
+        s = re.sub(r'==\s*null\b', ' IS NULL', s, flags=re.IGNORECASE)
+        s = re.sub(r'!=\s*null\b', ' IS NOT NULL', s, flags=re.IGNORECASE)
         s = re.sub(r'==', '=', s)
         s = re.sub(r'&&', ' AND ', s)
 
-        # 4. Converte ternário cond ? a : b -> CASE WHEN cond THEN a ELSE b END
+        # 6. Converte ternário cond ? a : b -> CASE WHEN cond THEN a ELSE b END
         if "?" in s and ":" in s:
             ternary_match = re.match(r'^(.*?)\?(.*?)\:(.*)$', s)
             if ternary_match:
@@ -217,6 +241,17 @@ class DuckDBRunner:
         """Executa a transformação completa do tMap padrão Talend usando DuckDB."""
         if main_df.height == 0:
             return {out.get("name", f"out_{i+1}"): pl.DataFrame() for i, out in enumerate(outputs)}
+
+        # Coleta todas as colunas conhecidas para transpilação precisa de expressões com espaços
+        known_cols = list(main_df.columns)
+        for lk_df in lookup_dfs.values():
+            for c in lk_df.columns:
+                if c not in known_cols:
+                    known_cols.append(c)
+        for v in variables:
+            v_name = v.get("name")
+            if v_name and v_name not in known_cols:
+                known_cols.append(v_name)
 
         conn = duckdb.connect(":memory:")
 
@@ -240,7 +275,7 @@ class DuckDBRunner:
             # Filtro do Lookup
             raw_lk_filter = lk.get("lookup_filter") or lk.get("filter") or ""
             if raw_lk_filter.strip():
-                transpiled_filter = self.transpile_expression(raw_lk_filter)
+                transpiled_filter = self.transpile_expression(raw_lk_filter, known_columns=known_cols)
                 conn.execute(f"CREATE TEMPORARY VIEW {lk_alias}_filtered AS SELECT *, ROW_NUMBER() OVER () as _lk_row_id FROM {lk_alias}_raw WHERE ({transpiled_filter});")
             else:
                 conn.execute(f"CREATE TEMPORARY VIEW {lk_alias}_filtered AS SELECT *, ROW_NUMBER() OVER () as _lk_row_id FROM {lk_alias}_raw;")
@@ -302,7 +337,7 @@ class DuckDBRunner:
             var_name = var.get("name")
             var_expr = var.get("expression", "")
             if var_name and var_expr:
-                transpiled_v = self.transpile_expression(var_expr)
+                transpiled_v = self.transpile_expression(var_expr, known_columns=known_cols)
                 try:
                     conn.execute(f"""
                         CREATE TEMPORARY TABLE _tmap_var_step_{v_idx} AS
@@ -326,7 +361,7 @@ class DuckDBRunner:
             if not is_catch_output and not is_catch_inner:
                 f_expr = out.get("filter_expression", "").strip()
                 if f_expr:
-                    standard_filter_conditions.append(f"({self.transpile_expression(f_expr)})")
+                    standard_filter_conditions.append(f"({self.transpile_expression(f_expr, known_columns=known_cols)})")
 
         for idx, out in enumerate(outputs):
             out_name = out.get("name") or f"out_{idx+1}"
@@ -357,7 +392,7 @@ class DuckDBRunner:
                 if inner_join_checks:
                     where_clauses.extend(inner_join_checks)
                 if filter_expr:
-                    where_clauses.append(f"({self.transpile_expression(filter_expr)})")
+                    where_clauses.append(f"({self.transpile_expression(filter_expr, known_columns=known_cols)})")
 
             where_sql = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
@@ -367,7 +402,7 @@ class DuckDBRunner:
                 for c in cols:
                     target_name = c.get("name") or c.get("target") or "col"
                     raw_expr = c.get("expression") or target_name
-                    trans_expr = self.transpile_expression(raw_expr)
+                    trans_expr = self.transpile_expression(raw_expr, known_columns=known_cols)
                     select_items.append(f'({trans_expr}) AS "{target_name}"')
                 select_sql = ", ".join(select_items)
             else:
@@ -377,8 +412,10 @@ class DuckDBRunner:
             try:
                 out_df = self.execute_query_to_polars(query, conn=conn)
             except Exception as e:
-                # Se falhar a query de projeção, retorna vazio
-                out_df = pl.DataFrame()
+                raise DomainError(
+                    f"Falha na execução da saída '{out_name}' do Data Mapper (tMap): {str(e)} (Query: {query})",
+                    code="ERR_ENGINE_DUCKDB"
+                )
 
             results[out_name] = out_df
 

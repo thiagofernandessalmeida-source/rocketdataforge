@@ -701,15 +701,8 @@ class ExecutionWorker:
 
         total_written = 0
         if not valid_chunks:
-            # Garante gravação mesmo se o buffer for vazio
-            dummy_empty = pl.DataFrame()
-            written = self.file_connector.write_dataframe(
-                dummy_empty,
-                file_path=target_path,
-                file_format=fmt,
-                write_mode=initial_write_mode
-            )
-            task.record_progress(rows_in_increment=0, rows_out_increment=written)
+            logger.warning(f"Nó sink '{phys_op.id}': Nenhum registro válido para gravar em '{target_path}'.")
+            task.record_progress(rows_in_increment=0, rows_out_increment=0)
             return
 
         for idx, chunk in enumerate(valid_chunks):
