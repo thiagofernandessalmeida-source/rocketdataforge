@@ -49,6 +49,7 @@ DATABASE_SOURCE = ComponentDefinition(
     category="source",
     description="Lê dados relacionais estruturados a partir de conexão de banco de dados.",
     ports=[
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET, required=False, description="Entrada opcional para fluxo de iteração"),
         PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, description="Fluxo principal de dados")
     ],
     config_schema={
@@ -74,6 +75,7 @@ FILE_SOURCE = ComponentDefinition(
     category="source",
     description="Lê arquivos locais nos formatos CSV, JSON ou Parquet em streaming.",
     ports=[
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET, required=False, description="Entrada opcional para fluxo de iteração"),
         PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, description="Fluxo de dados lido")
     ],
     config_schema={
@@ -81,14 +83,86 @@ FILE_SOURCE = ComponentDefinition(
         "required": ["path"],
         "properties": {
             "path": {"type": "string", "description": "Caminho do arquivo de dados"},
-            "format": {"type": "string", "enum": ["csv", "parquet", "json"], "default": "csv"},
-            "connection_ref": {"type": "string", "description": "Conexão de storage opcional"}
+            "format": {"type": "string", "enum": ["csv", "parquet", "json", "excel"], "default": "csv"},
+            "connection_ref": {"type": "string", "description": "Conexão de storage opcional"},
+            "enable_duckdb_view": {"type": "boolean", "default": False, "description": "Tratar como tabela DuckDB em memória"},
+            "duckdb_query": {"type": "string", "description": "Consulta SQL DuckDB opcional sobre a view"}
         }
     },
     capabilities=ComponentCapability(
         supports_projection_pushdown=True,
         supports_chunked_read=True
     )
+)
+
+DUCKDB_SOURCE = ComponentDefinition(
+    type_id="connector.db.duckdb",
+    version=SemanticVersion(1, 0, 0),
+    name="DuckDB Source",
+    category="source",
+    description="Executa consultas analíticas locais em alta velocidade com DuckDB sobre arquivos ou banco .duckdb.",
+    ports=[
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET, required=False, description="Entrada opcional para fluxo de iteração"),
+        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, description="Fluxo de dados lido")
+    ],
+    config_schema={
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+            "database_path": {"type": "string", "default": ":memory:", "description": "Caminho do banco DuckDB ou :memory:"},
+            "query": {"type": "string", "description": "Consulta SQL analítica"},
+            "read_only": {"type": "boolean", "default": True}
+        }
+    },
+    capabilities=ComponentCapability(
+        supports_filter_pushdown=True,
+        supports_projection_pushdown=True,
+        supports_chunked_read=True
+    )
+)
+
+DUCKDB_TARGET = ComponentDefinition(
+    type_id="connector.db.duckdb.output",
+    version=SemanticVersion(1, 0, 0),
+    name="DuckDB Output",
+    category="target",
+    description="Grava registros em banco de dados DuckDB local ou arquivo persistido com criação automática.",
+    ports=[
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET)
+    ],
+    config_schema={
+        "type": "object",
+        "required": ["table"],
+        "properties": {
+            "database_path": {"type": "string", "default": "data/output.duckdb"},
+            "table": {"type": "string"},
+            "table_action": {"type": "string", "enum": ["none", "drop_create", "create_if_not_exists", "drop_if_exists_create", "truncate", "delete_all"], "default": "none"},
+            "data_action": {"type": "string", "enum": ["insert", "update", "upsert", "update_or_insert", "delete"], "default": "insert"}
+        }
+    },
+    capabilities=ComponentCapability(supports_bulk_write=True)
+)
+
+TMAP_TRANSFORM = ComponentDefinition(
+    type_id="core.tmap",
+    version=SemanticVersion(1, 0, 0),
+    name="Data Mapper",
+    category="transform",
+    description="Mapeador visual avançado de dados: junções multi-lookup, variáveis intermediárias, múltiplos fluxos de saída, filtros e expressões customizadas.",
+    ports=[
+        PortDefinition(name="main", direction=PortDirection.INPUT, type=PortType.DATASET, description="Fluxo principal (Main)"),
+        PortDefinition(name="lookup", direction=PortDirection.INPUT, type=PortType.DATASET, required=False, description="Fluxo de consulta (Lookup)"),
+        PortDefinition(name="main_out", direction=PortDirection.OUTPUT, type=PortType.DATASET, description="Fluxo de saída principal"),
+        PortDefinition(name="reject_out", direction=PortDirection.OUTPUT, type=PortType.REJECT, required=False, description="Fluxo de registros rejeitados")
+    ],
+    config_schema={
+        "type": "object",
+        "properties": {
+            "variables": {"type": "array", "items": {"type": "object"}},
+            "outputs": {"type": "array", "items": {"type": "object"}},
+            "lookups": {"type": "array", "items": {"type": "object"}}
+        }
+    }
 )
 
 SELECT_TRANSFORM = ComponentDefinition(
@@ -161,7 +235,7 @@ DATABASE_TARGET = ComponentDefinition(
     version=SemanticVersion(1, 0, 0),
     name="Database Target",
     category="target",
-    description="Grava dados em banco relacional (PostgreSQL).",
+    description="Grava dados em banco relacional (PostgreSQL, MySQL, Oracle, etc.) com ações de tabela e dados no padrão Talend.",
     ports=[
         PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET)
     ],
@@ -171,7 +245,8 @@ DATABASE_TARGET = ComponentDefinition(
         "properties": {
             "connection_ref": {"type": "string"},
             "table": {"type": "string"},
-            "write_mode": {"type": "string", "enum": ["append", "replace"], "default": "append"},
+            "table_action": {"type": "string", "enum": ["none", "drop_create", "create_if_not_exists", "drop_if_exists_create", "truncate", "delete_all"], "default": "none"},
+            "data_action": {"type": "string", "enum": ["insert", "update", "upsert", "update_or_insert", "delete"], "default": "insert"},
             "batch_size": {"type": "integer", "default": 10000}
         }
     },
@@ -206,6 +281,7 @@ SCYLLA_SOURCE = ComponentDefinition(
     category="source",
     description="Lê dados distribuídos de alta vazão no ScyllaDB ou Cassandra via CQL.",
     ports=[
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET, required=False),
         PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, description="Dados lidos via CQL")
     ],
     config_schema={
@@ -249,6 +325,7 @@ KAFKA_SOURCE = ComponentDefinition(
     category="source",
     description="Consome fluxos de eventos em tempo real a partir de tópicos Kafka.",
     ports=[
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET, required=False),
         PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, description="Stream de mensagens")
     ],
     config_schema={
@@ -292,6 +369,7 @@ AWS_SQS_SOURCE = ComponentDefinition(
     category="source",
     description="Recebe mensagens de filas AWS SQS (Standard ou FIFO) com parsing JSON automático.",
     ports=[
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET, required=False),
         PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET)
     ],
     config_schema={
@@ -352,6 +430,9 @@ AWS_SNS_TARGET = ComponentDefinition(
 CATALOG_COMPONENTS: List[ComponentDefinition] = [
     DATABASE_SOURCE,
     FILE_SOURCE,
+    DUCKDB_SOURCE,
+    DUCKDB_TARGET,
+    TMAP_TRANSFORM,
     SELECT_TRANSFORM,
     FILTER_TRANSFORM,
     JOIN_TRANSFORM,
@@ -373,3 +454,4 @@ def get_component_definition(type_id: str) -> ComponentDefinition:
         if comp.type_id == type_id:
             return comp
     raise KeyError(f"Componente '{type_id}' não encontrado no catálogo.")
+

@@ -33,12 +33,14 @@ def create_workspace(
     payload: CreateWorkspaceRequest,
     session: Session = Depends(get_db_session)
 ):
-    """Cria um novo workspace."""
+    """Cria um novo workspace ou retorna o existente de mesmo nome."""
     existing = session.query(WorkspaceModel).filter(WorkspaceModel.name == payload.name).first()
     if existing:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Workspace com nome '{payload.name}' já existe."
+        return Workspace(
+            id=existing.id,
+            name=existing.name,
+            description=existing.description,
+            created_at=existing.created_at
         )
 
     workspace_id = generate_ulid()
@@ -92,7 +94,7 @@ def create_project(
     payload: CreateProjectRequest,
     session: Session = Depends(get_db_session)
 ):
-    """Cria um projeto dentro de um workspace."""
+    """Cria um projeto dentro de um workspace ou retorna o existente com mesmo slug."""
     workspace = session.get(WorkspaceModel, workspace_id)
     if not workspace:
         raise HTTPException(
@@ -106,9 +108,13 @@ def create_project(
         .first()
     )
     if existing_slug:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Projeto com slug '{payload.slug}' já existe neste workspace."
+        return Project(
+            id=existing_slug.id,
+            workspace_id=existing_slug.workspace_id,
+            name=existing_slug.name,
+            slug=existing_slug.slug,
+            description=existing_slug.description,
+            created_at=existing_slug.created_at
         )
 
     project_id = generate_ulid()

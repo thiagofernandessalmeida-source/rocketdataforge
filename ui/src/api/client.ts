@@ -9,39 +9,53 @@ import {
   ValidationReport,
 } from "../types";
 
-const API_BASE = "/api/v1";
-
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(options?.headers || {})
-    },
-    ...options
-  });
+  const headers = {
+    "Content-Type": "application/json",
+    ...(options?.headers || {})
+  };
 
-  if (!res.ok) {
-    let errorDetail = res.statusText;
-    try {
-      const json = await res.json();
-      errorDetail = json.detail || json.message || JSON.stringify(json);
-    } catch (_) {}
-    throw new Error(`[${res.status}] ${errorDetail}`);
+  // Always use the Vite dev-server proxy (/api → http://127.0.0.1:8000)
+  let res: Response;
+  try {
+    res = await fetch(`/api/v1${path}`, { ...options, headers });
+  } catch (err: any) {
+    // Network-level failure: proxy itself couldn't reach the backend
+    throw new Error(
+      "Não foi possível conectar ao servidor backend. " +
+      "Certifique-se de que a API (FastAPI) está rodando na porta 8000 " +
+      "e que o frontend foi iniciado com 'npm run dev'."
+    );
   }
 
-  return res.json();
+  if (res.ok) {
+    return res.json();
+  }
+
+  let errorDetail = res.statusText;
+  try {
+    const json = await res.json();
+    errorDetail = json.detail || json.message || JSON.stringify(json);
+  } catch (_) {}
+  throw new Error(`[${res.status}] ${errorDetail}`);
 }
 
 export const api = {
   // Catalog & Schemas
   getCatalog: () => request<ComponentDefinition[]>("/components/catalog"),
-  inferSchema: (pathOrQuery: string, connectorType = "file") =>
+  inferSchema: (pathOrQuery: string, connectorType = "file", connectionDetails?: Record<string, any>) =>
     request<InferredSchema>("/schemas/infer", {
       method: "POST",
-      body: JSON.stringify({ connector_type: connectorType, path_or_query: pathOrQuery })
+      body: JSON.stringify({
+        connector_type: connectorType,
+        path_or_query: pathOrQuery,
+        connection_details: connectionDetails,
+      })
     }),
 
   // Pipelines & Drafts
+  listPipelinesForProject: (projectId: string) =>
+    request<Array<{ id: string; name: string; revision: number }>>(`/projects/${projectId}/pipelines`),
   createPipeline: (projectId: string, name: string) =>
     request<PipelineDraft>(`/projects/${projectId}/pipelines`, {
       method: "POST",

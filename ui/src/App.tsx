@@ -14,7 +14,7 @@ import { Palette } from "./features/designer/Palette";
 import { Canvas } from "./features/designer/Canvas";
 import { PropertyPanel } from "./features/designer/PropertyPanel";
 import { FloatingNodeConfig } from "./features/designer/FloatingNodeConfig";
-import { ExecutionConsole } from "./features/execution/ExecutionConsole";
+import { ExecutionConsole, ProblemItem } from "./features/execution/ExecutionConsole";
 import { JobRepository } from "./features/repository/JobRepository";
 import { JobTabBar } from "./features/repository/JobTabBar";
 import { ConnectionManager } from "./features/connections/ConnectionManager";
@@ -35,6 +35,128 @@ import {
 
 // ─── Empty Canvas State ───────────────────────────────────────
 const EMPTY_CANVAS = { nodes: [] as Node<CanvasNodeData>[], edges: [] as Edge[] };
+
+export const analyzeGraphProblems = (
+  nodes: Node<CanvasNodeData>[],
+  edges: Edge[]
+): ProblemItem[] => {
+  const problems: ProblemItem[] = [];
+  if (nodes.length === 0) {
+    return [
+      {
+        code: "ERR_EMPTY_GRAPH",
+        message: "Nenhum componente foi adicionado ao Canvas.",
+        severity: "error",
+        suggestion: "Arraste componentes da paleta à esquerda para montar seu fluxo de dados.",
+      },
+    ];
+  }
+
+  // Check disconnected / orphan nodes
+  for (const node of nodes) {
+    const isSource =
+      node.data?.category === "source" ||
+      node.data?.componentType?.includes("source") ||
+      node.data?.componentType === "csv_source";
+    const isTarget =
+      node.data?.category === "target" ||
+      node.data?.componentType?.includes("sink") ||
+      node.data?.componentType?.includes("target");
+    const incoming = edges.filter((e) => e.target === node.id);
+    const outgoing = edges.filter((e) => e.source === node.id);
+    const label = node.data?.label || node.id;
+
+    if (incoming.length === 0 && outgoing.length === 0 && nodes.length > 1) {
+      problems.push({
+        code: "WARN_ORPHAN_NODE",
+        message: `O componente "${label}" está isolado (sem nenhuma conexão de entrada ou saída).`,
+        node_id: node.id,
+        node_label: label,
+        severity: "warning",
+        suggestion: "Conecte a porta de entrada ou saída deste componente a outro nó.",
+      });
+    }
+
+    if (isTarget && incoming.length === 0) {
+      problems.push({
+        code: "ERR_TARGET_NO_INPUT",
+        message: `O componente de saída "${label}" não possui fluxo de dados de entrada conectado.`,
+        node_id: node.id,
+        node_label: label,
+        severity: "error",
+        suggestion: "Conecte a saída de uma transformação (como o Data Mapper / tMap) na entrada deste componente.",
+      });
+    }
+
+    if (isSource && outgoing.length === 0 && nodes.length > 1) {
+      problems.push({
+        code: "ERR_SOURCE_NO_OUTPUT",
+        message: `A fonte de dados "${label}" não está enviando dados para nenhum outro nó.`,
+        node_id: node.id,
+        node_label: label,
+        severity: "warning",
+        suggestion: "Conecte a saída desta fonte no Data Mapper (tMap) ou em outro componente de fluxo.",
+      });
+    }
+
+    // Config validation
+    const cfg = node.data?.config || {};
+    const compType = (node.data?.componentType || "").toLowerCase();
+    if (
+      (compType.includes("file") ||
+        compType.includes("csv") ||
+        compType.includes("parquet") ||
+        compType.includes("json")) &&
+      (!cfg.path || !String(cfg.path).trim())
+    ) {
+      problems.push({
+        code: "ERR_MISSING_FILE_PATH",
+        message: `O componente "${label}" requer um caminho de arquivo (Path) configurado.`,
+        node_id: node.id,
+        node_label: label,
+        severity: "error",
+        suggestion: "Abra as propriedades do nó e selecione ou digite o caminho do arquivo (ex: Top Movies dataset.csv).",
+      });
+    }
+  }
+
+  // Check cycles using Kahn's algorithm
+  const inDegree: Record<string, number> = {};
+  const adj: Record<string, string[]> = {};
+  nodes.forEach((n) => {
+    inDegree[n.id] = 0;
+    adj[n.id] = [];
+  });
+  edges.forEach((e) => {
+    if (adj[e.source] && inDegree[e.target] !== undefined) {
+      adj[e.source].push(e.target);
+      inDegree[e.target] = (inDegree[e.target] || 0) + 1;
+    }
+  });
+
+  const queue = Object.keys(inDegree).filter((id) => inDegree[id] === 0);
+  let visited = 0;
+  while (queue.length > 0) {
+    const u = queue.shift()!;
+    visited++;
+    (adj[u] || []).forEach((v) => {
+      inDegree[v]--;
+      if (inDegree[v] === 0) queue.push(v);
+    });
+  }
+
+  if (visited < nodes.length) {
+    const cycleNodes = Object.keys(inDegree).filter((id) => inDegree[id] > 0);
+    problems.push({
+      code: "ERR_CYCLIC_DEPENDENCY",
+      message: `Ciclo circular detectado no pipeline envolvendo: ${cycleNodes.map((id) => nodes.find((n) => n.id === id)?.data?.label || id).join(", ")}.`,
+      severity: "error",
+      suggestion: "Remova a conexão que fecha um loop circular entre esses componentes.",
+    });
+  }
+
+  return problems;
+};
 
 export const App: React.FC = () => {
   const storeState = useJobStore();
@@ -99,6 +221,8 @@ export const App: React.FC = () => {
   const [revision, setRevision] = useState<number>(1);
   const [publishedVersionId, setPublishedVersionId] = useState<string | null>(null);
   const [isValid, setIsValid] = useState<boolean | null>(null);
+  const [problems, setProblems] = useState<ProblemItem[]>([]);
+  const [consoleTab, setConsoleTab] = useState<"metrics" | "logs" | "plans" | "problems">("metrics");
   const [loadingAction, setLoadingAction] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [execution, setExecution] = useState<ExecutionDetail | null>(null);
@@ -106,14 +230,36 @@ export const App: React.FC = () => {
   const [compiledPlans, setCompiledPlans] = useState<CompiledPlans | null>(null);
   const pollingRef = useRef<any>(null);
 
+  // ─── Real-time graph problem analysis ──────────────────────
+  useEffect(() => {
+    if (nodes.length > 0) {
+      const clientProblems = analyzeGraphProblems(nodes, edges);
+      setProblems(clientProblems);
+      const hasErrors = clientProblems.some((p) => p.severity === "error");
+      if (hasErrors) {
+        setIsValid(false);
+      } else if (isValid === false && clientProblems.length === 0) {
+        setIsValid(true);
+      }
+    } else {
+      setProblems([]);
+      setIsValid(null);
+    }
+  }, [nodes, edges]);
+
   // ─── UI Modals & Sidebars ───────────────────────────────────
   const [showConnManager, setShowConnManager] = useState(false);
   const [showContextVars, setShowContextVars] = useState(false);
   const [showQueryBank, setShowQueryBank] = useState(false);
   const [showAboutModal, setShowAboutModal] = useState(false);
   const [floatingNode, setFloatingNode] = useState<Node<CanvasNodeData> | null>(null);
-  const [leftSidebarVisible, setLeftSidebarVisible] = useState(true);
-  const [rightSidebarVisible, setRightSidebarVisible] = useState(true);
+  
+  // Independent visibility toggles for each panel (Talend style)
+  const [repoVisible, setRepoVisible] = useState(true);
+  const [paletteVisible, setPaletteVisible] = useState(true);
+  const [propertiesVisible, setPropertiesVisible] = useState(true);
+  const [consoleVisible, setConsoleVisible] = useState(true);
+
   const [gitStatus, setGitStatus] = useState<
     { branch: string; clean: boolean; commit_hash: string; commit_message: string } | undefined
   >(undefined);
@@ -134,20 +280,47 @@ export const App: React.FC = () => {
 
   // ─── Init backend (optional, falls back gracefully) ────────
   const ensureBackend = useCallback(async (): Promise<string> => {
-    if (pipelineId) return pipelineId;
-    let workspaces = await api.listWorkspaces();
+    let pid = pipelineId;
+
+    // If we already have a pipeline ID, verify it's still valid and sync revision
+    if (pid) {
+      try {
+        const existing = await api.getDraft(pid);
+        if (existing) {
+          setRevision(existing.revision);
+          return pid;
+        }
+      } catch (_) {
+        pid = "";
+      }
+    }
+
+    let workspaces = await api.listWorkspaces().catch(() => []);
     let wsId = workspaces[0]?.id;
     if (!wsId) {
       const newWs = await api.createWorkspace("Default Workspace");
       wsId = newWs.id;
     }
-    let projects = await api.listProjects(wsId);
+    let projects = await api.listProjects(wsId).catch(() => []);
     let projId = projects[0]?.id;
     if (!projId) {
       const newProj = await api.createProject(wsId, "Analytics Core", "analytics-core");
       projId = newProj.id;
     }
+
+    // Try to reuse an existing pipeline for this job before creating a new one
     const jobName = activeJobId ? (jobStore.getJob(activeJobId)?.name ?? "New Pipeline") : "New Pipeline";
+    const existingPipelines = await api.listPipelinesForProject(projId).catch(() => [] as any[]);
+    const match = existingPipelines.find((p: any) => p.name === jobName);
+    if (match) {
+      // Reuse: sync the real revision from server
+      const draft = await api.getDraft(match.id);
+      setPipelineId(match.id);
+      setRevision(draft.revision);
+      return match.id;
+    }
+
+    // No match found: create a new pipeline
     const draft = await api.createPipeline(projId, jobName);
     setPipelineId(draft.id);
     setRevision(draft.revision);
@@ -157,6 +330,7 @@ export const App: React.FC = () => {
   useEffect(() => {
     ensureBackend().catch(() => {});
   }, [ensureBackend]);
+
 
   // ─── Open Job from Repository ──────────────────────────────
   const handleOpenJob = useCallback((jobId: string) => {
@@ -195,9 +369,15 @@ export const App: React.FC = () => {
   const handleUpdateSchema = useCallback(
     (nodeId: string, schema: SchemaColumn[]) => {
       setNodes((nds) =>
-        nds.map((n) =>
-          n.id === nodeId ? { ...n, data: { ...n.data, schema } } : n
-        )
+        nds.map((n) => {
+          if (n.id === nodeId) {
+            const updated = { ...n, data: { ...n.data, schema } };
+            setSelectedNode((sel) => (sel?.id === nodeId ? updated : sel));
+            setFloatingNode((fl) => (fl?.id === nodeId ? updated : fl));
+            return updated;
+          }
+          return n;
+        })
       );
     },
     [setNodes]
@@ -226,6 +406,37 @@ export const App: React.FC = () => {
     [setNodes]
   );
 
+  const handleUpdateNodeId = useCallback(
+    (oldId: string, newId: string) => {
+      const trimmed = newId.trim();
+      if (!trimmed) {
+        showToast("error", "O ID do componente não pode ser vazio.");
+        return;
+      }
+      if (trimmed === oldId) return;
+      if (nodes.some((n) => n.id === trimmed)) {
+        showToast("error", `Já existe um nó com o ID '${trimmed}'. Escolha um ID único.`);
+        return;
+      }
+
+      setNodes((nds) =>
+        nds.map((n) => (n.id === oldId ? { ...n, id: trimmed } : n))
+      );
+      setEdges((eds) =>
+        eds.map((e) => {
+          let updated = { ...e };
+          if (e.source === oldId) updated.source = trimmed;
+          if (e.target === oldId) updated.target = trimmed;
+          return updated;
+        })
+      );
+      setSelectedNode((prev) => (prev && prev.id === oldId ? { ...prev, id: trimmed } : prev));
+      setFloatingNode((prev) => (prev && prev.id === oldId ? { ...prev, id: trimmed } : prev));
+      showToast("success", `ID do nó atualizado: '${oldId}' -> '${trimmed}'`);
+    },
+    [nodes, setNodes, setEdges, showToast]
+  );
+
   // ─── Save Job Locally ──────────────────────────────────────
   const handleSaveLocal = useCallback(() => {
     if (!activeJobId) {
@@ -246,7 +457,11 @@ export const App: React.FC = () => {
       }
       if (e.ctrlKey && e.key.toLowerCase() === "b") {
         e.preventDefault();
-        setLeftSidebarVisible((v) => !v);
+        setRepoVisible((v) => !v);
+      }
+      if (e.ctrlKey && e.key.toLowerCase() === "j") {
+        e.preventDefault();
+        setConsoleVisible((v) => !v);
       }
     };
     window.addEventListener("keydown", handler);
@@ -282,17 +497,28 @@ export const App: React.FC = () => {
       if (cfg.path && typeof cfg.path === "string") {
         cfg.path = cfg.path.trim().replace(/^["']|["']$/g, "");
       }
+      if (n.data.schema && Array.isArray(n.data.schema) && n.data.schema.length > 0) {
+        cfg.schema_columns = n.data.schema.map((c: any) => c.name);
+        cfg.schema_definitions = n.data.schema;
+      }
       return {
         id: n.id,
         component: { type: n.data.componentType, version: n.data.componentVersion || "1.0.0" },
         config: cfg,
       };
     });
-    const specEdges = edges.map((e) => ({
-      id: e.id,
-      from: `${e.source}.${e.sourceHandle || "main"}`,
-      to: `${e.target}.${e.targetHandle || "input"}`,
-    }));
+    const specEdges = edges.map((e) => {
+      const fromPort =
+        e.data?.flowName ||
+        (typeof e.label === "string" ? e.label : "") ||
+        e.sourceHandle ||
+        "main";
+      return {
+        id: e.id,
+        from: `${e.source}.${fromPort}`,
+        to: `${e.target}.${e.targetHandle || "input"}`,
+      };
+    });
     const layoutNodes = nodes.map((n) => ({
       id: n.id,
       position: { x: n.position.x, y: n.position.y },
@@ -324,17 +550,102 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleFocusNode = useCallback(
+    (nodeId: string) => {
+      const target = nodes.find((n) => n.id === nodeId);
+      if (target) {
+        setSelectedNode(target);
+        setPropertiesVisible(true);
+      }
+    },
+    [nodes]
+  );
+
+  const handleOpenDiagnostics = useCallback(() => {
+    setConsoleVisible(true);
+    setConsoleTab("problems");
+  }, []);
+
   const handleValidate = async () => {
     setLoadingAction("validate");
     try {
-      const activePid = await ensureBackend();
-      const { definition, layout } = serializeCanvas(activePid);
-      const updated = await api.updateDraft(activePid, revision, definition, layout);
-      setRevision(updated.revision);
-      const report = await api.validateDraft(activePid);
-      setIsValid(report.is_valid);
-      if (report.is_valid) showToast("success", "DAG validado com sucesso!");
-      else showToast("error", `Erros: ${report.errors.map((e) => e.message).join(" | ")}`);
+      const clientProblems = analyzeGraphProblems(nodes, edges);
+      let allProblems = [...clientProblems];
+      let isServerValid = true;
+
+      try {
+        const activePid = await ensureBackend();
+        const { definition, layout } = serializeCanvas(activePid);
+
+        // Always fetch the current revision to avoid optimistic concurrency conflicts
+        let currentRevision = revision;
+        try {
+          const fresh = await api.getDraft(activePid);
+          currentRevision = fresh.revision;
+          setRevision(fresh.revision);
+        } catch (_) {
+          // Keep local revision if fetch fails
+        }
+
+        // Try to save the draft; if it fails, still proceed to validate
+        try {
+          const updated = await api.updateDraft(activePid, currentRevision, definition, layout);
+          setRevision(updated.revision);
+        } catch (updateErr: any) {
+          console.warn("Draft update failed, proceeding to validate anyway:", updateErr.message);
+          // If 409, try one more time with a fresh revision
+          if (updateErr.message?.includes("409")) {
+            try {
+              const fresh2 = await api.getDraft(activePid).catch(() => null);
+              if (fresh2) {
+                const updated2 = await api.updateDraft(activePid, fresh2.revision, definition, layout);
+                setRevision(updated2.revision);
+              }
+            } catch (_) {}
+          }
+        }
+
+        const report = await api.validateDraft(activePid);
+        isServerValid = report.is_valid;
+        if (report.errors && report.errors.length > 0) {
+          report.errors.forEach((err) => {
+            if (!allProblems.some((p) => p.code === err.code && p.node_id === err.node_id)) {
+              allProblems.push({
+                code: err.code || "ERR_VALIDATION",
+                message: err.message,
+                node_id: err.node_id,
+                severity: "error",
+              });
+            }
+          });
+        }
+      } catch (err: any) {
+        allProblems.push({
+          code: "ERR_SERVER_VALIDATE",
+          message: `Falha na verificação remota: ${err.message}`,
+          severity: "warning",
+          suggestion: "Verifique a integridade das conexões e parâmetros configurados nos nós.",
+        });
+      }
+
+      setProblems(allProblems);
+      const hasErrors = allProblems.some((p) => p.severity === "error");
+      setIsValid(!hasErrors && isServerValid);
+
+      if (hasErrors || allProblems.length > 0) {
+        setConsoleVisible(true);
+        setConsoleTab("problems");
+        if (hasErrors) {
+          showToast(
+            "error",
+            `${allProblems.filter((p) => p.severity === "error").length} erro(s) encontrados. Verifique a aba Problemas & Diagnóstico.`
+          );
+        } else {
+          showToast("info", "Avisos de validação detectados. Verifique a aba Problemas.");
+        }
+      } else {
+        showToast("success", "Grafo DAG validado com sucesso! Nenhum erro detectado.");
+      }
     } catch (err: any) {
       setIsValid(false);
       showToast("error", `Falha na validação: ${err.message}`);
@@ -342,6 +653,7 @@ export const App: React.FC = () => {
       setLoadingAction(null);
     }
   };
+
 
   const handlePublish = async () => {
     setLoadingAction("publish");
@@ -475,11 +787,87 @@ export const App: React.FC = () => {
     }
   };
 
+  const headerFileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImportJobFile = useCallback(
+    async (file: File, targetFolderId?: string) => {
+      try {
+        const text = await file.text();
+        const json = JSON.parse(text);
+
+        // Supports standard { job, nodes, edges } or raw JobData or { nodes, edges, name }
+        const rawJob = json.job || json;
+        const jobName =
+          json.name ||
+          rawJob.name ||
+          file.name.replace(/\.(rdf\.)?json$/i, "") ||
+          "Job Importado";
+        const importedNodes = json.nodes || rawJob.nodes || [];
+        const importedEdges = json.edges || rawJob.edges || [];
+        const nodeSchemas = json.nodeSchemas || rawJob.nodeSchemas || {};
+        const environment = json.environment || rawJob.environment || "dev";
+        const viewport = json.viewport || rawJob.viewport;
+
+        // Save current canvas state before switching if there is an active job
+        if (activeJobId) {
+          setCanvasMap((m) => ({ ...m, [activeJobId]: { nodes, edges } }));
+        }
+
+        const newJob = jobStore.importJob(
+          {
+            name: jobName,
+            nodes: importedNodes,
+            edges: importedEdges,
+            nodeSchemas,
+            environment,
+            viewport,
+          },
+          targetFolderId
+        );
+
+        // Immediately update active canvas with imported nodes and edges
+        setNodes(importedNodes);
+        setEdges(importedEdges);
+        setCanvasMap((m) => ({
+          ...m,
+          [newJob.id]: { nodes: importedNodes, edges: importedEdges },
+        }));
+        setSelectedNode(null);
+
+        showToast(
+          "success",
+          `Job "${newJob.name}" importado com sucesso! (${importedNodes.length} nós, ${importedEdges.length} conexões)`
+        );
+      } catch (err: any) {
+        showToast("error", `Falha ao importar o job: ${err.message}`);
+      }
+    },
+    [activeJobId, nodes, edges, setNodes, setEdges, showToast]
+  );
+
+  const handleTriggerHeaderImport = () => {
+    if (headerFileInputRef.current) {
+      headerFileInputRef.current.value = "";
+      headerFileInputRef.current.click();
+    }
+  };
+
   const activeJob = activeJobId ? storeState.jobs.find((j) => j.id === activeJobId) : null;
   const pipelineName = activeJob?.name ?? "RocketDataForge";
 
   return (
     <div className="app-container">
+      <input
+        type="file"
+        ref={headerFileInputRef}
+        accept=".json,.rdf.json"
+        style={{ display: "none" }}
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) handleImportJobFile(f);
+        }}
+      />
+
       <Header
         pipelineName={pipelineName}
         revision={revision}
@@ -489,10 +877,14 @@ export const App: React.FC = () => {
         activeEnvironment={storeState.activeEnvironment}
         connectionsCount={storeState.connections.length}
         gitStatus={gitStatus}
-        leftSidebarVisible={leftSidebarVisible}
-        rightSidebarVisible={rightSidebarVisible}
-        onToggleLeftSidebar={() => setLeftSidebarVisible((v) => !v)}
-        onToggleRightSidebar={() => setRightSidebarVisible((v) => !v)}
+        repoVisible={repoVisible}
+        paletteVisible={paletteVisible}
+        propertiesVisible={propertiesVisible}
+        consoleVisible={consoleVisible}
+        onToggleRepo={() => setRepoVisible((v) => !v)}
+        onTogglePalette={() => setPaletteVisible((v) => !v)}
+        onToggleProperties={() => setPropertiesVisible((v) => !v)}
+        onToggleConsole={() => setConsoleVisible((v) => !v)}
         onOpenAbout={() => setShowAboutModal(true)}
         onSaveDraft={handleSaveDraft}
         onValidate={handleValidate}
@@ -500,6 +892,9 @@ export const App: React.FC = () => {
         onCompile={handleCompile}
         onRun={handleRun}
         onExport={handleExport}
+        onImport={handleTriggerHeaderImport}
+        onOpenDiagnostics={handleOpenDiagnostics}
+        problemCount={problems.length}
         onOpenConnections={() => setShowConnManager(true)}
         onOpenContextVars={() => setShowContextVars(true)}
         onOpenQueryBank={() => setShowQueryBank(true)}
@@ -507,7 +902,12 @@ export const App: React.FC = () => {
 
       <div className="studio-body">
         {/* Left — Job Repository (Talend-style) */}
-        {leftSidebarVisible && <JobRepository onOpenJob={handleOpenJob} />}
+        {repoVisible && (
+          <JobRepository
+            onOpenJob={handleOpenJob}
+            onImportJob={handleImportJobFile}
+          />
+        )}
 
         {/* Center — Canvas Area with Tabs */}
         <div className="canvas-area">
@@ -515,7 +915,7 @@ export const App: React.FC = () => {
 
           {activeJobId ? (
             <div className="canvas-with-palette">
-              {leftSidebarVisible && <Palette components={components} />}
+              {paletteVisible && <Palette components={components} />}
 
               <ReactFlowProvider>
                 <Canvas
@@ -534,28 +934,41 @@ export const App: React.FC = () => {
               </ReactFlowProvider>
             </div>
           ) : (
-            <WelcomeScreen onOpenJob={handleOpenJob} />
+            <WelcomeScreen
+              onOpenJob={handleOpenJob}
+              onImportJob={handleImportJobFile}
+            />
           )}
 
-          <ExecutionConsole
-            execution={execution}
-            logs={logs}
-            compiledPlans={compiledPlans}
-            onCancelExecution={handleCancelExecution}
-          />
+          {consoleVisible && (
+            <ExecutionConsole
+              execution={execution}
+              logs={logs}
+              compiledPlans={compiledPlans}
+              onCancelExecution={handleCancelExecution}
+              problems={problems}
+              activeTab={consoleTab}
+              onTabChange={setConsoleTab}
+              onFocusNode={handleFocusNode}
+              onRevalidate={handleValidate}
+            />
+          )}
         </div>
 
         {/* Right — Properties Panel */}
-        {rightSidebarVisible && (
+        {propertiesVisible && (
           <PropertyPanel
             selectedNode={selectedNode}
             onUpdateConfig={handleUpdateConfig}
             onUpdateLabel={handleUpdateLabel}
             onUpdateSchema={handleUpdateSchema}
+            onUpdateNodeId={handleUpdateNodeId}
             onDeleteNode={handleDeleteNode}
             connections={storeState.connections}
             contextVariables={jobStore.getVarsForJob(activeJobId ?? "")}
             activeEnvironment={activeJob?.environment ?? storeState.activeEnvironment}
+            allNodes={nodes}
+            edges={edges}
             onPopOut={(node) => {
               setFloatingNode(node);
               setSelectedNode(null);
@@ -594,11 +1007,14 @@ export const App: React.FC = () => {
           onUpdateConfig={handleUpdateConfig}
           onUpdateLabel={handleUpdateLabel}
           onUpdateSchema={handleUpdateSchema}
+          onUpdateNodeId={handleUpdateNodeId}
           onDeleteNode={handleDeleteNode}
           onClose={() => setFloatingNode(null)}
           connections={storeState.connections}
           contextVariables={jobStore.getVarsForJob(activeJobId ?? "")}
           activeEnvironment={activeJob?.environment ?? storeState.activeEnvironment}
+          allNodes={nodes}
+          edges={edges}
         />
       )}
 
@@ -608,8 +1024,12 @@ export const App: React.FC = () => {
 };
 
 // ─── Welcome Screen ───────────────────────────────────────────
-const WelcomeScreen: React.FC<{ onOpenJob: (id: string) => void }> = ({ onOpenJob }) => {
+const WelcomeScreen: React.FC<{
+  onOpenJob: (id: string) => void;
+  onImportJob?: (file: File) => void;
+}> = ({ onOpenJob, onImportJob }) => {
   const state = useJobStore();
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleNewJob = () => {
     const rootFolder = state.folders.find((f) => f.parentId === null);
@@ -618,8 +1038,25 @@ const WelcomeScreen: React.FC<{ onOpenJob: (id: string) => void }> = ({ onOpenJo
     onOpenJob(job.id);
   };
 
+  const handleTriggerImport = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+      fileInputRef.current.click();
+    }
+  };
+
   return (
     <div className="welcome-screen">
+      <input
+        type="file"
+        ref={fileInputRef}
+        accept=".json,.rdf.json"
+        style={{ display: "none" }}
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f && onImportJob) onImportJob(f);
+        }}
+      />
       <div className="welcome-content">
         <div className="welcome-logo">
           <svg viewBox="0 0 60 60" width="64" height="64">
@@ -639,9 +1076,22 @@ const WelcomeScreen: React.FC<{ onOpenJob: (id: string) => void }> = ({ onOpenJo
         </p>
 
         <div className="welcome-actions">
-          <button className="btn btn-primary welcome-btn" onClick={handleNewJob}>
-            + Criar Novo Job
-          </button>
+          <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
+            <button className="btn btn-primary welcome-btn" onClick={handleNewJob}>
+              + Criar Novo Job
+            </button>
+            <button
+              className="btn btn-secondary welcome-btn"
+              onClick={handleTriggerImport}
+              style={{
+                background: "rgba(6, 182, 212, 0.12)",
+                borderColor: "var(--accent-cyan)",
+                color: "var(--accent-cyan)",
+              }}
+            >
+              📥 Importar Job (.rdf.json)
+            </button>
+          </div>
           {state.jobs.length > 0 && (
             <div className="welcome-recent">
               <div className="welcome-recent-label">Jobs Recentes</div>

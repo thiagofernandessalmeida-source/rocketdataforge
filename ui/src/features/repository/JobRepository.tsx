@@ -13,15 +13,17 @@ import {
   X,
   Check,
   FileCode2,
+  Upload,
 } from "lucide-react";
 import { jobStore, FolderData, JobData } from "../../store/jobStore";
 import { useJobStore } from "../../store/useJobStore";
 
 interface JobRepositoryProps {
   onOpenJob: (jobId: string) => void;
+  onImportJob?: (file: File, targetFolderId?: string) => void;
 }
 
-export const JobRepository: React.FC<JobRepositoryProps> = ({ onOpenJob }) => {
+export const JobRepository: React.FC<JobRepositoryProps> = ({ onOpenJob, onImportJob }) => {
   const state = useJobStore();
   const [contextMenu, setContextMenu] = useState<{
     type: "folder" | "job";
@@ -36,6 +38,24 @@ export const JobRepository: React.FC<JobRepositoryProps> = ({ onOpenJob }) => {
     value: string;
   } | null>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [targetFolderForImport, setTargetFolderForImport] = useState<string | undefined>(undefined);
+
+  const handleTriggerImport = (folderId?: string) => {
+    setTargetFolderForImport(folderId);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+      fileInputRef.current.click();
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && onImportJob) {
+      onImportJob(file, targetFolderForImport);
+    }
+    setTargetFolderForImport(undefined);
+  };
 
   const closeContextMenu = () => setContextMenu(null);
 
@@ -251,8 +271,23 @@ export const JobRepository: React.FC<JobRepositoryProps> = ({ onOpenJob }) => {
           >
             <FolderPlus size={13} />
           </button>
+          <button
+            className="repo-action-btn"
+            title="Importar Job (.rdf.json)"
+            onClick={() => handleTriggerImport()}
+          >
+            <Upload size={13} />
+          </button>
         </div>
       </div>
+
+      <input
+        type="file"
+        ref={fileInputRef}
+        accept=".json,.rdf.json"
+        style={{ display: "none" }}
+        onChange={handleFileChange}
+      />
 
       {/* Tree */}
       <div className="repo-tree" onClick={closeContextMenu}>
@@ -264,7 +299,22 @@ export const JobRepository: React.FC<JobRepositoryProps> = ({ onOpenJob }) => {
           <div className="repo-empty">
             <Zap size={24} opacity={0.3} />
             <p>Nenhum job criado</p>
-            <p>Clique em + para criar</p>
+            <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+              <button
+                className="btn btn-primary"
+                style={{ fontSize: "0.75rem", padding: "4px 8px" }}
+                onClick={() => startCreate("job", "folder-root")}
+              >
+                + Criar Job
+              </button>
+              <button
+                className="btn btn-secondary"
+                style={{ fontSize: "0.75rem", padding: "4px 8px" }}
+                onClick={() => handleTriggerImport()}
+              >
+                <Upload size={12} /> Importar
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -291,6 +341,15 @@ export const JobRepository: React.FC<JobRepositoryProps> = ({ onOpenJob }) => {
                   onClick={() => startCreate("folder", contextMenu.id)}
                 >
                   <FolderPlus size={13} /> Nova Subpasta
+                </button>
+                <button
+                  className="ctx-menu-item"
+                  onClick={() => {
+                    handleTriggerImport(contextMenu.id);
+                    closeContextMenu();
+                  }}
+                >
+                  <Upload size={13} /> Importar Job nesta pasta
                 </button>
                 <div className="ctx-divider" />
                 <button

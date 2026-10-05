@@ -2,24 +2,45 @@ import React, { useState, useCallback, useRef, useEffect } from "react";
 import { Node } from "reactflow";
 import { CanvasNodeData } from "../../types";
 import { SchemaEditor, SchemaEditorModal } from "./SchemaEditor";
-import { Settings, Trash2, Database, Link2, ChevronDown, Maximize2, Server, Layers, Zap } from "lucide-react";
+import { TMapModal, TMapConfig } from "./TMapModal";
+import { api } from "../../api/client";
+import {
+  Settings,
+  Trash2,
+  Database,
+  Link2,
+  ChevronDown,
+  Maximize2,
+  Server,
+  Layers,
+  Zap,
+  GitMerge,
+  HelpCircle,
+  Edit3,
+  Check,
+  Wand2,
+  Loader2,
+} from "lucide-react";
 import { ConnectionEntry, ContextVariable, SchemaColumn, Environment } from "../../store/jobStore";
 
-interface PropertyPanelProps {
+export interface PropertyPanelProps {
   selectedNode: Node<CanvasNodeData> | null;
   onUpdateConfig: (nodeId: string, newConfig: Record<string, any>) => void;
   onUpdateLabel?: (nodeId: string, newLabel: string) => void;
   onUpdateSchema?: (nodeId: string, schema: SchemaColumn[]) => void;
+  onUpdateNodeId?: (oldId: string, newId: string) => void;
   onDeleteNode: (nodeId: string) => void;
   connections?: ConnectionEntry[];
   contextVariables?: ContextVariable[];
   activeEnvironment?: Environment;
+  allNodes?: Node<CanvasNodeData>[];
+  edges?: any[];
   /** Called on double-click header to pop-out into floating window */
   onPopOut?: (node: Node<CanvasNodeData>) => void;
 }
 
 // ─── Connection select dropdown ───────────────────────────────
-const ConnectionSelect: React.FC<{
+export const ConnectionSelect: React.FC<{
   value: string;
   connections: ConnectionEntry[];
   activeEnvironment?: Environment;
@@ -68,17 +89,8 @@ const ConnectionSelect: React.FC<{
   );
 };
 
-// ─── Debounced textarea to avoid cursor jump bug ───────────────
-/**
- * BUG FIX: The original textarea lost focus because every keystroke triggered
- * onUpdateConfig → setNodes → re-render → PropertyPanel re-renders with new
- * selectedNode prop, reassigning the textarea value and resetting cursor.
- *
- * Solution: local state + debounce. The textarea uses local state for immediate
- * display. The parent store is updated only after 400ms of inactivity (debounce),
- * avoiding the re-render cascade while typing.
- */
-const DebouncedTextarea: React.FC<{
+// ─── Debounced textarea (estável fora de PropertyPanel para não perder foco) ────────
+export const DebouncedTextarea: React.FC<{
   value: string;
   onChange: (val: string) => void;
   placeholder?: string;
@@ -89,7 +101,6 @@ const DebouncedTextarea: React.FC<{
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevValueRef = useRef(value);
 
-  // Sync local state if the external value changes from outside (e.g. node switch)
   useEffect(() => {
     if (value !== prevValueRef.current) {
       setLocal(value);
@@ -104,7 +115,7 @@ const DebouncedTextarea: React.FC<{
     debounceRef.current = setTimeout(() => {
       onChange(val);
       prevValueRef.current = val;
-    }, 400);
+    }, 300);
   };
 
   return (
@@ -118,8 +129,8 @@ const DebouncedTextarea: React.FC<{
   );
 };
 
-// Same pattern for text inputs:
-const DebouncedInput: React.FC<{
+// ─── Debounced input (estável fora de PropertyPanel) ─────────
+export const DebouncedInput: React.FC<{
   value: string;
   onChange: (val: string) => void;
   placeholder?: string;
@@ -160,22 +171,77 @@ const DebouncedInput: React.FC<{
   );
 };
 
-// ─── Main Panel ───────────────────────────────────────────────
+// ─── Seção de Ações de Tabela e Dados (Padrão Talend) ────────
+export const TableActionsSection: React.FC<{
+  config: Record<string, any>;
+  onChange: (key: string, val: any) => void;
+}> = ({ config, onChange }) => {
+  return (
+    <>
+      <div className="form-group">
+        <label className="form-label">Ação na Tabela (Action on Table)</label>
+        <select
+          className="form-select"
+          value={config.table_action ?? "none"}
+          onChange={(e) => onChange("table_action", e.target.value)}
+        >
+          <option value="none">Nenhuma (None) — Manter tabela como está</option>
+          <option value="drop_create">Deletar e Criar Tabela (Drop and Create)</option>
+          <option value="create_if_not_exists">Criar Tabela se não existir (Create if not exists)</option>
+          <option value="drop_if_exists_create">Deletar se existir e Criar (Drop if exists and Create)</option>
+          <option value="truncate">Limpar / Truncar Tabela (Truncate)</option>
+          <option value="delete_all">Deletar todos os registros (Delete rows)</option>
+        </select>
+      </div>
 
+      <div className="form-group">
+        <label className="form-label">Ação nos Dados (Action on Data)</label>
+        <select
+          className="form-select"
+          value={config.data_action ?? "insert"}
+          onChange={(e) => onChange("data_action", e.target.value)}
+        >
+          <option value="insert">Inserir registros (Insert)</option>
+          <option value="update">Atualizar registros por Chave Primária (Update)</option>
+          <option value="upsert">Inserir ou Atualizar (Upsert / Insert or Update)</option>
+          <option value="update_or_insert">Atualizar ou Inserir (Update or Insert)</option>
+          <option value="delete">Deletar registros por Chave Primária (Delete)</option>
+        </select>
+      </div>
+    </>
+  );
+};
+
+// ─── Main Panel Component ─────────────────────────────────────
 export const PropertyPanel: React.FC<PropertyPanelProps> = ({
   selectedNode,
   onUpdateConfig,
   onUpdateLabel,
   onUpdateSchema,
+  onUpdateNodeId,
   onDeleteNode,
   connections = [],
   contextVariables = [],
   activeEnvironment = "dev",
+  allNodes = [],
+  edges = [],
   onPopOut,
 }) => {
   const [showVarHint, setShowVarHint] = useState(false);
   const [showSchemaModal, setShowSchemaModal] = useState(false);
+  const [showTMapModal, setShowTMapModal] = useState(false);
   const [activeTab, setActiveTab] = useState<"config" | "schema">("config");
+  const [editingNodeId, setEditingNodeId] = useState<string>("");
+  const [isRenamingId, setIsRenamingId] = useState(false);
+  const [inferringDirect, setInferringDirect] = useState(false);
+  const [directInferMessage, setDirectInferMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  useEffect(() => {
+    if (selectedNode) {
+      setEditingNodeId(selectedNode.id);
+      setIsRenamingId(false);
+    }
+  }, [selectedNode?.id]);
 
   const handleChange = useCallback(
     (key: string, value: any) => {
@@ -193,6 +259,15 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
     },
     [selectedNode, onUpdateSchema]
   );
+
+  const handleApplyNodeId = () => {
+    if (!selectedNode || !editingNodeId.trim()) return;
+    const trimmed = editingNodeId.trim();
+    if (trimmed !== selectedNode.id) {
+      onUpdateNodeId?.(selectedNode.id, trimmed);
+    }
+    setIsRenamingId(false);
+  };
 
   if (!selectedNode) {
     return (
@@ -212,123 +287,115 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
     );
   }
 
-  const { id, data } = selectedNode;
+  const liveNode = allNodes.find((n) => n.id === selectedNode.id) || selectedNode;
+  const { id } = liveNode;
+  const data = liveNode.data;
   const config = data.config || {};
   const schema: SchemaColumn[] = (data as any).schema || [];
   const ct = data.componentType || "";
 
-  // Simulate schema inference (replace with real API call)
+  // ─── Inferência Real de Schema (BUG 1 FIX) ────────────────────
   const handleInferSchema = async (): Promise<SchemaColumn[]> => {
-    await new Promise((r) => setTimeout(r, 800));
-    // Demo columns — in real impl, call backend /schemas/infer
-    return [
-      { id: "c1", name: "id", type: "Integer", nullable: false, isPrimaryKey: true },
-      { id: "c2", name: "nome", type: "String", nullable: true, length: 255 },
-      { id: "c3", name: "valor", type: "Decimal", nullable: true, precision: 18, scale: 4 },
-      { id: "c4", name: "data_criacao", type: "DateTime", nullable: true, format: "yyyy-MM-dd HH:mm:ss" },
-      { id: "c5", name: "ativo", type: "Boolean", nullable: false, defaultValue: "true" },
-    ];
+    const pathOrQuery = (config.path || config.query || config.duckdb_query || "").trim();
+    if (!pathOrQuery) {
+      throw new Error("Informe o caminho do arquivo (ex: 'data/users.csv') ou query SQL antes de inferir.");
+    }
+    const connEntry = connections.find(
+      (c) => c.name.toLowerCase().replace(/\s+/g, "_") === config.connection_ref
+    );
+    const connDetails = connEntry?.config
+      ? {
+          type: connEntry.type,
+          host: connEntry.config.host,
+          port: connEntry.config.port,
+          database: connEntry.config.database,
+          username: connEntry.config.username,
+          password: connEntry.config.password,
+          sslMode: connEntry.config.sslMode,
+        }
+      : undefined;
+    const inferred = await api.inferSchema(pathOrQuery, ct, connDetails);
+    const mapped: SchemaColumn[] = inferred.fields.map((f, i) => ({
+      id: `col-${Date.now()}-${i}`,
+      name: f.name,
+      type: (f.logical_type
+        ? f.logical_type.charAt(0).toUpperCase() + f.logical_type.slice(1).toLowerCase()
+        : "String") as any,
+      nullable: f.nullable,
+      physicalType: f.physical_type,
+    }));
+    onUpdateSchema?.(id, mapped);
+    return mapped;
   };
+
+  const handleDirectInfer = async () => {
+    setInferringDirect(true);
+    setDirectInferMessage(null);
+    try {
+      const mapped = await handleInferSchema();
+      setDirectInferMessage({
+        type: "success",
+        text: `✓ ${mapped.length} coluna(s) inferida(s): ${mapped.map((c) => c.name).join(", ")}`,
+      });
+      setTimeout(() => setDirectInferMessage(null), 6000);
+    } catch (err: any) {
+      setDirectInferMessage({
+        type: "error",
+        text: `⚠️ ${err.message || "Falha ao inferir schema."}`,
+      });
+    } finally {
+      setInferringDirect(false);
+    }
+  };
+
+  // ─── Busca Colunas a Montante (Upstream) e Nós a Jusante (Downstream) ───
+  const incomingEdges = edges.filter((e) => e.target === id);
+  const upstreamNodes = incomingEdges
+    .map((e) => allNodes.find((n) => n.id === e.source))
+    .filter((n): n is Node<CanvasNodeData> => Boolean(n));
+
+  const outgoingEdges = edges.filter((e) => e.source === id);
+  const downstreamNodes = outgoingEdges
+    .map((e) => {
+      const tgtNode = allNodes.find((n) => n.id === e.target);
+      const flowName =
+        e.data?.flowName ||
+        (typeof e.label === "string" ? e.label : "") ||
+        (e.id.startsWith("e_") || e.id.startsWith("e-") ? "" : e.id);
+      return {
+        edgeId: e.id,
+        flowName,
+        targetId: e.target,
+        targetLabel: tgtNode?.data?.label || e.target,
+        targetCategory: tgtNode?.data?.category || "target",
+        targetComponentType: tgtNode?.data?.componentType || "",
+        targetSchema: (tgtNode?.data as any)?.schema || [],
+      };
+    })
+    .filter((d) => Boolean(d.targetId));
+
+  const upstreamSchema: SchemaColumn[] = (upstreamNodes[0]?.data as any)?.schema || [];
+  const upstreamNodeLabel = upstreamNodes[0]?.data?.label || upstreamNodes[0]?.id || "";
 
   // Detect connector family
   const isFileSource = ct.includes("file.source");
+  const isDuckDb = ct.includes("duckdb");
+  const isDuckDbInput = ct === "connector.db.duckdb" || ct === "core.duckdb.source";
+  const isDuckDbOutput = ct === "connector.db.duckdb.output" || ct === "core.duckdb.target";
+  const isTMap = ct === "core.tmap" || ct === "transform.tmap";
   const isFilter = ct.includes("filter");
   const isSelect = ct.includes("select");
   const isJoin = ct.includes("join");
   const isFileTarget = ct.includes("file.target");
-  const isDbConnector = ct.includes("connector.db") || ct.includes("connector.cloud") || ct.includes("connector.api");
-  const isAggregate = ct.includes("aggregate");
-  const isSort = ct.includes("sort");
-  const isDeduplicate = ct.includes("deduplicate");
-  const isMapExpr = ct.includes("map_expression");
-  const isS3 = ct.includes("s3");
-  const isAzureBlob = ct.includes("azure_blob");
-  const isGcs = ct.includes("gcs");
-  const isRestApi = ct.includes("rest_api") || ct.includes("rest_output");
-  const isDatabricks = ct.includes("databricks");
-  const isOracleOrSql = ct.includes("oracle") || ct.includes("sqlserver") || ct.includes("mysql") || ct.includes("postgresql") || ct.includes("redshift") || ct.includes("snowflake") || ct.includes("bigquery");
-  const isScylla = ct.includes("scylla");
-  const isKafka = ct.includes("kafka");
-  const isSqs = ct.includes("sqs");
-  const isSns = ct.includes("sns");
-  const isOutput = ct.includes("output");
-  const canHaveSchema =
-    isFileSource || isFileTarget || isDbConnector || isOracleOrSql || isDatabricks || isScylla || isKafka || isSqs || isSns;
-
-  const WriteMode = () => (
-    <div className="form-group">
-      <label className="form-label">Modo de Gravação</label>
-      <select className="form-select" value={config.write_mode ?? "append"}
-        onChange={(e) => handleChange("write_mode", e.target.value)}>
-        <option value="append">Append — Adicionar registros</option>
-        <option value="overwrite">Overwrite — Substituir tudo</option>
-        <option value="upsert">Upsert — Inserir ou atualizar</option>
-        <option value="update">Update — Apenas atualizar</option>
-        <option value="truncate_insert">Truncate + Insert</option>
-      </select>
-    </div>
-  );
-
-  const DbConnectionSection = ({ showQuery = true, showTable = false }) => (
-    <>
-      <div className="form-group">
-        <label className="form-label">
-          <Database size={12} /> Conexão ({activeEnvironment.toUpperCase()})
-        </label>
-        <ConnectionSelect
-          value={config.connection_ref ?? ""}
-          connections={connections}
-          activeEnvironment={activeEnvironment}
-          onChange={(v) => handleChange("connection_ref", v)}
-        />
-      </div>
-      {showTable && (
-        <div className="form-group">
-          <label className="form-label">Tabela de Destino</label>
-          <DebouncedInput
-            value={config.table ?? ""}
-            placeholder="schema.tabela"
-            onChange={(v) => handleChange("table", v)}
-          />
-        </div>
-      )}
-      {showQuery && (
-        <div className="form-group">
-          <label className="form-label">Query SQL</label>
-          {/* DebouncedTextarea fixes the cursor-jump bug */}
-          <DebouncedTextarea
-            value={config.query ?? ""}
-            placeholder={"SELECT *\nFROM tabela\nWHERE ativo = 1"}
-            style={{ minHeight: 90, fontFamily: "var(--font-mono)", fontSize: "0.78rem" }}
-            onChange={(v) => handleChange("query", v)}
-          />
-          <div className="var-hint-trigger" onClick={() => setShowVarHint((v) => !v)}>
-            <ChevronDown size={11} style={{ transform: showVarHint ? "rotate(180deg)" : "none" }} />
-            Variáveis de contexto disponíveis ({contextVariables.length})
-          </div>
-          {showVarHint && (
-            <div className="var-hint-list">
-              {contextVariables.map((cv) => (
-                <div
-                  key={cv.id}
-                  className="var-hint-item"
-                  onClick={() => handleChange("query", (config.query ?? "") + "${" + cv.key + "}")}
-                >
-                  <code>{"${" + cv.key + "}"}</code>
-                  <span>{cv.description}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-    </>
-  );
+  const isDbConnector =
+    ct.includes("connector.db") || ct.includes("connector.cloud") || ct.includes("connector.api");
+  const isDbTarget =
+    ct.includes(".output") || ct === "core.database.target" || isDuckDbOutput;
 
   return (
     <>
       <div className="sidebar-properties" id="property-panel">
-        {/* Header: single click = sidebar (current), double click = pop-out */}
+        {/* Header */}
         <div
           className="prop-header"
           onDoubleClick={() => onPopOut?.(selectedNode)}
@@ -344,7 +411,7 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
               <button
                 type="button"
                 className="icon-btn"
-                title="Abrir em janela flutuante (ou duplo clique no header)"
+                title="Abrir em janela flutuante"
                 onClick={() => onPopOut(selectedNode)}
               >
                 <Maximize2 size={12} />
@@ -363,7 +430,7 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
           </div>
         </div>
 
-        {/* Tabs: Config | Schema */}
+        {/* Tabs */}
         <div className="prop-tabs">
           <button
             className={`prop-tab ${activeTab === "config" ? "active" : ""}`}
@@ -376,9 +443,7 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
             onClick={() => setActiveTab("schema")}
           >
             Schema
-            {schema.length > 0 && (
-              <span className="prop-tab-badge">{schema.length}</span>
-            )}
+            {schema.length > 0 && <span className="prop-tab-badge">{schema.length}</span>}
           </button>
           {activeTab === "schema" && (
             <button
@@ -399,474 +464,367 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
               <label className="form-label">Nome / Rótulo no Canvas</label>
               <DebouncedInput
                 value={data.label || id}
-                placeholder="Ex: Minha Consulta SQL"
+                placeholder="Ex: Consultas de Clientes"
                 onChange={(v) => onUpdateLabel?.(id, v)}
               />
             </div>
 
-            {/* Node ID */}
+            {/* Editable Node ID (TASK-036) */}
             <div className="form-group">
-              <label className="form-label">Node ID</label>
-              <input
-                className="form-input"
-                value={id}
-                disabled
-                style={{ opacity: 0.55, cursor: "not-allowed", fontFamily: "var(--font-mono)", fontSize: "0.72rem" }}
-              />
+              <label className="form-label" style={{ display: "flex", justifyContent: "space-between" }}>
+                <span>ID do Nó (Node ID)</span>
+                {!isRenamingId ? (
+                  <span
+                    style={{ color: "var(--accent-cyan)", cursor: "pointer", fontSize: "0.68rem" }}
+                    onClick={() => setIsRenamingId(true)}
+                  >
+                    ✏️ Editar ID
+                  </span>
+                ) : (
+                  <span
+                    style={{ color: "var(--status-success)", cursor: "pointer", fontSize: "0.68rem" }}
+                    onClick={handleApplyNodeId}
+                  >
+                    <Check size={11} /> Salvar
+                  </span>
+                )}
+              </label>
+              <div style={{ display: "flex", gap: 6 }}>
+                <input
+                  className="form-input"
+                  style={{ fontFamily: "var(--font-mono)", fontSize: "0.75rem" }}
+                  value={editingNodeId}
+                  disabled={!isRenamingId}
+                  onChange={(e) => setEditingNodeId(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleApplyNodeId()}
+                />
+                {isRenamingId && (
+                  <button className="btn btn-secondary btn-xs" onClick={handleApplyNodeId}>
+                    OK
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Type */}
             <div className="form-group">
-              <label className="form-label">Tipo</label>
-              <div style={{ fontSize: "0.72rem", color: "var(--text-secondary)", fontFamily: "var(--font-mono)", background: "var(--bg-card)", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border-subtle)" }}>
+              <label className="form-label">Tipo de Componente</label>
+              <div
+                style={{
+                  fontSize: "0.72rem",
+                  color: "var(--text-secondary)",
+                  fontFamily: "var(--font-mono)",
+                  background: "var(--bg-card)",
+                  padding: "6px 10px",
+                  borderRadius: 6,
+                  border: "1px solid var(--border-subtle)",
+                }}
+              >
                 {ct}
               </div>
             </div>
 
-            {/* ─── File Source ── */}
+            {/* ─── Upstream Suggestion Chips for Iteration (TASK-030) ─── */}
+            {upstreamNodes.length > 0 && (
+              <div className="form-group upstream-chips-group">
+                <label className="form-label" style={{ color: "var(--accent-cyan)", fontSize: "0.72rem" }}>
+                  ⚡ Colunas de Nós a Montante (Iteração Presumida)
+                </label>
+                <div className="upstream-chips-list">
+                  {upstreamNodes.map((un) => {
+                    const unSchema: SchemaColumn[] = (un.data as any).schema || [];
+                    return (
+                      <div key={un.id} style={{ marginBottom: 4 }}>
+                        <div style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginBottom: 2 }}>
+                          {un.data.label || un.id} ({un.id}):
+                        </div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                          {unSchema.map((c) => (
+                            <button
+                              key={c.id}
+                              type="button"
+                              className="token-chip"
+                              title={`Clique para inserir {${un.id}.${c.name}} na query`}
+                              onClick={() => {
+                                const token = `{${un.id}.${c.name}}`;
+                                handleChange("query", (config.query ?? "") + " " + token);
+                              }}
+                            >
+                              <code>{`{${un.id}.${c.name}}`}</code>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* ─── Data Mapper Studio Transform ─── */}
+            {isTMap && (
+              <div className="form-group">
+                <label className="form-label">
+                  <GitMerge size={12} color="var(--accent-purple)" /> Data Mapper Studio
+                </label>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  style={{ width: "100%", padding: "8px 12px" }}
+                  onClick={() => setShowTMapModal(true)}
+                >
+                  <GitMerge size={14} /> Abrir Data Mapper Studio
+                </button>
+                <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginTop: 6 }}>
+                  Lookups configurados: {(config.lookups || []).length} | Saídas: {(config.outputs || []).length}
+                </div>
+              </div>
+            )}
+
+            {/* ─── DuckDB Input Dedicated (TASK-033) ─── */}
+            {isDuckDbInput && (
+              <>
+                <div className="form-group">
+                  <label className="form-label">Arquivo de Banco DuckDB (.duckdb ou :memory:)</label>
+                  <DebouncedInput
+                    value={config.database_path ?? ":memory:"}
+                    placeholder=":memory: ou data/meu_banco.duckdb"
+                    onChange={(v) => handleChange("database_path", v)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Query SQL DuckDB</label>
+                  <DebouncedTextarea
+                    value={config.query ?? ""}
+                    placeholder={"SELECT * FROM read_parquet('data/sales.parquet')\nWHERE valor > 100"}
+                    style={{ minHeight: 90, fontFamily: "var(--font-mono)", fontSize: "0.78rem" }}
+                    onChange={(v) => handleChange("query", v)}
+                  />
+                </div>
+              </>
+            )}
+
+            {/* ─── DuckDB Output Dedicated (TASK-033 & TASK-034) ─── */}
+            {isDuckDbOutput && (
+              <>
+                <div className="form-group">
+                  <label className="form-label">Arquivo de Banco DuckDB Destino</label>
+                  <DebouncedInput
+                    value={config.database_path ?? "data/output.duckdb"}
+                    placeholder="data/output.duckdb"
+                    onChange={(v) => handleChange("database_path", v)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Tabela de Destino</label>
+                  <DebouncedInput
+                    value={config.table ?? ""}
+                    placeholder="nome_da_tabela"
+                    onChange={(v) => handleChange("table", v)}
+                  />
+                </div>
+                <TableActionsSection config={config} onChange={handleChange} />
+              </>
+            )}
+
+            {/* ─── File Source with In-Memory DuckDB View (TASK-033) ── */}
             {isFileSource && (
               <>
                 <div className="form-group">
-                  <label className="form-label">Caminho do Arquivo</label>
-                  <DebouncedInput value={config.path ?? ""} placeholder="data/sales.csv" onChange={(v) => handleChange("path", v)} />
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                    <label className="form-label" style={{ margin: 0 }}>Caminho do Arquivo</label>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <button
+                        type="button"
+                        className="badge"
+                        style={{ cursor: "pointer", fontSize: "0.68rem", background: "rgba(0,229,255,0.08)", borderColor: "rgba(0,229,255,0.3)" }}
+                        onClick={() => handleChange("path", "data/users.csv")}
+                        title="Usar arquivo de exemplo users.csv"
+                      >
+                        users.csv
+                      </button>
+                      <button
+                        type="button"
+                        className="badge"
+                        style={{ cursor: "pointer", fontSize: "0.68rem", background: "rgba(0,229,255,0.08)", borderColor: "rgba(0,229,255,0.3)" }}
+                        onClick={() => handleChange("path", "data/samples/customers.csv")}
+                        title="Usar arquivo de exemplo customers.csv"
+                      >
+                        customers.csv
+                      </button>
+                    </div>
+                  </div>
+                  <DebouncedInput
+                    value={config.path ?? ""}
+                    placeholder="data/users.csv"
+                    onChange={(v) => handleChange("path", v)}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ marginTop: 6, width: "100%", justifyContent: "center", fontSize: "0.78rem" }}
+                    onClick={handleDirectInfer}
+                    disabled={inferringDirect}
+                  >
+                    {inferringDirect ? <Loader2 size={13} className="spin" /> : <Wand2 size={13} />}
+                    {inferringDirect ? "Inspecionando arquivo..." : "🔍 Inferir Schema deste Arquivo"}
+                  </button>
+                  {directInferMessage && (
+                    <div
+                      style={{
+                        marginTop: 6,
+                        padding: "6px 8px",
+                        borderRadius: 6,
+                        fontSize: "0.72rem",
+                        background: directInferMessage.type === "success" ? "rgba(34,197,94,0.15)" : "rgba(244,63,94,0.15)",
+                        color: directInferMessage.type === "success" ? "var(--status-success)" : "#fca5a5",
+                        border: `1px solid ${directInferMessage.type === "success" ? "var(--status-success)" : "var(--status-danger)"}`
+                      }}
+                    >
+                      {directInferMessage.text}
+                    </div>
+                  )}
                 </div>
                 <div className="form-group">
                   <label className="form-label">Formato</label>
-                  <select className="form-select" value={config.format ?? "csv"} onChange={(e) => handleChange("format", e.target.value)}>
-                    <option value="csv">CSV</option>
-                    <option value="tsv">TSV</option>
+                  <select
+                    className="form-select"
+                    value={config.format ?? "csv"}
+                    onChange={(e) => handleChange("format", e.target.value)}
+                  >
+                    <option value="csv">CSV / Delimitado</option>
                     <option value="parquet">Apache Parquet</option>
                     <option value="json">JSON / NDJSON</option>
                     <option value="excel">Excel (XLSX)</option>
-                    <option value="orc">Apache ORC</option>
-                    <option value="avro">Apache Avro</option>
                   </select>
                 </div>
-                {(config.format === "csv" || config.format === "tsv" || !config.format) && (
-                  <div className="conn-form-row">
-                    <div className="form-group">
-                      <label className="form-label">Delimitador</label>
-                      <DebouncedInput value={config.delimiter ?? ","} style={{ maxWidth: 70, fontFamily: "var(--font-mono)" }} onChange={(v) => handleChange("delimiter", v)} />
+
+                {/* Opção DuckDB in-memory */}
+                <div className="form-group" style={{ background: "var(--bg-card)", padding: 10, borderRadius: 6 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "0.75rem", fontWeight: 600 }}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(config.enable_duckdb_view)}
+                      onChange={(e) => handleChange("enable_duckdb_view", e.target.checked)}
+                    />
+                    <span>⚡ Tratar como Tabela DuckDB em Memória</span>
+                  </label>
+                  {config.enable_duckdb_view && (
+                    <div style={{ marginTop: 8 }}>
+                      <label className="form-label" style={{ fontSize: "0.7rem" }}>
+                        Query SQL de Leitura (Tabela: <code>source_data</code>)
+                      </label>
+                      <DebouncedTextarea
+                        value={config.duckdb_query ?? ""}
+                        placeholder="SELECT * FROM source_data WHERE total > 0"
+                        style={{ minHeight: 70, fontFamily: "var(--font-mono)", fontSize: "0.75rem" }}
+                        onChange={(v) => handleChange("duckdb_query", v)}
+                      />
                     </div>
-                    <div className="form-group">
-                      <label className="form-label">Encoding</label>
-                      <select className="form-select" value={config.encoding ?? "utf-8"} onChange={(e) => handleChange("encoding", e.target.value)}>
-                        <option value="utf-8">UTF-8</option>
-                        <option value="utf-8-sig">UTF-8 BOM</option>
-                        <option value="latin-1">Latin-1</option>
-                        <option value="cp1252">Windows-1252</option>
-                      </select>
+                  )}
+                </div>
+              </>
+            )}
+
+            {/* ─── DB Connectors Sources (PostgreSQL, Oracle, MySQL, etc.) ── */}
+            {!isDuckDbInput && isDbConnector && !isDbTarget && (
+              <>
+                <div className="form-group">
+                  <label className="form-label">
+                    <Database size={12} /> Conexão ({activeEnvironment.toUpperCase()})
+                  </label>
+                  <ConnectionSelect
+                    value={config.connection_ref ?? ""}
+                    connections={connections}
+                    activeEnvironment={activeEnvironment}
+                    onChange={(v) => handleChange("connection_ref", v)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Query SQL</label>
+                  <DebouncedTextarea
+                    value={config.query ?? ""}
+                    placeholder={"SELECT *\nFROM tabela\nWHERE ativo = 1"}
+                    style={{ minHeight: 90, fontFamily: "var(--font-mono)", fontSize: "0.78rem" }}
+                    onChange={(v) => handleChange("query", v)}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ marginTop: 6, width: "100%", justifyContent: "center", fontSize: "0.78rem" }}
+                    onClick={handleDirectInfer}
+                    disabled={inferringDirect}
+                  >
+                    {inferringDirect ? <Loader2 size={13} className="spin" /> : <Wand2 size={13} />}
+                    {inferringDirect ? "Inspecionando query..." : "🔍 Inferir Schema da Query SQL"}
+                  </button>
+                  {directInferMessage && (
+                    <div
+                      style={{
+                        marginTop: 6,
+                        padding: "6px 8px",
+                        borderRadius: 6,
+                        fontSize: "0.72rem",
+                        background: directInferMessage.type === "success" ? "rgba(34,197,94,0.15)" : "rgba(244,63,94,0.15)",
+                        color: directInferMessage.type === "success" ? "var(--status-success)" : "#fca5a5",
+                        border: `1px solid ${directInferMessage.type === "success" ? "var(--status-success)" : "var(--status-danger)"}`
+                      }}
+                    >
+                      {directInferMessage.text}
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
               </>
             )}
 
-            {/* ─── DB Sources ── */}
-            {isDbConnector && !isOutput && (isOracleOrSql || isDatabricks) && (
-              <DbConnectionSection showQuery={true} showTable={false} />
-            )}
-
-            {/* ─── Oracle special ── */}
-            {ct.includes("oracle") && !isOutput && (
-              <div className="form-group">
-                <label className="form-label">Service Name / SID</label>
-                <DebouncedInput value={config.serviceName ?? ""} placeholder="ORCL" onChange={(v) => handleChange("serviceName", v)} />
-              </div>
-            )}
-
-            {/* ─── Databricks special ── */}
-            {isDatabricks && !isOutput && (
-              <div className="conn-form-row">
-                <div className="form-group">
-                  <label className="form-label">Catalog</label>
-                  <DebouncedInput value={config.catalog ?? ""} placeholder="hive_metastore" onChange={(v) => handleChange("catalog", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Schema</label>
-                  <DebouncedInput value={config.schema ?? ""} placeholder="default" onChange={(v) => handleChange("schema", v)} />
-                </div>
-              </div>
-            )}
-
-            {/* ─── Cloud Source ── */}
-            {(isS3 || isAzureBlob || isGcs) && !isOutput && (
+            {/* ─── DB Connectors Targets (PostgreSQL Output, etc.) ── */}
+            {!isDuckDbOutput && isDbTarget && (
               <>
                 <div className="form-group">
-                  <label className="form-label"><Database size={12} /> Conexão</label>
-                  <ConnectionSelect value={config.connection_ref ?? ""} connections={connections} activeEnvironment={activeEnvironment} onChange={(v) => handleChange("connection_ref", v)} />
+                  <label className="form-label">
+                    <Database size={12} /> Conexão ({activeEnvironment.toUpperCase()})
+                  </label>
+                  <ConnectionSelect
+                    value={config.connection_ref ?? ""}
+                    connections={connections}
+                    activeEnvironment={activeEnvironment}
+                    onChange={(v) => handleChange("connection_ref", v)}
+                  />
                 </div>
                 <div className="form-group">
-                  <label className="form-label">Bucket / Container</label>
-                  <DebouncedInput value={config.bucket ?? ""} placeholder="meu-bucket" onChange={(v) => handleChange("bucket", v)} />
+                  <label className="form-label">Tabela de Destino</label>
+                  <DebouncedInput
+                    value={config.table ?? ""}
+                    placeholder="schema.tabela"
+                    onChange={(v) => handleChange("table", v)}
+                  />
                 </div>
-                <div className="form-group">
-                  <label className="form-label">Prefixo / Caminho</label>
-                  <DebouncedInput value={config.prefix ?? ""} placeholder="dados/2024/" onChange={(v) => handleChange("prefix", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Formato</label>
-                  <select className="form-select" value={config.format ?? "parquet"} onChange={(e) => handleChange("format", e.target.value)}>
-                    <option value="parquet">Parquet</option>
-                    <option value="csv">CSV</option>
-                    <option value="json">JSON Lines</option>
-                    <option value="orc">ORC</option>
-                  </select>
-                </div>
+                <TableActionsSection config={config} onChange={handleChange} />
               </>
-            )}
-
-            {/* ─── REST API Source ── */}
-            {isRestApi && !isOutput && (
-              <>
-                <div className="form-group">
-                  <label className="form-label"><Database size={12} /> Conexão</label>
-                  <ConnectionSelect value={config.connection_ref ?? ""} connections={connections} activeEnvironment={activeEnvironment} onChange={(v) => handleChange("connection_ref", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Endpoint</label>
-                  <DebouncedInput value={config.endpoint ?? ""} placeholder="/users?page={page}" onChange={(v) => handleChange("endpoint", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Tipo de Paginação</label>
-                  <select className="form-select" value={config.pagination_type ?? "none"} onChange={(e) => handleChange("pagination_type", e.target.value)}>
-                    <option value="none">Sem Paginação</option>
-                    <option value="page_number">Número de Página</option>
-                    <option value="cursor">Cursor</option>
-                    <option value="offset_limit">Offset + Limit</option>
-                    <option value="link_header">Link Header</option>
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Caminho dos Dados (JSONPath)</label>
-                  <DebouncedInput value={config.data_path ?? ""} placeholder="data.items" onChange={(v) => handleChange("data_path", v)} />
-                </div>
-              </>
-            )}
-
-            {/* ─── ScyllaDB Source ── */}
-            {isScylla && !isOutput && (
-              <>
-                <div className="form-group">
-                  <label className="form-label"><Database size={12} /> Conexão ScyllaDB</label>
-                  <ConnectionSelect value={config.connection_ref ?? ""} connections={connections} activeEnvironment={activeEnvironment} onChange={(v) => handleChange("connection_ref", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Keyspace</label>
-                  <DebouncedInput value={config.keyspace ?? ""} placeholder="analytics" onChange={(v) => handleChange("keyspace", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Tabela CQL</label>
-                  <DebouncedInput value={config.table ?? ""} placeholder="users_by_region" onChange={(v) => handleChange("table", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Consulta CQL Personalizada (opcional)</label>
-                  <DebouncedTextarea value={config.query ?? ""} placeholder="SELECT * FROM users_by_region WHERE status = 'ACTIVE'" onChange={(v) => handleChange("query", v)} />
-                </div>
-              </>
-            )}
-
-            {/* ─── Kafka Consumer Source ── */}
-            {isKafka && !isOutput && (
-              <>
-                <div className="form-group">
-                  <label className="form-label"><Server size={12} /> Conexão Kafka</label>
-                  <ConnectionSelect value={config.connection_ref ?? ""} connections={connections} activeEnvironment={activeEnvironment} onChange={(v) => handleChange("connection_ref", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Tópico de Origem</label>
-                  <DebouncedInput value={config.topic ?? ""} placeholder="events.transactions" onChange={(v) => handleChange("topic", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Consumer Group ID</label>
-                  <DebouncedInput value={config.consumer_group ?? ""} placeholder="rocket-consumer-group" onChange={(v) => handleChange("consumer_group", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Limite de Mensagens (Lote)</label>
-                  <input className="form-input" type="number" value={config.max_messages ?? 1000} onChange={(e) => handleChange("max_messages", parseInt(e.target.value))} />
-                </div>
-              </>
-            )}
-
-            {/* ─── AWS SQS Consumer Source ── */}
-            {isSqs && !isOutput && (
-              <>
-                <div className="form-group">
-                  <label className="form-label"><Layers size={12} /> Conexão SQS</label>
-                  <ConnectionSelect value={config.connection_ref ?? ""} connections={connections} activeEnvironment={activeEnvironment} onChange={(v) => handleChange("connection_ref", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Queue URL ou Nome da Fila</label>
-                  <DebouncedInput value={config.queue_url ?? ""} placeholder="https://sqs.sa-east-1.amazonaws.com/123456/minha-fila" onChange={(v) => handleChange("queue_url", v)} />
-                </div>
-                <div className="conn-form-row">
-                  <div className="form-group">
-                    <label className="form-label">Max Mensagens</label>
-                    <input className="form-input" type="number" value={config.max_messages ?? 10} onChange={(e) => handleChange("max_messages", parseInt(e.target.value))} />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Wait Time (seg)</label>
-                    <input className="form-input" type="number" value={config.wait_time_seconds ?? 2} onChange={(e) => handleChange("wait_time_seconds", parseInt(e.target.value))} />
-                  </div>
-                </div>
-              </>
-            )}
-
-            {/* ─── Filter ── */}
-            {isFilter && (
-              <div className="form-group">
-                <label className="form-label">Expressão do Predicado</label>
-                <DebouncedTextarea value={config.expression ?? ""} placeholder={"status == 'ACTIVE' and valor > 100"} onChange={(v) => handleChange("expression", v)} />
-                <span style={{ fontSize: "0.68rem", color: "var(--text-muted)" }}>Sintaxe Polars / Python</span>
-              </div>
-            )}
-
-            {/* ─── Select ── */}
-            {isSelect && (
-              <div className="form-group">
-                <label className="form-label">Colunas (vírgula)</label>
-                <DebouncedInput value={Array.isArray(config.columns) ? config.columns.join(", ") : ""} placeholder="id, nome, email" onChange={(v) => handleChange("columns", v.split(",").map((c) => c.trim()).filter(Boolean))} />
-              </div>
-            )}
-
-            {/* ─── Join ── */}
-            {isJoin && (
-              <>
-                <div className="form-group">
-                  <label className="form-label">Tipo de Join</label>
-                  <select className="form-select" value={config.join_type ?? "inner"} onChange={(e) => handleChange("join_type", e.target.value)}>
-                    <option value="inner">Inner Join</option>
-                    <option value="left">Left Outer</option>
-                    <option value="right">Right Outer</option>
-                    <option value="outer">Full Outer</option>
-                    <option value="semi">Semi Join</option>
-                    <option value="anti">Anti Join</option>
-                    <option value="cross">Cross Join</option>
-                  </select>
-                </div>
-                <div className="conn-form-row">
-                  <div className="form-group">
-                    <label className="form-label">Chaves Esquerda</label>
-                    <DebouncedInput value={Array.isArray(config.left_keys) ? config.left_keys.join(", ") : ""} placeholder="customer_id" onChange={(v) => handleChange("left_keys", v.split(",").map((k) => k.trim()).filter(Boolean))} />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Chaves Direita</label>
-                    <DebouncedInput value={Array.isArray(config.right_keys) ? config.right_keys.join(", ") : ""} placeholder="id" onChange={(v) => handleChange("right_keys", v.split(",").map((k) => k.trim()).filter(Boolean))} />
-                  </div>
-                </div>
-              </>
-            )}
-
-            {/* ─── Aggregate ── */}
-            {isAggregate && (
-              <>
-                <div className="form-group">
-                  <label className="form-label">GROUP BY</label>
-                  <DebouncedInput value={Array.isArray(config.group_by) ? config.group_by.join(", ") : ""} placeholder="regiao, produto" onChange={(v) => handleChange("group_by", v.split(",").map((c) => c.trim()).filter(Boolean))} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Agregações</label>
-                  <DebouncedTextarea value={config.aggregations_raw ?? ""} placeholder={"SUM(valor) AS total\nCOUNT(*) AS qtd\nAVG(preco) AS media"} onChange={(v) => handleChange("aggregations_raw", v)} />
-                </div>
-              </>
-            )}
-
-            {/* ─── Sort ── */}
-            {isSort && (
-              <div className="form-group">
-                <label className="form-label">ORDER BY</label>
-                <DebouncedTextarea value={config.order_by_raw ?? ""} placeholder={"data DESC\nvalor ASC"} onChange={(v) => handleChange("order_by_raw", v)} />
-              </div>
-            )}
-
-            {/* ─── Deduplicate ── */}
-            {isDeduplicate && (
-              <>
-                <div className="form-group">
-                  <label className="form-label">Colunas de Chave</label>
-                  <DebouncedInput value={Array.isArray(config.key_columns) ? config.key_columns.join(", ") : ""} placeholder="cpf, email" onChange={(v) => handleChange("key_columns", v.split(",").map((c) => c.trim()).filter(Boolean))} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Manter</label>
-                  <select className="form-select" value={config.keep ?? "first"} onChange={(e) => handleChange("keep", e.target.value)}>
-                    <option value="first">Primeira ocorrência</option>
-                    <option value="last">Última ocorrência</option>
-                  </select>
-                </div>
-              </>
-            )}
-
-            {/* ─── Map Expression ── */}
-            {isMapExpr && (
-              <div className="form-group">
-                <label className="form-label">Mapeamentos</label>
-                <DebouncedTextarea style={{ minHeight: 100 }} value={config.mappings_raw ?? ""} placeholder={"nome_completo = first_name + ' ' + last_name\nvalor_brl = valor * 5.2"} onChange={(v) => handleChange("mappings_raw", v)} />
-              </div>
             )}
 
             {/* ─── File Target ── */}
             {isFileTarget && (
               <>
                 <div className="form-group">
-                  <label className="form-label">Caminho de Destino</label>
-                  <DebouncedInput value={config.path ?? ""} placeholder="output/resultado.parquet" onChange={(v) => handleChange("path", v)} />
+                  <label className="form-label">Caminho do Arquivo Destino</label>
+                  <DebouncedInput
+                    value={config.path ?? ""}
+                    placeholder="data/output.parquet"
+                    onChange={(v) => handleChange("path", v)}
+                  />
                 </div>
                 <div className="form-group">
                   <label className="form-label">Formato</label>
-                  <select className="form-select" value={config.format ?? "parquet"} onChange={(e) => handleChange("format", e.target.value)}>
+                  <select
+                    className="form-select"
+                    value={config.format ?? "parquet"}
+                    onChange={(e) => handleChange("format", e.target.value)}
+                  >
                     <option value="parquet">Apache Parquet</option>
                     <option value="csv">CSV</option>
-                    <option value="json">JSON Lines</option>
-                    <option value="excel">Excel (XLSX)</option>
-                    <option value="delta">Delta Lake</option>
+                    <option value="json">JSON</option>
                   </select>
-                </div>
-                <WriteMode />
-              </>
-            )}
-
-            {/* ─── DB/Databricks Output ── */}
-            {isOutput && (isOracleOrSql || isDatabricks) && (
-              <>
-                <DbConnectionSection showQuery={false} showTable={true} />
-                <div className="form-group">
-                  <label className="form-label">Schema</label>
-                  <DebouncedInput value={config.schema ?? ""} placeholder="dbo ou public" onChange={(v) => handleChange("schema", v)} />
-                </div>
-                <WriteMode />
-                <div className="form-group">
-                  <label className="form-label">Batch Size</label>
-                  <input className="form-input" type="number" value={config.batch_size ?? 5000} onChange={(e) => handleChange("batch_size", parseInt(e.target.value))} />
-                </div>
-              </>
-            )}
-
-            {/* ─── Cloud Output ── */}
-            {isOutput && (isS3 || isAzureBlob || isGcs) && (
-              <>
-                <div className="form-group">
-                  <label className="form-label"><Database size={12} /> Conexão</label>
-                  <ConnectionSelect value={config.connection_ref ?? ""} connections={connections} activeEnvironment={activeEnvironment} onChange={(v) => handleChange("connection_ref", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Bucket</label>
-                  <DebouncedInput value={config.bucket ?? ""} placeholder="meu-bucket" onChange={(v) => handleChange("bucket", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Prefixo</label>
-                  <DebouncedInput value={config.prefix ?? ""} placeholder="output/2024/" onChange={(v) => handleChange("prefix", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Formato</label>
-                  <select className="form-select" value={config.format ?? "parquet"} onChange={(e) => handleChange("format", e.target.value)}>
-                    <option value="parquet">Parquet</option>
-                    <option value="csv">CSV</option>
-                    <option value="json">JSON Lines</option>
-                    <option value="orc">ORC</option>
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Particionado Por</label>
-                  <DebouncedInput value={Array.isArray(config.partitioned_by) ? config.partitioned_by.join(", ") : ""} placeholder="ano, mes" onChange={(v) => handleChange("partitioned_by", v.split(",").map((c) => c.trim()).filter(Boolean))} />
-                </div>
-                <WriteMode />
-              </>
-            )}
-
-            {/* ─── REST Output ── */}
-            {isOutput && isRestApi && (
-              <>
-                <div className="form-group">
-                  <label className="form-label"><Database size={12} /> Conexão</label>
-                  <ConnectionSelect value={config.connection_ref ?? ""} connections={connections} activeEnvironment={activeEnvironment} onChange={(v) => handleChange("connection_ref", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Endpoint</label>
-                  <DebouncedInput value={config.endpoint ?? ""} placeholder="/records" onChange={(v) => handleChange("endpoint", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Método HTTP</label>
-                  <select className="form-select" value={config.method ?? "POST"} onChange={(e) => handleChange("method", e.target.value)}>
-                    <option value="POST">POST</option>
-                    <option value="PUT">PUT</option>
-                    <option value="PATCH">PATCH</option>
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Batch Size</label>
-                  <input className="form-input" type="number" value={config.batch_size ?? 100} onChange={(e) => handleChange("batch_size", parseInt(e.target.value))} />
-                </div>
-              </>
-            )}
-
-            {/* ─── ScyllaDB Output ── */}
-            {isOutput && isScylla && (
-              <>
-                <div className="form-group">
-                  <label className="form-label"><Database size={12} /> Conexão ScyllaDB</label>
-                  <ConnectionSelect value={config.connection_ref ?? ""} connections={connections} activeEnvironment={activeEnvironment} onChange={(v) => handleChange("connection_ref", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Tabela de Destino</label>
-                  <DebouncedInput value={config.table ?? ""} placeholder="minha_tabela" onChange={(v) => handleChange("table", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Batch Size (CQL)</label>
-                  <input className="form-input" type="number" value={config.batch_size ?? 1000} onChange={(e) => handleChange("batch_size", parseInt(e.target.value))} />
-                </div>
-              </>
-            )}
-
-            {/* ─── Kafka Producer Output ── */}
-            {isOutput && isKafka && (
-              <>
-                <div className="form-group">
-                  <label className="form-label"><Server size={12} /> Conexão Kafka</label>
-                  <ConnectionSelect value={config.connection_ref ?? ""} connections={connections} activeEnvironment={activeEnvironment} onChange={(v) => handleChange("connection_ref", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Tópico de Destino</label>
-                  <DebouncedInput value={config.topic ?? ""} placeholder="events.output" onChange={(v) => handleChange("topic", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Coluna de Chave (Opcional)</label>
-                  <DebouncedInput value={config.key_column ?? ""} placeholder="id_ou_cpf" onChange={(v) => handleChange("key_column", v)} />
-                </div>
-              </>
-            )}
-
-            {/* ─── AWS SQS Output ── */}
-            {isOutput && isSqs && (
-              <>
-                <div className="form-group">
-                  <label className="form-label"><Layers size={12} /> Conexão SQS</label>
-                  <ConnectionSelect value={config.connection_ref ?? ""} connections={connections} activeEnvironment={activeEnvironment} onChange={(v) => handleChange("connection_ref", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Queue URL ou Nome da Fila</label>
-                  <DebouncedInput value={config.queue_url ?? ""} placeholder="https://sqs.sa-east-1.amazonaws.com/123456/minha-fila" onChange={(v) => handleChange("queue_url", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Message Group ID (para Filas FIFO)</label>
-                  <DebouncedInput value={config.message_group_id ?? ""} placeholder="default_group" onChange={(v) => handleChange("message_group_id", v)} />
-                </div>
-              </>
-            )}
-
-            {/* ─── AWS SNS Output ── */}
-            {isOutput && isSns && (
-              <>
-                <div className="form-group">
-                  <label className="form-label"><Zap size={12} /> Conexão SNS</label>
-                  <ConnectionSelect value={config.connection_ref ?? ""} connections={connections} activeEnvironment={activeEnvironment} onChange={(v) => handleChange("connection_ref", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Topic ARN</label>
-                  <DebouncedInput value={config.topic_arn ?? ""} placeholder="arn:aws:sns:sa-east-1:123456789012:meu-topico" onChange={(v) => handleChange("topic_arn", v)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Assunto da Notificação (Subject)</label>
-                  <DebouncedInput value={config.subject ?? ""} placeholder="Alerta de Pipeline" onChange={(v) => handleChange("subject", v)} />
                 </div>
               </>
             )}
@@ -878,25 +836,61 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
             <SchemaEditor
               schema={schema}
               onChange={handleSchemaChange}
-              onInferRequest={canHaveSchema ? handleInferSchema : undefined}
-              canInfer={canHaveSchema}
-              inferLabel={isFileSource || isFileTarget ? "Inferir do Arquivo" : "Inferir da Query"}
-              compact
+              onInferRequest={handleInferSchema}
+              canInfer={!upstreamSchema || upstreamSchema.length === 0}
+              inferLabel="Inferir Schema Real"
+              upstreamSchema={upstreamSchema}
+              upstreamNodeLabel={upstreamNodeLabel}
+              nodeLabel={data.label || id}
+              onOpenModal={() => setShowSchemaModal(true)}
             />
           </div>
         )}
       </div>
 
-      {/* Schema full-screen modal */}
+      {/* Schema Modal */}
       {showSchemaModal && (
         <SchemaEditorModal
           schema={schema}
           onChange={handleSchemaChange}
-          onInferRequest={canHaveSchema ? handleInferSchema : undefined}
-          canInfer={canHaveSchema}
-          inferLabel={isFileSource || isFileTarget ? "Inferir do Arquivo" : "Inferir da Query"}
-          nodeLabel={data.label || id}
           onClose={() => setShowSchemaModal(false)}
+          nodeLabel={data.label || id}
+          onInferRequest={handleInferSchema}
+          canInfer={!upstreamSchema || upstreamSchema.length === 0}
+          upstreamSchema={upstreamSchema}
+          upstreamNodeLabel={upstreamNodeLabel}
+        />
+      )}
+
+      {/* tMap Studio Modal */}
+      {showTMapModal && (
+        <TMapModal
+          nodeId={id}
+          nodeLabel={data.label || id}
+          config={config as TMapConfig}
+          mainSchema={(upstreamNodes[0]?.data as any)?.schema || schema || []}
+          lookupSchemas={(() => {
+            const lkSchemas: Record<string, SchemaColumn[]> = {};
+            upstreamNodes.slice(1).forEach((un) => {
+              lkSchemas[un.id] = (un.data as any)?.schema || [];
+            });
+            return lkSchemas;
+          })()}
+          availableUpstreamNodes={upstreamNodes.map((un) => ({
+            id: un.id,
+            label: un.data?.label || un.id,
+            schema: (un.data as any)?.schema || [],
+          }))}
+          downstreamNodes={downstreamNodes}
+          onSave={(newCfg, targetSchemaUpdates) => {
+            onUpdateConfig(id, { ...config, ...newCfg });
+            if (targetSchemaUpdates && targetSchemaUpdates.length > 0) {
+              targetSchemaUpdates.forEach((up) => {
+                onUpdateSchema?.(up.nodeId, up.schema);
+              });
+            }
+          }}
+          onClose={() => setShowTMapModal(false)}
         />
       )}
     </>

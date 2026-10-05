@@ -4,15 +4,31 @@
 import { ComponentDefinition } from "../types";
 
 export const EXPANDED_CATALOG: ComponentDefinition[] = [
-  // ─── SOURCES: Files ─────────────────────────────────────────
+  // ─── SOURCES: DuckDB & Files ────────────────────────────────
+  {
+    type_id: "connector.db.duckdb",
+    version: "1.0.0",
+    name: "DuckDB Input",
+    category: "source",
+    description: "Executa consultas analíticas SQL em alta velocidade com DuckDB sobre arquivos ou banco .duckdb",
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" }
+    ],
+    config_schema: { database_path: "string", query: "string", read_only: "boolean" },
+    capabilities: { supports_filter_pushdown: true, supports_projection_pushdown: true, supports_chunked_read: true, supports_bulk_write: false },
+  },
   {
     type_id: "core.file.source.csv",
     version: "1.0.0",
     name: "CSV / Delimitado",
     category: "source",
-    description: "Lê arquivos CSV, TSV ou delimitados",
-    ports: [{ name: "main", direction: "output", type: "dataset" }],
-    config_schema: { path: "string", delimiter: "string", encoding: "string", has_header: "boolean" },
+    description: "Lê arquivos CSV, TSV ou delimitados com suporte a DuckDB in-memory",
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" }
+    ],
+    config_schema: { path: "string", delimiter: "string", encoding: "string", has_header: "boolean", enable_duckdb_view: "boolean", duckdb_query: "string" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: true, supports_chunked_read: true, supports_bulk_write: false },
   },
   {
@@ -20,9 +36,12 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     version: "1.0.0",
     name: "Apache Parquet",
     category: "source",
-    description: "Lê arquivos Parquet (colunares, alta performance)",
-    ports: [{ name: "main", direction: "output", type: "dataset" }],
-    config_schema: { path: "string" },
+    description: "Lê arquivos Parquet (colunares, alta performance) com suporte a DuckDB in-memory",
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" }
+    ],
+    config_schema: { path: "string", enable_duckdb_view: "boolean", duckdb_query: "string" },
     capabilities: { supports_filter_pushdown: true, supports_projection_pushdown: true, supports_chunked_read: true, supports_bulk_write: false },
   },
   {
@@ -30,9 +49,12 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     version: "1.0.0",
     name: "JSON / JSON Lines",
     category: "source",
-    description: "Lê arquivos JSON ou JSON Lines (NDJSON)",
-    ports: [{ name: "main", direction: "output", type: "dataset" }],
-    config_schema: { path: "string", multiline: "boolean" },
+    description: "Lê arquivos JSON ou JSON Lines (NDJSON) com suporte a DuckDB in-memory",
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" }
+    ],
+    config_schema: { path: "string", multiline: "boolean", enable_duckdb_view: "boolean", duckdb_query: "string" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: false },
   },
   {
@@ -40,9 +62,12 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     version: "1.0.0",
     name: "Excel (XLSX / XLS)",
     category: "source",
-    description: "Lê planilhas Excel com suporte a múltiplas abas",
-    ports: [{ name: "main", direction: "output", type: "dataset" }],
-    config_schema: { path: "string", sheet_name: "string", skip_rows: "number" },
+    description: "Lê planilhas Excel com suporte a múltiplas abas e DuckDB in-memory",
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" }
+    ],
+    config_schema: { path: "string", sheet_name: "string", skip_rows: "number", enable_duckdb_view: "boolean", duckdb_query: "string" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: false },
   },
   // ─── SOURCES: Databases ──────────────────────────────────────
@@ -345,7 +370,32 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     config_schema: { operation: "string", index: "array", columns: "string", values: "string" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: false },
   },
-  // ─── TARGETS: Files ──────────────────────────────────────────
+  {
+    type_id: "core.tmap",
+    version: "1.0.0",
+    name: "Data Mapper",
+    category: "transform",
+    description: "Mapeador visual avançado: junções multi-lookup (Inner/Left), variáveis intermediárias, múltiplos fluxos de saída com filtros e expressões",
+    ports: [
+      { name: "main", direction: "input", type: "dataset" },
+      { name: "lookup", direction: "input", type: "dataset" },
+      { name: "main_out", direction: "output", type: "dataset" },
+      { name: "reject_out", direction: "output", type: "reject" },
+    ],
+    config_schema: { lookups: "array", variables: "array", outputs: "array" },
+    capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: false },
+  },
+  // ─── TARGETS: DuckDB & Files ─────────────────────────────────
+  {
+    type_id: "connector.db.duckdb.output",
+    version: "1.0.0",
+    name: "DuckDB Output",
+    category: "target",
+    description: "Grava dados em arquivo DuckDB (.duckdb) ou memória com ações de tabela e dados",
+    ports: [{ name: "input", direction: "input", type: "dataset" }],
+    config_schema: { database_path: "string", table: "string", table_action: "string", data_action: "string" },
+    capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: true },
+  },
   {
     type_id: "core.file.target",
     version: "1.0.0",

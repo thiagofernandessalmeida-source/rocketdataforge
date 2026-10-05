@@ -33,6 +33,7 @@ export interface CanvasNodeData {
   category: ComponentCategory;
   config: Record<string, any>;
   ports: PortDefinition[];
+  schema?: Array<any>;
   status?: string;
   metrics?: {
     rowsIn?: number;

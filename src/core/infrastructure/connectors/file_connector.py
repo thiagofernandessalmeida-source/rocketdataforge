@@ -1,6 +1,7 @@
 """Conector de Arquivos Locais (CSV, JSON, Parquet).
 
-Suporta leitura e escrita em chunks/streaming com validação estrita contra Path Traversal.
+Suporta leitura e escrita em chunks/streaming com validação estrita contra Path Traversal
+e tolerância a esquemas heterogêneos e arquivos sujos/malformados.
 """
 
 import os
@@ -25,6 +26,12 @@ class LocalFileConnector:
             parent = os.path.dirname(self.base_directory)
             if parent:
                 self.allowed_roots.append(os.path.normcase(os.path.realpath(parent)))
+            # Permite diretório do usuário e Downloads
+            user_home = os.path.normcase(os.path.realpath(os.path.expanduser("~")))
+            self.allowed_roots.append(user_home)
+            downloads = os.path.normcase(os.path.realpath(os.path.join(user_home, "Downloads")))
+            if downloads not in self.allowed_roots:
+                self.allowed_roots.append(downloads)
 
     def validate_safe_path(self, raw_path: str) -> str:
         """Sanitiza e valida se o caminho não escapa do diretório base (Prevenção de Path Traversal)."""
@@ -34,15 +41,30 @@ class LocalFileConnector:
         # Remove aspas acidentais no início e no fim
         clean_path = raw_path.strip().strip('"').strip("'")
 
-        # Normaliza caminho absoluto
-        if os.path.isabs(clean_path):
+        # Se for caminho existente direto (absoluto ou relativo)
+        if os.path.exists(clean_path):
+            resolved_path = os.path.abspath(clean_path)
+        elif os.path.isabs(clean_path):
             resolved_path = os.path.abspath(clean_path)
         else:
-            resolved_path = os.path.abspath(os.path.join(self.base_directory, clean_path))
+            # Busca inteligente de candidatos para caminhos relativos
+            user_downloads = os.path.join(os.path.expanduser("~"), "Downloads", clean_path)
+            candidates = [
+                os.path.abspath(os.path.join(self.base_directory, clean_path)),
+                os.path.abspath(os.path.join(self.base_directory, "data", clean_path)),
+                os.path.abspath(os.path.join(self.base_directory, "data", "samples", clean_path)),
+                os.path.abspath(os.path.join(self.base_directory, "output", clean_path)),
+                os.path.abspath(user_downloads),
+            ]
+            resolved_path = candidates[0]
+            for c in candidates:
+                if os.path.exists(c):
+                    resolved_path = c
+                    break
 
         real_resolved = os.path.normcase(os.path.realpath(resolved_path))
 
-        # Confirma que pertence a um dos roots permitidos
+        # Confirma se pertence a um dos roots permitidos
         def _is_subpath(path: str, parent_root: str) -> bool:
             try:
                 return os.path.commonpath([parent_root, path]) == parent_root
@@ -50,13 +72,13 @@ class LocalFileConnector:
                 return False
 
         is_abs = os.path.isabs(clean_path) or (len(clean_path) > 1 and clean_path[1] == ":")
-        if not is_abs:
+        if not is_abs and not any(_is_subpath(real_resolved, root) for root in self.allowed_roots):
             base_real = os.path.normcase(os.path.realpath(self.base_directory))
             if not _is_subpath(real_resolved, base_real):
                 raise SecurityViolationError(
                     f"Acesso negado: Tentativa de path traversal detectada no caminho relativo '{raw_path}'."
                 )
-        else:
+        elif is_abs:
             if not any(_is_subpath(real_resolved, root) for root in self.allowed_roots):
                 drive, _ = os.path.splitdrive(real_resolved)
                 base_drive, _ = os.path.splitdrive(self.base_directory)
@@ -72,25 +94,58 @@ class LocalFileConnector:
         file_path: str,
         file_format: str = "csv",
         chunk_size: int = 10000,
-        columns: Optional[List[str]] = None
+        columns: Optional[List[str]] = None,
+        schema_overrides: Optional[dict] = None
     ) -> Iterator[pl.DataFrame]:
-        """Lê o arquivo em lotes sucessivos de DataFrames Polars."""
+        """Lê o arquivo em lotes sucessivos de DataFrames Polars com robustez contra erros de parsing e suporte a schema_overrides."""
         safe_path = self.validate_safe_path(file_path)
 
         if not os.path.exists(safe_path):
-            raise DomainValidationError(f"Arquivo não encontrado: '{file_path}'")
+            raise DomainValidationError(f"Arquivo não encontrado: '{file_path}' (resolvido como '{safe_path}')")
 
         fmt = file_format.lower()
 
         if fmt == "csv":
-            lazy_df = pl.scan_csv(safe_path)
-            if columns:
-                available_cols = set(lazy_df.collect_schema().names())
-                selected_cols = [c for c in columns if c in available_cols]
-                if selected_cols:
-                    lazy_df = lazy_df.select(selected_cols)
-            for batch in lazy_df.collect_batches(chunk_size=chunk_size):
-                yield batch
+            try:
+                # Inferência completa do schema + tolerância a linhas malformadas + sobreposição de tipos configurados
+                lazy_df = pl.scan_csv(
+                    safe_path,
+                    schema_overrides=schema_overrides,
+                    infer_schema_length=None if not schema_overrides else 10000,
+                    ignore_errors=True,
+                    truncate_ragged_lines=True,
+                )
+                if columns:
+                    available_cols = set(lazy_df.collect_schema().names())
+                    selected_cols = [c for c in columns if c in available_cols]
+                    if selected_cols:
+                        lazy_df = lazy_df.select(selected_cols)
+                for batch in lazy_df.collect_batches(chunk_size=chunk_size):
+                    yield batch
+            except Exception as scan_err:
+                # Fallback para DuckDB se o Polars falhar devido a aspas ou codificação
+                import duckdb
+                conn = duckdb.connect()
+                clean_p = safe_path.replace("\\", "/")
+                total_rows = conn.execute(
+                    f"SELECT count(*) FROM read_csv_auto('{clean_p}', ignore_errors=true)"
+                ).fetchone()[0]
+                for offset in range(0, total_rows, chunk_size):
+                    q = f"SELECT * FROM read_csv_auto('{clean_p}', ignore_errors=true) LIMIT {chunk_size} OFFSET {offset}"
+                    chunk_df = conn.execute(q).pl()
+                    if schema_overrides:
+                        for c_name, target_type in schema_overrides.items():
+                            if c_name in chunk_df.columns:
+                                try:
+                                    chunk_df = chunk_df.with_columns(pl.col(c_name).cast(target_type, strict=False))
+                                except Exception:
+                                    pass
+                    if columns:
+                        available_cols = [c for c in columns if c in chunk_df.columns]
+                        if available_cols:
+                            chunk_df = chunk_df.select(available_cols)
+                    if chunk_df.height > 0:
+                        yield chunk_df
 
         elif fmt == "parquet":
             lazy_df = pl.scan_parquet(safe_path)
@@ -125,7 +180,9 @@ class LocalFileConnector:
     ) -> int:
         """Grava DataFrame no arquivo especificado."""
         safe_path = self.validate_safe_path(file_path)
-        os.makedirs(os.path.dirname(safe_path), exist_ok=True)
+        dir_name = os.path.dirname(os.path.abspath(safe_path))
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
 
         fmt = file_format.lower()
         file_exists = os.path.exists(safe_path)

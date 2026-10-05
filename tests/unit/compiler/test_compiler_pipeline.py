@@ -107,3 +107,111 @@ def test_join_pipeline_forces_duckdb():
     # Nós de Join e fluxos com junção relacional usam DuckDB
     assert physical_plan.operators["join_node"].engine == "duckdb"
     assert physical_plan.operators["src_a"].engine == "duckdb"
+
+
+def test_direct_input_to_input_iteration_compilation():
+    """Valida a compilação de iteração direta input->input com extração de tokens."""
+    draft = PipelineDraft(id="iter-pipeline", project_id="proj-1", name="Direct Iteration ETL")
+    ver = SemanticVersion(1, 0, 0)
+    
+    # Input 1: consulta person_code e operational_cycle
+    draft.add_node(
+        node_id="tpostgresinput_1",
+        component_type="core.database.source",
+        component_version=ver,
+        config={
+            "connection_ref": "brm_db",
+            "query": "SELECT person_code, operational_cycle FROM active_consultants"
+        }
+    )
+    
+    # Input 2: consulta dados cadastrais usando parâmetros {tpostgresinput_1.person_code}
+    draft.add_node(
+        node_id="tpostgresinput_2",
+        component_type="core.database.source",
+        component_version=ver,
+        config={
+            "connection_ref": "cadwf_db",
+            "query": "SELECT * FROM consultants WHERE person_code = {tpostgresinput_1.person_code} AND cycle = {tpostgresinput_1.operational_cycle}"
+        }
+    )
+    
+    # Output final
+    draft.add_node(
+        node_id="tfileoutput_1",
+        component_type="core.file.target",
+        component_version=ver,
+        config={"path": "output/consultants.parquet", "format": "parquet"}
+    )
+    
+    # Conexão direta entre os dois inputs sem tFlowToIterate intermediário!
+    draft.connect_ports(PortId("tpostgresinput_1", "main"), PortId("tpostgresinput_2", "input"))
+    draft.connect_ports(PortId("tpostgresinput_2", "main"), PortId("tfileoutput_1", "input"))
+    
+    validator = GraphValidator()
+    report = validator.validate(draft)
+    assert report.is_valid
+    
+    logical_plan = LogicalPlanner().compile(draft, report)
+    assert len(logical_plan.operators) == 3
+    
+    scan_2 = logical_plan.operators["tpostgresinput_2"]
+    assert isinstance(scan_2, LogicalScan)
+    assert scan_2.is_iterative is True
+    assert len(scan_2.parameter_tokens) == 2
+    assert scan_2.parameter_tokens[0]["column_name"] == "person_code"
+    assert scan_2.parameter_tokens[1]["column_name"] == "operational_cycle"
+    
+    physical_plan = PhysicalPlanner().compile(PlanOptimizer().optimize(logical_plan))
+    assert physical_plan.operators["tpostgresinput_2"].engine == "duckdb"
+
+
+def test_duckdb_source_and_tmap_compilation():
+    """Valida a compilação do operador tMap e DuckDB Source."""
+    draft = PipelineDraft(id="tmap-pipeline", project_id="proj-1", name="TMap ETL")
+    ver = SemanticVersion(1, 0, 0)
+    
+    draft.add_node(
+        node_id="tduckdbinput_1",
+        component_type="connector.db.duckdb",
+        component_version=ver,
+        config={"query": "SELECT id, name, salary FROM read_csv_auto('employees.csv')"}
+    )
+    
+    draft.add_node(
+        node_id="tmap_1",
+        component_type="processor.tmap",
+        component_version=ver,
+        config={
+            "variables": [{"name": "var_bonus", "expression": "salary * 0.1"}],
+            "outputs": [
+                {"name": "high_earners", "filter": "salary > 5000", "columns": ["id", "name", "salary", "var_bonus"]},
+                {"name": "standard", "filter": "salary <= 5000", "columns": ["id", "name", "salary"]}
+            ]
+        }
+    )
+    
+    draft.add_node(
+        node_id="tduckdboutput_1",
+        component_type="connector.db.duckdb.output",
+        component_version=ver,
+        config={"table": "high_earners_tbl", "table_action": "drop_create", "data_action": "insert"}
+    )
+    
+    draft.connect_ports(PortId("tduckdbinput_1", "main"), PortId("tmap_1", "main"))
+    draft.connect_ports(PortId("tmap_1", "high_earners"), PortId("tduckdboutput_1", "input"))
+    
+    validator = GraphValidator()
+    report = validator.validate(draft)
+    assert report.is_valid
+    
+    logical_plan = LogicalPlanner().compile(draft, report)
+    tmap_op = logical_plan.operators["tmap_1"]
+    assert tmap_op.operator_type == "tmap"
+    assert len(tmap_op.variables) == 1
+    assert len(tmap_op.outputs) == 2
+    
+    sink_op = logical_plan.operators["tduckdboutput_1"]
+    assert sink_op.table_action == "drop_create"
+    assert sink_op.data_action == "insert"
+

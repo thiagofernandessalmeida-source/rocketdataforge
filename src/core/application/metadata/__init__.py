@@ -3,6 +3,7 @@ from src.core.application.metadata.schema_inferer import (
     InferredSchema,
     InferredField,
     map_polars_type_to_logical,
+    map_type_name_to_polars,
 )
 
 __all__ = [
@@ -10,4 +11,5 @@ __all__ = [
     "InferredSchema",
     "InferredField",
     "map_polars_type_to_logical",
+    "map_type_name_to_polars",
 ]

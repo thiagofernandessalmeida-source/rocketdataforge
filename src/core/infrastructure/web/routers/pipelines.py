@@ -146,50 +146,61 @@ def update_pipeline_draft(
         )
 
     # Reconstrói a entidade de domínio a partir da definição enviada
-    def_data = payload.definition
-    spec = def_data.get("spec", {})
-    meta = def_data.get("metadata", {})
+    try:
+        def_data = payload.definition
+        spec = def_data.get("spec", {})
+        meta = def_data.get("metadata", {})
 
-    updated_draft = DomainDraft(
-        id=pipeline_id,
-        project_id=current_draft.project_id,
-        name=meta.get("name", current_draft.name),
-        description=meta.get("description", current_draft.description),
-        revision=current_draft.revision + 1
-    )
-    updated_draft.parameters = spec.get("parameters", {})
-
-    for n in spec.get("nodes", []):
-        comp = n.get("component", {})
-        node = Node(
-            id=n["id"],
-            component_type=comp.get("type", "generic"),
-            component_version=SemanticVersion.parse(comp.get("version", "1.0.0")),
-            config=n.get("config", {})
+        updated_draft = DomainDraft(
+            id=pipeline_id,
+            project_id=current_draft.project_id,
+            name=meta.get("name", current_draft.name),
+            description=meta.get("description", current_draft.description),
+            revision=current_draft.revision + 1
         )
-        updated_draft.nodes[n["id"]] = node
+        updated_draft.parameters = spec.get("parameters", {})
 
-    for e in spec.get("edges", []):
-        edge_id = e.get("id", f"{e['from']}->{e['to']}")
-        edge = Edge(
-            id=edge_id,
-            from_port=PortId.parse(e["from"]),
-            to_port=PortId.parse(e["to"])
+        for n in spec.get("nodes", []):
+            comp = n.get("component", {})
+            node = Node(
+                id=n["id"],
+                component_type=comp.get("type", "generic"),
+                component_version=SemanticVersion.parse(comp.get("version", "1.0.0")),
+                config=n.get("config", {})
+            )
+            updated_draft.nodes[n["id"]] = node
+
+        for e in spec.get("edges", []):
+            edge_id = e.get("id", f"{e['from']}->{e['to']}")
+            edge = Edge(
+                id=edge_id,
+                from_port=PortId.parse(e["from"]),
+                to_port=PortId.parse(e["to"])
+            )
+            updated_draft.edges[edge_id] = edge
+
+        updated_draft.revision = current_draft.revision + 1
+
+        repo.save_draft(updated_draft, layout=payload.layout)
+
+        return PipelineDraftDTO(
+            id=updated_draft.id,
+            project_id=updated_draft.project_id,
+            name=updated_draft.name,
+            revision=updated_draft.revision,
+            definition=updated_draft.to_canonical_dict(),
+            layout=payload.layout
         )
-        updated_draft.edges[edge_id] = edge
-
-    updated_draft.revision = current_draft.revision + 1
-
-    repo.save_draft(updated_draft, layout=payload.layout)
-
-    return PipelineDraftDTO(
-        id=updated_draft.id,
-        project_id=updated_draft.project_id,
-        name=updated_draft.name,
-        revision=updated_draft.revision,
-        definition=updated_draft.to_canonical_dict(),
-        layout=payload.layout
-    )
+    except DomainValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Erro de validação do domínio: {e.message}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Erro ao salvar draft do pipeline: {str(e)}"
+        )
 
 
 @router.post("/pipelines/{pipeline_id}/validate", response_model=ValidationReport)

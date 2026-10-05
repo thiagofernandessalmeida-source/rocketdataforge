@@ -10,11 +10,14 @@ interface FloatingNodeConfigProps {
   onUpdateConfig: (nodeId: string, config: Record<string, any>) => void;
   onUpdateLabel?: (nodeId: string, label: string) => void;
   onUpdateSchema?: (nodeId: string, schema: SchemaColumn[]) => void;
+  onUpdateNodeId?: (oldId: string, newId: string) => void;
   onDeleteNode: (nodeId: string) => void;
   onClose: () => void;
   connections?: ConnectionEntry[];
   contextVariables?: ContextVariable[];
   activeEnvironment?: Environment;
+  allNodes?: Node<CanvasNodeData>[];
+  edges?: any[];
 }
 
 /**
@@ -27,11 +30,14 @@ export const FloatingNodeConfig: React.FC<FloatingNodeConfigProps> = ({
   onUpdateConfig,
   onUpdateLabel,
   onUpdateSchema,
+  onUpdateNodeId,
   onDeleteNode,
   onClose,
   connections,
   contextVariables,
   activeEnvironment,
+  allNodes,
+  edges,
 }) => {
   // Initial position: centered horizontally, near top
   const [pos, setPos] = useState({ x: window.innerWidth / 2 - 180, y: 80 });
@@ -130,10 +136,13 @@ export const FloatingNodeConfig: React.FC<FloatingNodeConfigProps> = ({
             onUpdateConfig={onUpdateConfig}
             onUpdateLabel={onUpdateLabel}
             onUpdateSchema={onUpdateSchema}
+            onUpdateNodeId={onUpdateNodeId}
             onDeleteNode={handleDelete}
             connections={connections}
             contextVariables={contextVariables}
             activeEnvironment={activeEnvironment}
+            allNodes={allNodes}
+            edges={edges}
             // No pop-out in a floating window (avoid infinite nesting)
             onPopOut={undefined}
           />

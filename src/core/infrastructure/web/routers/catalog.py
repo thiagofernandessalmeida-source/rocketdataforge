@@ -60,7 +60,7 @@ def infer_schema(
     payload: InferSchemaRequest,
     inferer: SchemaInferer = Depends(get_schema_inferer)
 ):
-    """Infere o esquema estrutural com tipos canônicos a partir de um arquivo ou fonte."""
+    """Infere o esquema estrutural com tipos canônicos a partir de um arquivo ou consulta SQL."""
     if not payload.path_or_query:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -68,8 +68,10 @@ def infer_schema(
         )
 
     try:
-        inferred = inferer.infer_from_file(
-            file_path=payload.path_or_query,
+        inferred = inferer.infer_from_path_or_query(
+            path_or_query=payload.path_or_query,
+            connector_type=payload.connector_type,
+            connection_details=payload.connection_details,
             sample_size=payload.sample_size
         )
         fields = [
@@ -90,3 +92,4 @@ def infer_schema(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Falha durante a inferência do esquema: {str(e)}"
         )
+

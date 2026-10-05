@@ -443,6 +443,56 @@ export const jobStore = {
     return state.jobs.find((j) => j.id === jobId);
   },
 
+  importJob(
+    imported: {
+      job?: Partial<JobData>;
+      name?: string;
+      nodes?: Node<CanvasNodeData>[];
+      edges?: Edge[];
+      nodeSchemas?: Record<string, SchemaColumn[]>;
+      environment?: Environment;
+      folderId?: string;
+      viewport?: { x: number; y: number; zoom: number };
+    },
+    targetFolderId?: string
+  ): JobData {
+    const rawJob = imported.job || imported;
+    const name = imported.name || rawJob.name || "Job Importado";
+    const defaultFolderId = state.folders.find((f) => f.parentId === null)?.id ?? "folder-root";
+    const folderId = targetFolderId || rawJob.folderId || defaultFolderId;
+    const nodes = imported.nodes || rawJob.nodes || [];
+    const edges = imported.edges || rawJob.edges || [];
+    const nodeSchemas = imported.nodeSchemas || rawJob.nodeSchemas || {};
+    const environment = imported.environment || rawJob.environment || "dev";
+    const viewport = imported.viewport || rawJob.viewport;
+
+    // Create new job with fresh ID to prevent collision
+    const newId = `job-${Date.now()}`;
+    const newJob: JobData = {
+      id: newId,
+      name,
+      folderId,
+      nodes,
+      edges,
+      nodeSchemas,
+      environment,
+      viewport,
+      status: "saved",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    state = {
+      ...state,
+      jobs: [...state.jobs, newJob],
+      openTabIds: state.openTabIds.includes(newId) ? state.openTabIds : [...state.openTabIds, newId],
+      activeTabId: newId,
+    };
+    saveState(state);
+    notify();
+    return newJob;
+  },
+
   // ─── Tabs ─────────────────────────────────────────────────
 
   openTab(jobId: string): void {

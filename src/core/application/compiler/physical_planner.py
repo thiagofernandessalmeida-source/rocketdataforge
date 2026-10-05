@@ -94,12 +94,12 @@ class PhysicalPlanner:
 
     def _select_engine(self, op: Any, has_relational_join: bool) -> str:
         """Regra determinística de seleção de engine (ADR-010)."""
-        # Joins utilizam o motor analítico DuckDB
+        # Joins, DuckDB e tMap utilizam o motor DuckDB
         if isinstance(op, LogicalJoin):
             return "duckdb"
 
-        # Leitura e escrita PostgreSQL utilizam DuckDB
-        if isinstance(op, (LogicalScan, LogicalSink)) and op.format == "postgres":
+        # Leitura e escrita PostgreSQL e DuckDB utilizam DuckDB
+        if isinstance(op, (LogicalScan, LogicalSink)) and (op.format in ("postgres", "duckdb") or getattr(op, "enable_duckdb_view", False)):
             return "duckdb"
 
         # Se há joins relacionais no pipeline, manter nós intermediários em DuckDB para evitar conversões
@@ -107,10 +107,11 @@ class PhysicalPlanner:
             return "duckdb"
 
         # Leitura/escrita de arquivos (CSV, Parquet) e transformações de colunas/filtros em streaming
-        if isinstance(op, (LogicalScan, LogicalSink)) and op.format in {"csv", "parquet", "json"}:
+        if isinstance(op, (LogicalScan, LogicalSink)) and op.format in {"csv", "parquet", "json", "excel"}:
             return "polars"
 
         if isinstance(op, (LogicalFilter, LogicalProject)):
             return "polars"
 
         return "duckdb"
+

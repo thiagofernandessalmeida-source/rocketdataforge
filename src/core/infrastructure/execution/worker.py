@@ -93,6 +93,9 @@ class ExecutionWorker:
                 elif op_type == "join":
                     self._execute_join_node(phys_op, cfg, token, task, node_buffers)
 
+                elif op_type == "tmap":
+                    self._execute_tmap_node(phys_op, cfg, token, task, node_buffers)
+
                 elif op_type == "sink":
                     self._execute_sink_node(phys_op, cfg, token, task, node_buffers)
 
@@ -150,10 +153,32 @@ class ExecutionWorker:
             options={**conn_details, **raw_cfg}
         )
 
+    def _interpolate_tokens(self, text: str, row_dict: Dict[str, Any], upstream_id: str) -> str:
+        """Substitui referências a {upstream_id.col} e {col} pelos valores da linha atual."""
+        res = text
+        for col, val in row_dict.items():
+            formatted_val = f"'{val}'" if isinstance(val, str) else str(val) if val is not None else "NULL"
+            res = res.replace(f"{{{upstream_id}.{col}}}", formatted_val)
+            res = res.replace(f"{{{col}}}", formatted_val)
+        return res
+
     def _execute_scan_node(
         self, phys_op, cfg, plan, token, task, node_buffers
     ) -> None:
         fmt = str(cfg.get("format", "csv")).lower()
+
+        # Verifica se é um Scan Iterativo com nós a montante
+        if phys_op.input_ids:
+            self._execute_iterative_scan(phys_op, cfg, plan, token, task, node_buffers)
+            return
+
+        if fmt == "duckdb":
+            db_path = cfg.get("connection_ref") or cfg.get("database_path") or ":memory:"
+            query = cfg.get("source") or cfg.get("query") or ""
+            df = self.duckdb_runner.execute_query_on_database(db_path, query)
+            task.record_progress(rows_in_increment=df.height, rows_out_increment=df.height)
+            node_buffers[phys_op.id] = [df]
+            return
 
         if fmt == "scylla":
             conn = self._build_connection_from_cfg(cfg, "scylla")
@@ -191,6 +216,85 @@ class ExecutionWorker:
         else:
             self._execute_file_scan(phys_op, cfg, plan, token, task, node_buffers)
 
+    def _execute_iterative_scan(
+        self, phys_op, cfg, plan, token, task, node_buffers
+    ) -> None:
+        """Executa leitura parametrizada linha a linha sobre o fluxo do nó a montante (Sem tFlowToIterate)."""
+        upstream_id = phys_op.input_ids[0]
+        upstream_chunks = node_buffers.get(upstream_id, [])
+        if not upstream_chunks:
+            node_buffers[phys_op.id] = []
+            return
+
+        upstream_df = pl.concat(upstream_chunks)
+        fmt = str(cfg.get("format", "postgres")).lower()
+        base_query = (cfg.get("source") or cfg.get("query") or "").strip()
+
+        all_results: List[pl.DataFrame] = []
+        total_rows = 0
+
+        # Para DuckDB
+        if fmt == "duckdb":
+            db_path = cfg.get("connection_ref") or cfg.get("database_path") or ":memory:"
+            for row in upstream_df.iter_rows(named=True):
+                token.check_cancelled()
+                query = self._interpolate_tokens(base_query, row, upstream_id)
+                res_df = self.duckdb_runner.execute_query_on_database(db_path, query)
+                all_results.append(res_df)
+                total_rows += res_df.height
+                task.record_progress(rows_in_increment=1, rows_out_increment=res_df.height)
+
+        # Para Banco de Dados (PostgreSQL / Relacional)
+        else:
+            conn_details = cfg.get("connection_details") or {}
+            host = conn_details.get("host") or "localhost"
+            port = int(conn_details.get("port") or 5432)
+            database = conn_details.get("database") or "postgres"
+            username = conn_details.get("username") or "postgres"
+            password = conn_details.get("password") or ""
+            sslmode = conn_details.get("sslMode") or "prefer"
+
+            import psycopg2
+            try:
+                conn = psycopg2.connect(
+                    dbname=database, user=username, password=password,
+                    host=host, port=port, sslmode=sslmode, connect_timeout=15
+                )
+            except Exception as e:
+                raise DomainError(f"Falha ao conectar no banco para iteração: {sanitize_message(str(e))}", code="ERR_DB_CONNECTION")
+
+            try:
+                cur = conn.cursor()
+                for row in upstream_df.iter_rows(named=True):
+                    token.check_cancelled()
+                    query = self._interpolate_tokens(base_query, row, upstream_id)
+                    cur.execute(query)
+                    col_names = [desc[0] for desc in cur.description] if cur.description else ["result"]
+                    batch = cur.fetchall()
+                    if batch:
+                        try:
+                            res_df = pl.DataFrame(batch, schema=col_names, orient="row")
+                        except Exception:
+                            import pandas as pd
+                            res_df = pl.from_pandas(pd.DataFrame(batch, columns=col_names))
+                    else:
+                        res_df = pl.DataFrame({c: [] for c in col_names})
+
+                    all_results.append(res_df)
+                    total_rows += res_df.height
+                    task.record_progress(rows_in_increment=1, rows_out_increment=res_df.height)
+
+                cur.close()
+                conn.close()
+            except Exception as e:
+                if not conn.closed:
+                    conn.close()
+                raise DomainError(f"Erro durante a iteração de query SQL: {sanitize_message(str(e))}", code="ERR_DB_QUERY")
+
+        combined = pl.concat(all_results) if all_results else pl.DataFrame()
+        node_buffers[phys_op.id] = [combined]
+        logger.info(f"Nó Iterativo '{phys_op.id}': {upstream_df.height} iterações concluídas ({combined.height} registros gerados).")
+
     def _execute_file_scan(
         self, phys_op, cfg, plan, token, task, node_buffers
     ) -> None:
@@ -198,13 +302,32 @@ class ExecutionWorker:
         fmt = cfg.get("format", "csv")
         projected = cfg.get("projected_columns")
         pushed_filter = cfg.get("pushed_filter")
+        enable_duckdb = cfg.get("enable_duckdb_view", False)
+
+        # Se a opção DuckDB in-memory estiver ativada
+        if enable_duckdb:
+            custom_query = cfg.get("duckdb_query")
+            df = self.duckdb_runner.execute_query_on_file(source_path, format_hint=fmt, custom_query=custom_query)
+            task.record_progress(rows_in_increment=df.height, rows_out_increment=df.height)
+            node_buffers[phys_op.id] = [df]
+            return
+
+        schema_defs = cfg.get("schema_definitions") or (cfg.get("raw_config") or {}).get("schema_definitions") or []
+        schema_overrides = None
+        if schema_defs and isinstance(schema_defs, list):
+            from src.core.application.metadata.schema_inferer import map_type_name_to_polars
+            schema_overrides = {}
+            for col in schema_defs:
+                if isinstance(col, dict) and col.get("name"):
+                    schema_overrides[col["name"]] = map_type_name_to_polars(col.get("type", "String"))
 
         chunks: List[pl.DataFrame] = []
         for chunk in self.file_connector.read_chunks(
             source_path,
             file_format=fmt,
             chunk_size=plan.default_chunk_size,
-            columns=projected
+            columns=projected,
+            schema_overrides=schema_overrides
         ):
             token.check_cancelled()
 
@@ -302,11 +425,29 @@ class ExecutionWorker:
                 code="ERR_DB_QUERY"
             )
 
+    def _get_node_chunks(self, node_ref: str, node_buffers: Dict[str, List[pl.DataFrame]]) -> List[pl.DataFrame]:
+        """Obtém chunks do buffer considerando referências a portas (ex: 'node_id:port_name' ou 'node_id')."""
+        if not node_ref:
+            return []
+        if node_ref in node_buffers:
+            return node_buffers[node_ref]
+        clean_colon = node_ref.replace(".", ":")
+        if clean_colon in node_buffers:
+            return node_buffers[clean_colon]
+        clean_dot = node_ref.replace(":", ".")
+        if clean_dot in node_buffers:
+            return node_buffers[clean_dot]
+        # Se for apenas o node_id base
+        base_id = node_ref.split(":")[0].split(".")[0]
+        if base_id in node_buffers:
+            return node_buffers[base_id]
+        return []
+
     def _execute_filter_node(
         self, phys_op, cfg, token, task, node_buffers
     ) -> None:
         input_id = phys_op.input_ids[0]
-        input_chunks = node_buffers.get(input_id, [])
+        input_chunks = self._get_node_chunks(input_id, node_buffers)
         expression = cfg.get("predicate", "")
 
         output_chunks: List[pl.DataFrame] = []
@@ -328,7 +469,7 @@ class ExecutionWorker:
         self, phys_op, cfg, token, task, node_buffers
     ) -> None:
         input_id = phys_op.input_ids[0]
-        input_chunks = node_buffers.get(input_id, [])
+        input_chunks = self._get_node_chunks(input_id, node_buffers)
         columns = cfg.get("columns", [])
 
         output_chunks: List[pl.DataFrame] = []
@@ -349,8 +490,8 @@ class ExecutionWorker:
         left_id = phys_op.input_ids[0]
         right_id = phys_op.input_ids[1]
 
-        left_chunks = node_buffers.get(left_id, [])
-        right_chunks = node_buffers.get(right_id, [])
+        left_chunks = self._get_node_chunks(left_id, node_buffers)
+        right_chunks = self._get_node_chunks(right_id, node_buffers)
 
         token.check_cancelled()
         left_df = pl.concat(left_chunks) if left_chunks else pl.DataFrame()
@@ -370,6 +511,55 @@ class ExecutionWorker:
         )
         node_buffers[phys_op.id] = [joined_df]
 
+    def _execute_tmap_node(
+        self, phys_op, cfg, token, task, node_buffers
+    ) -> None:
+        """Executa transformações e mapeamento visual complexo estilo tMap com suporte a match models e múltiplos outputs."""
+        input_ids = phys_op.input_ids
+        if not input_ids:
+            node_buffers[phys_op.id] = []
+            return
+
+        main_id = cfg.get("main_input_id") or input_ids[0]
+        main_chunks = self._get_node_chunks(main_id, node_buffers)
+        main_df = pl.concat(main_chunks) if main_chunks else pl.DataFrame()
+        initial_rows = main_df.height
+
+        lookups = cfg.get("lookups", [])
+        lookup_dfs: Dict[str, pl.DataFrame] = {}
+        for lk in lookups:
+            lk_id = lk.get("node_id") or lk.get("id") or ""
+            if lk_id:
+                lk_chunks = self._get_node_chunks(lk_id, node_buffers)
+                lookup_dfs[lk_id] = pl.concat(lk_chunks) if lk_chunks else pl.DataFrame()
+
+        variables = cfg.get("variables", [])
+        outputs = cfg.get("outputs", [])
+
+        # Executa transformação avançada com DuckDB
+        results = self.duckdb_runner.execute_tmap_transform(
+            main_df=main_df,
+            lookups=lookups,
+            lookup_dfs=lookup_dfs,
+            variables=variables,
+            outputs=outputs
+        )
+
+        total_out_rows = sum(df.height for df in results.values())
+        task.record_progress(rows_in_increment=initial_rows, rows_out_increment=total_out_rows)
+
+        # Salva as saídas individuais para roteamento multi-porta
+        # e salva a primeira/principal saída como buffer padrão do nó
+        first_df = pl.DataFrame()
+        for out_name, out_df in results.items():
+            node_buffers[f"{phys_op.id}:{out_name}"] = [out_df]
+            node_buffers[f"{phys_op.id}.{out_name}"] = [out_df]
+            if first_df.is_empty():
+                first_df = out_df
+
+        # Default fallback
+        node_buffers[phys_op.id] = [first_df]
+
     def _execute_sink_node(
         self, phys_op, cfg, token, task, node_buffers
     ) -> None:
@@ -378,9 +568,76 @@ class ExecutionWorker:
             return
 
         input_id = phys_op.input_ids[0]
-        input_chunks = node_buffers.get(input_id, [])
+        input_chunks = self._get_node_chunks(input_id, node_buffers)
+
+        # Filtra apenas as colunas definidas no schema do componente (projeção explícita)
+        schema_cols = cfg.get("schema_columns") or []
+        if schema_cols and input_chunks:
+            filtered_chunks = []
+            for chunk in input_chunks:
+                available_cols = [c for c in schema_cols if c in chunk.columns]
+                if available_cols:
+                    filtered_chunks.append(chunk.select(available_cols))
+                else:
+                    filtered_chunks.append(chunk)
+            input_chunks = filtered_chunks
 
         fmt = str(cfg.get("format") or "csv").lower()
+
+        # Destino DuckDB
+        if fmt == "duckdb":
+            db_path = cfg.get("database_path") or "data/output.duckdb"
+            table = cfg.get("table") or cfg.get("target") or "output_table"
+            table_act = cfg.get("table_action", "none")
+            data_act = cfg.get("data_action", "insert")
+            keys = cfg.get("keys", [])
+
+            total = 0
+            for idx, chunk in enumerate(input_chunks):
+                token.check_cancelled()
+                written = self.duckdb_runner.write_to_duckdb(
+                    df=chunk,
+                    database_path=db_path,
+                    table_name=table,
+                    table_action=table_act,
+                    data_action=data_act,
+                    keys=keys,
+                    is_first_chunk=(idx == 0)
+                )
+                total += written
+                task.record_progress(rows_in_increment=chunk.height, rows_out_increment=written)
+            logger.info(f"Nó DuckDB sink '{phys_op.id}': {total} linhas gravadas na tabela '{table}'.")
+            return
+
+        # Destino PostgreSQL com Ação de Tabela e Dados
+        if fmt in ("postgres", "postgresql", "db"):
+            conn_details = cfg.get("connection_details") or {}
+            if conn_details or cfg.get("connection_ref"):
+                table = cfg.get("table") or cfg.get("target") or "output_table"
+                table_act = cfg.get("table_action", "none")
+                data_act = cfg.get("data_action", "insert")
+                keys = cfg.get("keys", [])
+
+                conn = self._build_connection_from_cfg(cfg, "postgres")
+                from src.core.infrastructure.connectors.postgres_connector import PostgresConnector
+                pg_conn = PostgresConnector(self.secret_resolver)
+
+                total = 0
+                for idx, chunk in enumerate(input_chunks):
+                    token.check_cancelled()
+                    written = pg_conn.execute_write(
+                        connection=conn,
+                        table_name=table,
+                        df=chunk,
+                        table_action=table_act,
+                        data_action=data_act,
+                        keys=keys,
+                        is_first_chunk=(idx == 0)
+                    )
+                    total += written
+                    task.record_progress(rows_in_increment=chunk.height, rows_out_increment=written)
+                logger.info(f"Nó PostgreSQL sink '{phys_op.id}': {total} linhas gravadas na tabela '{table}'.")
+                return
 
         if fmt == "scylla":
             conn = self._build_connection_from_cfg(cfg, "scylla")
@@ -439,8 +696,11 @@ class ExecutionWorker:
         raw_mode = str(cfg.get("write_mode", "append")).lower()
         initial_write_mode = "replace" if ("replace" in raw_mode or "overwrite" in raw_mode) else "append"
 
+        # Filter out empty / zero-column chunks to avoid schema mismatch on append
+        valid_chunks = [c for c in input_chunks if c.height > 0 and c.width > 0]
+
         total_written = 0
-        if not input_chunks:
+        if not valid_chunks:
             # Garante gravação mesmo se o buffer for vazio
             dummy_empty = pl.DataFrame()
             written = self.file_connector.write_dataframe(
@@ -452,7 +712,7 @@ class ExecutionWorker:
             task.record_progress(rows_in_increment=0, rows_out_increment=written)
             return
 
-        for idx, chunk in enumerate(input_chunks):
+        for idx, chunk in enumerate(valid_chunks):
             token.check_cancelled()
             # O primeiro chunk respeita o write_mode (replace/append).
             # Chunks subsequentes do mesmo pipeline sempre usam append.
@@ -470,3 +730,4 @@ class ExecutionWorker:
                 rows_out_increment=written
             )
         logger.info(f"Nó sink '{phys_op.id}': {total_written} linhas gravadas em '{target_path}'.")
+

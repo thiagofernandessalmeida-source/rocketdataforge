@@ -54,3 +54,24 @@ def test_read_and_write_parquet_chunks(tmp_path):
     assert len(chunks) == 4
     total_rows = sum(c.height for c in chunks)
     assert total_rows == 100
+
+
+def test_read_csv_with_schema_overrides(tmp_path):
+    connector = LocalFileConnector(base_directory=str(tmp_path))
+    file_path = tmp_path / "mixed_data.csv"
+
+    # CSV onde as primeiras linhas são numéricas e a última é string
+    csv_content = "id,value\n1,100\n2,200\n3,invalid_str\n"
+    file_path.write_text(csv_content, encoding="utf-8")
+
+    # Sem override, polars pode falhar ou inferir tipos errados
+    # Com override para String, deve ler com sucesso
+    chunks = list(connector.read_chunks(
+        str(file_path),
+        file_format="csv",
+        schema_overrides={"id": pl.String, "value": pl.String}
+    ))
+    assert len(chunks) == 1
+    assert chunks[0].height == 3
+    assert chunks[0]["value"].dtype == pl.String
+    assert chunks[0]["value"][2] == "invalid_str"

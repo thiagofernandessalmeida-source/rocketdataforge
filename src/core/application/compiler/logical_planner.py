@@ -1,10 +1,6 @@
-"""Compilador de Plano Lógico (LogicalPlanner).
-
-Transforma o grafo visual validado em uma estrutura de operadores lógicos relacionais.
-"""
-
+import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from src.core.application.compiler.operators import (
     LogicalFilter,
@@ -13,10 +9,24 @@ from src.core.application.compiler.operators import (
     LogicalProject,
     LogicalScan,
     LogicalSink,
+    LogicalTMap,
 )
 from src.core.application.compiler.validator import ValidationReport
 from src.core.domain.pipeline.draft import PipelineDraft
 from src.core.domain.shared.exceptions import DomainValidationError
+
+TOKEN_REGEX = re.compile(r"\{([a-zA-Z0-9_\-]+)\.([a-zA-Z0-9_]+)\}")
+
+
+def extract_parameter_tokens(text: str) -> List[Dict[str, str]]:
+    """Extrai referências a variáveis {node_id.column_name} ou {label.column_name}."""
+    if not text or not isinstance(text, str):
+        return []
+    matches = TOKEN_REGEX.findall(text)
+    return [
+        {"node_ref": m[0], "column_name": m[1], "raw_token": f"{{{m[0]}.{m[1]}}}"}
+        for m in matches
+    ]
 
 
 @dataclass
@@ -53,9 +63,11 @@ class LogicalPlanner:
         for node_id in validation_report.topological_order:
             node = draft.nodes[node_id]
 
-            # Descobre quais nós alimentam as portas deste nó
+            # Descobre quais nós e portas alimentam as portas deste nó
             input_operator_ids = [
-                edge.from_port.node_id
+                f"{edge.from_port.node_id}:{edge.from_port.port_name}"
+                if (edge.from_port.port_name and edge.from_port.port_name not in ("main", "main_out", "dataset", "output"))
+                else edge.from_port.node_id
                 for edge in draft.edges.values()
                 if edge.to_port.node_id == node_id
             ]
@@ -79,6 +91,22 @@ class LogicalPlanner:
         """Mapeia o tipo de componente e sua configuração para o operador algébrico correspondente."""
         cfg = config or {}
 
+        # DuckDB Source Dedicado
+        if component_type in ("connector.db.duckdb", "core.duckdb.source"):
+            query = cfg.get("query") or ""
+            tokens = extract_parameter_tokens(query)
+            return LogicalScan(
+                id=node_id,
+                connection_ref=cfg.get("database_path", ":memory:"),
+                source_path_or_query=query,
+                format="duckdb",
+                input_ids=input_ids,
+                is_iterative=bool(input_ids) or bool(tokens),
+                parameter_tokens=tokens,
+                connection_details=cfg.get("connection_details"),
+                raw_config=cfg
+            )
+
         # Fontes de Banco de Dados (PostgreSQL, Oracle, SQL Server, MySQL, etc.)
         if (
             component_type in ("core.database.source", "connector.db.postgresql")
@@ -86,12 +114,15 @@ class LogicalPlanner:
         ):
             fmt = "postgres" if "postgres" in component_type else component_type.replace("connector.db.", "")
             query = cfg.get("query") or cfg.get("source_path_or_query") or cfg.get("source") or ""
+            tokens = extract_parameter_tokens(query)
             return LogicalScan(
                 id=node_id,
                 connection_ref=cfg.get("connection_ref", ""),
                 source_path_or_query=query,
                 format=fmt,
                 input_ids=input_ids,
+                is_iterative=bool(input_ids) or bool(tokens),
+                parameter_tokens=tokens,
                 connection_details=cfg.get("connection_details"),
                 raw_config=cfg
             )
@@ -107,14 +138,34 @@ class LogicalPlanner:
                 fmt = "excel"
             else:
                 fmt = cfg.get("format", "csv").lower()
+
+            source_path = cfg.get("path", "")
+            tokens = extract_parameter_tokens(source_path) + extract_parameter_tokens(cfg.get("duckdb_query", ""))
+            schema_defs = cfg.get("schema_definitions") or []
             return LogicalScan(
                 id=node_id,
                 connection_ref=cfg.get("connection_ref", ""),
-                source_path_or_query=cfg.get("path", ""),
+                source_path_or_query=source_path,
                 format=fmt,
                 input_ids=input_ids,
+                is_iterative=bool(input_ids) or bool(tokens),
+                parameter_tokens=tokens,
+                schema_definitions=schema_defs,
+                enable_duckdb_view=bool(cfg.get("enable_duckdb_view", False)),
+                duckdb_query=cfg.get("duckdb_query"),
                 connection_details=cfg.get("connection_details"),
                 raw_config=cfg
+            )
+
+        # tMap Transform
+        if component_type in ("core.tmap", "transform.tmap", "processor.tmap", "tmap"):
+            return LogicalTMap(
+                id=node_id,
+                main_input_id=input_ids[0] if input_ids else "",
+                lookups=cfg.get("lookups", []),
+                variables=cfg.get("variables", []),
+                outputs=cfg.get("outputs", []),
+                input_ids=input_ids
             )
 
         if component_type == "core.filter":
@@ -140,7 +191,22 @@ class LogicalPlanner:
                 input_ids=input_ids
             )
 
-        # Destinos de Banco de Dados
+        # DuckDB Target Dedicado
+        if component_type in ("connector.db.duckdb.output", "core.duckdb.target"):
+            return LogicalSink(
+                id=node_id,
+                target_ref=cfg.get("table", ""),
+                format="duckdb",
+                write_mode=cfg.get("write_mode", "append"),
+                table_action=cfg.get("table_action", "none"),
+                data_action=cfg.get("data_action", "insert"),
+                keys=cfg.get("keys", []),
+                input_ids=input_ids,
+                connection_details=cfg.get("connection_details"),
+                raw_config=cfg
+            )
+
+        # Destinos de Banco de Dados (PostgreSQL, MySQL, Oracle, etc.)
         if (
             component_type in ("core.database.target", "connector.db.postgresql.output")
             or (component_type.startswith("connector.db.") and component_type.endswith(".output"))
@@ -151,6 +217,9 @@ class LogicalPlanner:
                 target_ref=cfg.get("table", ""),
                 format=fmt,
                 write_mode=cfg.get("write_mode", "append"),
+                table_action=cfg.get("table_action", "none"),
+                data_action=cfg.get("data_action", "insert"),
+                keys=cfg.get("keys", []),
                 input_ids=input_ids,
                 connection_details=cfg.get("connection_details"),
                 raw_config=cfg
@@ -173,12 +242,15 @@ class LogicalPlanner:
         # Fontes NoSQL & Streaming / Mensageria (ScyllaDB, Kafka, AWS SQS)
         if "scylla" in component_type and not component_type.endswith(".output"):
             query = cfg.get("query") or cfg.get("cql") or (f"SELECT * FROM {cfg.get('table')}" if cfg.get("table") else "")
+            tokens = extract_parameter_tokens(query)
             return LogicalScan(
                 id=node_id,
                 connection_ref=cfg.get("connection_ref", ""),
                 source_path_or_query=query,
                 format="scylla",
                 input_ids=input_ids,
+                is_iterative=bool(input_ids) or bool(tokens),
+                parameter_tokens=tokens,
                 connection_details=cfg.get("connection_details"),
                 raw_config=cfg
             )
@@ -190,6 +262,7 @@ class LogicalPlanner:
                 source_path_or_query=cfg.get("topic", ""),
                 format="kafka",
                 input_ids=input_ids,
+                is_iterative=bool(input_ids),
                 connection_details=cfg.get("connection_details"),
                 raw_config=cfg
             )
@@ -202,6 +275,7 @@ class LogicalPlanner:
                 source_path_or_query=q_target,
                 format="sqs",
                 input_ids=input_ids,
+                is_iterative=bool(input_ids),
                 connection_details=cfg.get("connection_details"),
                 raw_config=cfg
             )
@@ -253,5 +327,17 @@ class LogicalPlanner:
                 raw_config=cfg
             )
 
+        # Transformações tMap
+        if component_type in ("core.tmap", "transform.tmap"):
+            return LogicalTMap(
+                id=node_id,
+                main_input_id=cfg.get("main_input_id") or (input_ids[0] if input_ids else ""),
+                lookups=cfg.get("lookups", []),
+                variables=cfg.get("variables", []),
+                outputs=cfg.get("outputs", []),
+                input_ids=input_ids
+            )
+
         # Fallback para operador genérico
         return LogicalOperator(id=node_id, operator_type=component_type, input_ids=input_ids)
+

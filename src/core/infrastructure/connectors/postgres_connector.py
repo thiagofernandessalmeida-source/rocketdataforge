@@ -5,7 +5,7 @@ e sanitização automática de mensagens de erro.
 """
 
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote_plus
 
 import psycopg2
@@ -120,3 +120,69 @@ class PostgresConnector:
         cur = conn.cursor()
         cur.execute(query)
         return cur
+
+    def execute_write(
+        self,
+        connection: Connection,
+        table_name: str,
+        df: Any,
+        table_action: str = "none",
+        data_action: str = "insert",
+        keys: Optional[List[str]] = None,
+        is_first_chunk: bool = True
+    ) -> int:
+        """Executa gravação com suporte a ações DDL na tabela e DML nos dados (estilo Talend)."""
+        import polars as pl
+        dsn = self.build_dsn(connection)
+        with psycopg2.connect(dsn) as conn:
+            with conn.cursor() as cur:
+                # 1. Pre-Table Action
+                if is_first_chunk:
+                    if table_action in ("drop_create", "drop_if_exists_create"):
+                        cur.execute(f"DROP TABLE IF EXISTS {table_name};")
+                        cols_sql = ", ".join([f'"{c}" TEXT' for c in df.columns])
+                        cur.execute(f"CREATE TABLE {table_name} ({cols_sql});")
+                    elif table_action == "create_if_not_exists":
+                        cols_sql = ", ".join([f'"{c}" TEXT' for c in df.columns])
+                        cur.execute(f"CREATE TABLE IF NOT EXISTS {table_name} ({cols_sql});")
+                    elif table_action in ("truncate", "delete_all"):
+                        try:
+                            cur.execute(f"TRUNCATE TABLE {table_name};")
+                        except Exception:
+                            cur.execute(f"DELETE FROM {table_name};")
+
+                if df.height == 0:
+                    conn.commit()
+                    return 0
+
+                # 2. Data Action
+                cols = [f'"{c}"' for c in df.columns]
+                placeholders = ", ".join(["%s"] * len(cols))
+                cols_str = ", ".join(cols)
+
+                records = df.to_numpy().tolist()
+
+                if data_action == "insert":
+                    query = f"INSERT INTO {table_name} ({cols_str}) VALUES ({placeholders});"
+                    cur.executemany(query, records)
+                elif data_action in ("upsert", "update_or_insert", "insert_or_update") and keys:
+                    key_cols = [f'"{k}"' for k in keys]
+                    update_set = ", ".join([f'"{c}" = EXCLUDED."{c}"' for c in df.columns if c not in keys])
+                    query = f"""
+                        INSERT INTO {table_name} ({cols_str}) VALUES ({placeholders})
+                        ON CONFLICT ({", ".join(key_cols)}) DO UPDATE SET {update_set};
+                    """
+                    cur.executemany(query, records)
+                elif data_action == "delete" and keys:
+                    where_clause = " AND ".join([f'"{k}" = %s' for k in keys])
+                    key_indices = [df.columns.index(k) for k in keys]
+                    key_records = [[rec[i] for i in key_indices] for rec in records]
+                    query = f"DELETE FROM {table_name} WHERE {where_clause};"
+                    cur.executemany(query, key_records)
+                else:
+                    query = f"INSERT INTO {table_name} ({cols_str}) VALUES ({placeholders});"
+                    cur.executemany(query, records)
+
+                conn.commit()
+                return df.height
+

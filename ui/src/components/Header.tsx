@@ -4,6 +4,7 @@ import {
   Save,
   CheckSquare,
   UploadCloud,
+  Upload,
   Play,
   Download,
   Loader2,
@@ -17,6 +18,10 @@ import {
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
+  FolderGit2,
+  LayoutGrid,
+  SlidersHorizontal,
+  Terminal,
   Info,
 } from "lucide-react";
 import { Environment } from "../store/jobStore";
@@ -36,10 +41,18 @@ interface HeaderProps {
   activeEnvironment: Environment;
   connectionsCount: number;
   gitStatus?: { branch: string; clean: boolean; commit_hash: string; commit_message: string };
-  leftSidebarVisible: boolean;
-  rightSidebarVisible: boolean;
-  onToggleLeftSidebar: () => void;
-  onToggleRightSidebar: () => void;
+  repoVisible?: boolean;
+  paletteVisible?: boolean;
+  propertiesVisible?: boolean;
+  consoleVisible?: boolean;
+  onToggleRepo?: () => void;
+  onTogglePalette?: () => void;
+  onToggleProperties?: () => void;
+  onToggleConsole?: () => void;
+  leftSidebarVisible?: boolean;
+  rightSidebarVisible?: boolean;
+  onToggleLeftSidebar?: () => void;
+  onToggleRightSidebar?: () => void;
   onOpenAbout: () => void;
   onSaveDraft: () => void;
   onValidate: () => void;
@@ -47,6 +60,9 @@ interface HeaderProps {
   onCompile: () => void;
   onRun: () => void;
   onExport: () => void;
+  onImport?: () => void;
+  onOpenDiagnostics?: () => void;
+  problemCount?: number;
   onOpenConnections: () => void;
   onOpenContextVars: () => void;
   onOpenQueryBank: () => void;
@@ -61,6 +77,14 @@ export const Header: React.FC<HeaderProps> = ({
   activeEnvironment,
   connectionsCount,
   gitStatus,
+  repoVisible = true,
+  paletteVisible = true,
+  propertiesVisible = true,
+  consoleVisible = true,
+  onToggleRepo,
+  onTogglePalette,
+  onToggleProperties,
+  onToggleConsole,
   leftSidebarVisible,
   rightSidebarVisible,
   onToggleLeftSidebar,
@@ -72,6 +96,9 @@ export const Header: React.FC<HeaderProps> = ({
   onCompile,
   onRun,
   onExport,
+  onImport,
+  onOpenDiagnostics,
+  problemCount = 0,
   onOpenConnections,
   onOpenContextVars,
   onOpenQueryBank,
@@ -100,7 +127,7 @@ export const Header: React.FC<HeaderProps> = ({
           onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.06)")}
           onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
         >
-          <div className="brand-logo">
+          <span className="brand-logo">
             <Rocket size={20} color="var(--accent-cyan)" />
             <span>RocketDataForge</span>
             <span
@@ -117,7 +144,7 @@ export const Header: React.FC<HeaderProps> = ({
               v1.2.0
             </span>
             <ChevronDown size={11} color="var(--text-muted)" />
-          </div>
+          </span>
         </button>
 
         <div className="pipeline-meta">
@@ -127,18 +154,40 @@ export const Header: React.FC<HeaderProps> = ({
           <span className="badge badge-revision" title="Revisão Atual do Draft">
             rev {revision}
           </span>
-          {isValid === true && <span className="badge badge-success">DAG Válido</span>}
+          {isValid === true && (
+            <button
+              type="button"
+              className="badge badge-success"
+              style={{
+                cursor: "pointer",
+                background: "rgba(16, 185, 129, 0.15)",
+                color: "var(--status-success)",
+                borderColor: "var(--status-success)",
+                fontWeight: 600,
+              }}
+              onClick={onOpenDiagnostics}
+              title="Grafo Válido — Clique para abrir o Painel de Diagnóstico"
+            >
+              ✓ DAG Válido
+            </button>
+          )}
           {isValid === false && (
-            <span
+            <button
+              type="button"
               className="badge"
               style={{
-                background: "rgba(239,68,68,0.15)",
+                background: "rgba(239,68,68,0.2)",
                 color: "var(--status-danger)",
                 borderColor: "var(--status-danger)",
+                cursor: "pointer",
+                fontWeight: 600,
+                boxShadow: "0 0 6px rgba(239,68,68,0.35)",
               }}
+              onClick={onOpenDiagnostics}
+              title="Erros estruturais no Grafo — Clique para abrir o Painel de Diagnóstico"
             >
-              Erros no Grafo
-            </span>
+              ⚠ Erros no Grafo {problemCount > 0 ? `(${problemCount})` : ""}
+            </button>
           )}
         </div>
       </div>
@@ -223,40 +272,66 @@ export const Header: React.FC<HeaderProps> = ({
           <span>Queries</span>
         </button>
 
-        {/* Sidebar Visibility Toggles */}
-        <div style={{ display: "flex", alignItems: "center", gap: 3, marginLeft: 6 }}>
+        {/* Sidebar & Panel Visibility Toggles */}
+        <div style={{ display: "flex", alignItems: "center", gap: 3, marginLeft: 6, background: "rgba(0,0,0,0.25)", padding: "2px 4px", borderRadius: 6, border: "1px solid var(--border-subtle)" }}>
           <button
             className="icon-btn"
             style={{
-              padding: "5px 7px",
-              background: !leftSidebarVisible ? "rgba(6,182,212,0.15)" : undefined,
-              borderColor: !leftSidebarVisible ? "var(--accent-cyan)" : undefined,
+              padding: "4px 6px",
+              background: repoVisible ? "rgba(0,229,255,0.12)" : "transparent",
+              borderColor: repoVisible ? "var(--accent-cyan)" : "transparent",
+              color: repoVisible ? "var(--accent-cyan)" : "var(--text-muted)",
             }}
-            onClick={onToggleLeftSidebar}
-            title={
-              leftSidebarVisible
-                ? "Ocultar barra lateral esquerda (Ctrl+B)"
-                : "Exibir barra lateral esquerda (Ctrl+B)"
-            }
+            onClick={onToggleRepo || onToggleLeftSidebar}
+            title={repoVisible ? "Ocultar Repositório de Jobs" : "Exibir Repositório de Jobs"}
+            id="toggle-repo-btn"
           >
-            {leftSidebarVisible ? <PanelLeftClose size={15} /> : <PanelLeftOpen size={15} color="var(--accent-cyan)" />}
+            <FolderGit2 size={14} />
           </button>
 
           <button
             className="icon-btn"
             style={{
-              padding: "5px 7px",
-              background: !rightSidebarVisible ? "rgba(6,182,212,0.15)" : undefined,
-              borderColor: !rightSidebarVisible ? "var(--accent-cyan)" : undefined,
+              padding: "4px 6px",
+              background: paletteVisible ? "rgba(79,142,247,0.12)" : "transparent",
+              borderColor: paletteVisible ? "var(--accent-blue)" : "transparent",
+              color: paletteVisible ? "var(--accent-blue)" : "var(--text-muted)",
             }}
-            onClick={onToggleRightSidebar}
-            title={
-              rightSidebarVisible
-                ? "Ocultar painel de propriedades"
-                : "Exibir painel de propriedades"
-            }
+            onClick={onTogglePalette}
+            title={paletteVisible ? "Ocultar Paleta de Componentes" : "Exibir Paleta de Componentes"}
+            id="toggle-palette-btn"
           >
-            {rightSidebarVisible ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} color="var(--accent-cyan)" />}
+            <LayoutGrid size={14} />
+          </button>
+
+          <button
+            className="icon-btn"
+            style={{
+              padding: "4px 6px",
+              background: consoleVisible ? "rgba(34,197,94,0.12)" : "transparent",
+              borderColor: consoleVisible ? "var(--status-success)" : "transparent",
+              color: consoleVisible ? "var(--status-success)" : "var(--text-muted)",
+            }}
+            onClick={onToggleConsole}
+            title={consoleVisible ? "Ocultar Console de Execução" : "Exibir Console de Execução"}
+            id="toggle-console-btn"
+          >
+            <Terminal size={14} />
+          </button>
+
+          <button
+            className="icon-btn"
+            style={{
+              padding: "4px 6px",
+              background: propertiesVisible ? "rgba(155,114,247,0.12)" : "transparent",
+              borderColor: propertiesVisible ? "var(--accent-purple)" : "transparent",
+              color: propertiesVisible ? "var(--accent-purple)" : "var(--text-muted)",
+            }}
+            onClick={onToggleProperties || onToggleRightSidebar}
+            title={propertiesVisible ? "Ocultar Painel de Propriedades" : "Exibir Painel de Propriedades"}
+            id="toggle-properties-btn"
+          >
+            <SlidersHorizontal size={14} />
           </button>
         </div>
       </div>
@@ -273,7 +348,7 @@ export const Header: React.FC<HeaderProps> = ({
           title="Salvar Job (Ctrl+S)"
         >
           {loadingAction === "save" ? <Loader2 size={14} className="spin" /> : <Save size={14} />}
-          Salvar
+          <span>Salvar</span>
         </button>
 
         {/* Validate */}
@@ -285,7 +360,7 @@ export const Header: React.FC<HeaderProps> = ({
           disabled={loadingAction !== null}
         >
           {loadingAction === "validate" ? <Loader2 size={14} className="spin" /> : <CheckSquare size={14} />}
-          Validar
+          <span>Validar</span>
         </button>
 
         {/* Export */}
@@ -295,10 +370,26 @@ export const Header: React.FC<HeaderProps> = ({
           id="btn-export"
           onClick={onExport}
           disabled={loadingAction !== null}
+          title="Exportar Job (.rdf.json)"
         >
           {loadingAction === "export" ? <Loader2 size={14} className="spin" /> : <Download size={14} />}
-          Exportar
+          <span>Exportar</span>
         </button>
+
+        {/* Import */}
+        {onImport && (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            id="btn-import"
+            onClick={onImport}
+            disabled={loadingAction !== null}
+            title="Importar Job (.rdf.json / .json)"
+          >
+            <Upload size={14} />
+            <span>Importar</span>
+          </button>
+        )}
 
         <div className="header-divider" />
 
@@ -311,7 +402,7 @@ export const Header: React.FC<HeaderProps> = ({
           disabled={loadingAction !== null}
         >
           {loadingAction === "publish" ? <Loader2 size={14} className="spin" /> : <UploadCloud size={14} />}
-          Publicar
+          <span>Publicar</span>
         </button>
 
         {/* Compile */}
@@ -324,7 +415,7 @@ export const Header: React.FC<HeaderProps> = ({
           title={!publishedVersionId ? "Publique antes de compilar" : "Compilar Planos"}
         >
           {loadingAction === "compile" ? <Loader2 size={14} className="spin" /> : <Cpu size={14} />}
-          Compilar
+          <span>Compilar</span>
         </button>
 
         {/* Run */}
@@ -337,7 +428,7 @@ export const Header: React.FC<HeaderProps> = ({
           title={!publishedVersionId ? "Publique antes de executar" : "Executar Pipeline"}
         >
           {loadingAction === "run" ? <Loader2 size={14} className="spin" /> : <Play size={14} />}
-          Executar
+          <span>Executar</span>
         </button>
       </div>
     </header>

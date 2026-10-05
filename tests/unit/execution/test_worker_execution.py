@@ -99,3 +99,56 @@ def test_worker_run_physical_plan_to_completion(tmp_path):
     assert out_df.height == 20
     assert out_df.columns == ["id", "amount"]
     assert all(val >= 100 for val in out_df["amount"].to_list())
+
+
+def test_worker_scan_with_schema_definitions(tmp_path):
+    input_csv = tmp_path / "mixed.csv"
+    output_parquet = tmp_path / "output.parquet"
+
+    # CSV com número nas primeiras linhas e texto na última (provocaria erro de parse se inferido como i64)
+    input_csv.write_text("id,vote_count\n1,100\n2,200\n3,en\n", encoding="utf-8")
+
+    plan = PhysicalPlan(
+        pipeline_id="pipe-schema-test",
+        default_chunk_size=10,
+        execution_order=["scan_node", "sink_node"],
+        operators={
+            "scan_node": PhysicalOperator(
+                id="scan_node",
+                operator_type="scan",
+                engine="polars",
+                input_ids=[],
+                config={
+                    "source": str(input_csv),
+                    "format": "csv",
+                    "schema_definitions": [
+                        {"name": "id", "type": "String"},
+                        {"name": "vote_count", "type": "String"}
+                    ]
+                }
+            ),
+            "sink_node": PhysicalOperator(
+                id="sink_node",
+                operator_type="sink",
+                engine="polars",
+                input_ids=["scan_node"],
+                config={"target": str(output_parquet), "format": "parquet", "write_mode": "replace"}
+            )
+        }
+    )
+
+    execution = Execution(
+        id="exec-test-schema",
+        pipeline_version_id="ver-1.0.0",
+        correlation_id="corr-schema-1"
+    )
+
+    file_connector = LocalFileConnector(base_directory=str(tmp_path))
+    worker = ExecutionWorker(file_connector=file_connector)
+    result_execution = worker.run(execution, plan)
+
+    assert result_execution.status == ExecutionStatus.SUCCEEDED
+    assert os.path.exists(output_parquet)
+    out_df = pl.read_parquet(output_parquet)
+    assert out_df.height == 3
+    assert out_df["vote_count"][2] == "en"

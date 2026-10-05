@@ -33,7 +33,12 @@ EXPECTED_PHYSICAL_PLAN_GOLDEN = {
                     "connection_ref": "local_files",
                     "path": "data/users.csv",
                     "format": "csv"
-                }
+                },
+                "is_iterative": False,
+                "parameter_tokens": [],
+                "schema_definitions": [],
+                "enable_duckdb_view": False,
+                "duckdb_query": None
             }
         },
         "filter_active": {
@@ -72,6 +77,9 @@ EXPECTED_PHYSICAL_PLAN_GOLDEN = {
                 "target": "output/users.parquet",
                 "format": "parquet",
                 "write_mode": "replace",
+                "table_action": "none",
+                "data_action": "insert",
+                "keys": [],
                 "connection_details": None,
                 "raw_config": {
                     "path": "output/users.parquet",
