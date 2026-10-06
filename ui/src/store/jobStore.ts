@@ -8,6 +8,30 @@ import { CanvasNodeData } from "../types";
 export type JobStatus = "draft" | "saved" | "published";
 export type Environment = "dev" | "hml" | "prd";
 
+// ─── Multi-Canvas Cell Models ───────────────────────────────
+
+export type CellExecutionStatus = "idle" | "queued" | "running" | "success" | "failed" | "skipped";
+
+export interface CellPrecondition {
+  id: string;
+  targetCellId: string;
+  expectedStatus: "OK" | "ERROR";
+}
+
+export interface CanvasCellData {
+  id: string;
+  name: string;
+  description?: string;
+  order: number;
+  preconditions: CellPrecondition[];
+  preconditionOperator: "AND" | "OR";
+  nodes: Node<CanvasNodeData>[];
+  edges: Edge[];
+  viewport?: { x: number; y: number; zoom: number };
+  nodeSchemas?: Record<string, SchemaColumn[]>;
+  status?: CellExecutionStatus;
+}
+
 export interface JobData {
   id: string;
   name: string;
@@ -23,6 +47,9 @@ export interface JobData {
   tags?: string[];
   // Schema definitions per node
   nodeSchemas?: Record<string, SchemaColumn[]>;
+  // Multi-Canvas cells
+  cells?: CanvasCellData[];
+  activeCellId?: string;
 }
 
 export interface FolderData {
@@ -137,6 +164,8 @@ export interface QueryEntry {
   tags: string[];
   /** Optional connection this query was designed for */
   connectionRef?: string;
+  /** Optional schema inferred or defined for this query */
+  schema?: SchemaColumn[];
   createdAt: string;
   updatedAt: string;
   /** Times inserted into a node */
@@ -185,12 +214,38 @@ function loadState(): StoreState {
         parsed.contextVariables = [];
       }
       
-      // Migration: add environment field to old jobs
+      // Migration: add environment and multi-canvas cells to old jobs
       if (Array.isArray(parsed.jobs)) {
-        parsed.jobs = parsed.jobs.map((j: any) => ({
-          ...j,
-          environment: j.environment ?? "dev",
-        }));
+        parsed.jobs = parsed.jobs.map((j: any) => {
+          const cells: CanvasCellData[] =
+            Array.isArray(j.cells) && j.cells.length > 0
+              ? j.cells
+              : [
+                  {
+                    id: "canvas-cell-01",
+                    name: "canvas-cell-01",
+                    description: "",
+                    order: 1,
+                    preconditions: [],
+                    preconditionOperator: "AND",
+                    nodes: Array.isArray(j.nodes) ? j.nodes : [],
+                    edges: Array.isArray(j.edges) ? j.edges : [],
+                    viewport: j.viewport,
+                    nodeSchemas: j.nodeSchemas || {},
+                    status: "idle",
+                  },
+                ];
+          const activeCellId =
+            j.activeCellId && cells.some((c) => c.id === j.activeCellId)
+              ? j.activeCellId
+              : cells[0]?.id || "canvas-cell-01";
+          return {
+            ...j,
+            environment: j.environment ?? "dev",
+            cells,
+            activeCellId,
+          };
+        });
       } else {
         parsed.jobs = [];
       }
@@ -297,6 +352,84 @@ export function detectMissingConnectionsForEnv(
   return warnings;
 }
 
+// ─── Multi-Canvas Cell Evaluation & Cycle Detection ──────────
+
+export function evaluateCellPreconditions(
+  cell: CanvasCellData,
+  completedStatuses: Record<string, "success" | "failed" | "skipped">,
+  allCells: CanvasCellData[] = []
+): boolean {
+  if (!cell.preconditions || cell.preconditions.length === 0) {
+    return true;
+  }
+
+  const results = cell.preconditions.map((p) => {
+    // Target can be matched by targetCellId or by name
+    const targetCell = allCells.find(
+      (c) => c.id === p.targetCellId || c.name === p.targetCellId
+    );
+    const targetKey = targetCell ? targetCell.id : p.targetCellId;
+    const actualStatus = completedStatuses[targetKey] || (targetCell ? completedStatuses[targetCell.name] : undefined);
+
+    if (!actualStatus) return false;
+    if (p.expectedStatus === "OK") return actualStatus === "success";
+    if (p.expectedStatus === "ERROR") return actualStatus === "failed";
+    return false;
+  });
+
+  if (cell.preconditionOperator === "OR") {
+    return results.some((r) => r === true);
+  }
+  // Default is AND
+  return results.every((r) => r === true);
+}
+
+export function detectCellCycles(cells: CanvasCellData[]): string[] | null {
+  const cellIds = cells.map((c) => c.id);
+  const cellIdSet = new Set(cellIds);
+  const adjList: Record<string, string[]> = {};
+  const inDegree: Record<string, number> = {};
+
+  cellIds.forEach((id) => {
+    adjList[id] = [];
+    inDegree[id] = 0;
+  });
+
+  for (const cell of cells) {
+    for (const p of cell.preconditions || []) {
+      const target = cells.find((c) => c.id === p.targetCellId || c.name === p.targetCellId);
+      const targetId = target ? target.id : p.targetCellId;
+
+      if (targetId === cell.id) {
+        return [cell.id];
+      }
+      if (cellIdSet.has(targetId)) {
+        adjList[targetId].push(cell.id);
+        inDegree[cell.id] = (inDegree[cell.id] || 0) + 1;
+      }
+    }
+  }
+
+  const queue: string[] = cellIds.filter((id) => inDegree[id] === 0);
+  const visited: string[] = [];
+
+  while (queue.length > 0) {
+    const curr = queue.shift()!;
+    visited.push(curr);
+    for (const neighbor of adjList[curr] || []) {
+      inDegree[neighbor]--;
+      if (inDegree[neighbor] === 0) {
+        queue.push(neighbor);
+      }
+    }
+  }
+
+  if (visited.length < cellIds.length) {
+    return cellIds.filter((id) => inDegree[id] > 0);
+  }
+  return null;
+}
+
 export const jobStore = {
   subscribe(listener: Listener): () => void {
     listeners.add(listener);
@@ -357,12 +490,25 @@ export const jobStore = {
   // ─── Jobs ─────────────────────────────────────────────────
 
   createJob(name: string, folderId: string, env: Environment = "dev"): JobData {
+    const defaultCell: CanvasCellData = {
+      id: "canvas-cell-01",
+      name: "canvas-cell-01",
+      description: "",
+      order: 1,
+      preconditions: [],
+      preconditionOperator: "AND",
+      nodes: [],
+      edges: [],
+      status: "idle",
+    };
     const job: JobData = {
       id: `job-${Date.now()}`,
       name,
       folderId,
       nodes: [],
       edges: [],
+      cells: [defaultCell],
+      activeCellId: "canvas-cell-01",
       status: "draft",
       environment: env,
       createdAt: new Date().toISOString(),
@@ -378,15 +524,388 @@ export const jobStore = {
     jobId: string,
     nodes: Node<CanvasNodeData>[],
     edges: Edge[],
-    viewport?: { x: number; y: number; zoom: number }
+    viewport?: { x: number; y: number; zoom: number },
+    targetCellId?: string
   ): void {
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const cellId = targetCellId || j.activeCellId || j.cells?.[0]?.id || "canvas-cell-01";
+        const updatedCells = (j.cells || []).map((c) =>
+          c.id === cellId ? { ...c, nodes, edges, viewport } : c
+        );
+        return {
+          ...j,
+          nodes,
+          edges,
+          viewport,
+          cells: updatedCells,
+          status: "saved",
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+  },
+
+  // ─── Multi-Canvas Cell Operations ─────────────────────────
+
+  createCell(jobId: string, customName?: string): CanvasCellData | null {
+    const job = state.jobs.find((j) => j.id === jobId);
+    if (!job) return null;
+
+    const existingCells = job.cells || [];
+    const nextIndex = existingCells.length + 1;
+    const defaultId = `canvas-cell-${String(nextIndex).padStart(2, "0")}`;
+    const name = (customName?.trim() || defaultId).slice(0, 50);
+
+    const maxOrder = existingCells.reduce((max, c) => Math.max(max, c.order || 0), 0);
+    const newOrder = maxOrder + 1;
+
+    // Default precondition: points to the immediately preceding cell if one exists
+    const prevCell = existingCells[existingCells.length - 1];
+    const defaultPreconditions: CellPrecondition[] = prevCell
+      ? [
+          {
+            id: `prec-${Date.now()}`,
+            targetCellId: prevCell.id,
+            expectedStatus: "OK",
+          },
+        ]
+      : [];
+
+    const newCell: CanvasCellData = {
+      id: defaultId,
+      name,
+      description: "",
+      order: newOrder,
+      preconditions: defaultPreconditions,
+      preconditionOperator: "AND",
+      nodes: [],
+      edges: [],
+      status: "idle",
+    };
+
     state = {
       ...state,
       jobs: state.jobs.map((j) =>
         j.id === jobId
-          ? { ...j, nodes, edges, viewport, status: "saved", updatedAt: new Date().toISOString() }
+          ? {
+              ...j,
+              cells: [...(j.cells || []), newCell],
+              activeCellId: newCell.id,
+              updatedAt: new Date().toISOString(),
+            }
           : j
       ),
+    };
+    saveState(state);
+    notify();
+    return newCell;
+  },
+
+  updateCell(jobId: string, cellId: string, updates: Partial<CanvasCellData>): void {
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) =>
+          c.id === cellId ? { ...c, ...updates } : c
+        );
+        return {
+          ...j,
+          cells: updatedCells,
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+  },
+
+  renameCell(jobId: string, oldCellIdOrName: string, newName: string): void {
+    const safeName = newName.trim().slice(0, 50);
+    if (!safeName) return;
+
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const oldTarget = oldCellIdOrName;
+        const updatedCells = (j.cells || []).map((cell) => {
+          let c = { ...cell };
+          const matches = c.id === oldTarget || c.name === oldTarget;
+          if (matches) {
+            c.name = safeName;
+            if (c.id === oldTarget) {
+              c.id = safeName;
+            }
+          }
+
+          // Cascading rename across preconditions in all other cells
+          if (Array.isArray(c.preconditions)) {
+            c.preconditions = c.preconditions.map((p) =>
+              p.targetCellId === oldTarget ? { ...p, targetCellId: safeName } : p
+            );
+          }
+
+          // Cascading rename in node configs
+          if (Array.isArray(c.nodes)) {
+            const oldClean = oldTarget.replace(/-/g, "_").toLowerCase();
+            const newClean = safeName.replace(/-/g, "_").toLowerCase();
+            c.nodes = c.nodes.map((node) => {
+              const cfg = node.data?.config;
+              if (!cfg) return node;
+              let changed = false;
+              const newCfg = { ...cfg };
+              if (newCfg.source_cell === oldTarget) {
+                newCfg.source_cell = safeName;
+                changed = true;
+              }
+              if (newCfg.table === `cell_output_${oldClean}`) {
+                newCfg.table = `cell_output_${newClean}`;
+                changed = true;
+              }
+              if (changed) {
+                return { ...node, data: { ...node.data, config: newCfg } };
+              }
+              return node;
+            });
+          }
+          return c;
+        });
+
+        const activeCellId =
+          j.activeCellId === oldTarget ? safeName : j.activeCellId;
+
+        return {
+          ...j,
+          cells: updatedCells,
+          activeCellId,
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+  },
+
+  deleteCell(jobId: string, cellId: string): boolean {
+    const job = state.jobs.find((j) => j.id === jobId);
+    if (!job || !job.cells || job.cells.length <= 1) {
+      return false; // Job must retain at least one cell
+    }
+
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const remainingCells = (j.cells || []).filter((c) => c.id !== cellId);
+        // Clean up preconditions referencing the deleted cell
+        const cleanedCells = remainingCells.map((c) => ({
+          ...c,
+          preconditions: (c.preconditions || []).filter(
+            (p) => p.targetCellId !== cellId
+          ),
+        }));
+
+        const newActive =
+          j.activeCellId === cellId
+            ? cleanedCells[0]?.id || "canvas-cell-01"
+            : j.activeCellId;
+
+        const activeCellObj = cleanedCells.find((c) => c.id === newActive);
+
+        return {
+          ...j,
+          cells: cleanedCells,
+          activeCellId: newActive,
+          nodes: activeCellObj ? activeCellObj.nodes : j.nodes,
+          edges: activeCellObj ? activeCellObj.edges : j.edges,
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+    return true;
+  },
+
+  duplicateCell(jobId: string, cellId: string): CanvasCellData | null {
+    const job = state.jobs.find((j) => j.id === jobId);
+    if (!job) return null;
+
+    const sourceCell = (job.cells || []).find((c) => c.id === cellId);
+    if (!sourceCell) return null;
+
+    const existingCells = job.cells || [];
+    const nextIndex = existingCells.length + 1;
+    const newId = `canvas-cell-${String(nextIndex).padStart(2, "0")}`;
+    const newName = `Cópia de ${sourceCell.name}`.slice(0, 50);
+    const maxOrder = existingCells.reduce((max, c) => Math.max(max, c.order || 0), 0);
+
+    // Deep clone nodes and edges with id mapping
+    const idMap: Record<string, string> = {};
+    const clonedNodes = (sourceCell.nodes || []).map((n) => {
+      const uniqueSuffix = Date.now().toString(36) + Math.random().toString(36).substr(2, 4);
+      const newNId = `${n.id}_${uniqueSuffix}`;
+      idMap[n.id] = newNId;
+      return {
+        ...n,
+        id: newNId,
+        position: { x: n.position.x + 30, y: n.position.y + 30 },
+      };
+    });
+
+    const clonedEdges = (sourceCell.edges || []).map((e) => ({
+      ...e,
+      id: `edge_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      source: idMap[e.source] || e.source,
+      target: idMap[e.target] || e.target,
+    }));
+
+    const newCell: CanvasCellData = {
+      id: newId,
+      name: newName,
+      description: sourceCell.description || "",
+      order: maxOrder + 1,
+      preconditions: [...(sourceCell.preconditions || [])],
+      preconditionOperator: sourceCell.preconditionOperator || "AND",
+      nodes: clonedNodes,
+      edges: clonedEdges,
+      viewport: sourceCell.viewport ? { ...sourceCell.viewport } : undefined,
+      nodeSchemas: sourceCell.nodeSchemas ? { ...sourceCell.nodeSchemas } : {},
+      status: "idle",
+    };
+
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) =>
+        j.id === jobId
+          ? {
+              ...j,
+              cells: [...(j.cells || []), newCell],
+              activeCellId: newCell.id,
+              updatedAt: new Date().toISOString(),
+            }
+          : j
+      ),
+    };
+    saveState(state);
+    notify();
+    return newCell;
+  },
+
+  reorderCells(jobId: string, orderedCellIds: string[]): void {
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const currentCells = j.cells || [];
+        const cellMap = new Map(currentCells.map((c) => [c.id, c]));
+        const reordered = orderedCellIds
+          .map((id, index) => {
+            const cell = cellMap.get(id);
+            return cell ? { ...cell, order: index + 1 } : null;
+          })
+          .filter(Boolean) as CanvasCellData[];
+
+        // Append any cells not explicitly in orderedCellIds
+        const remaining = currentCells.filter((c) => !orderedCellIds.includes(c.id));
+        remaining.forEach((c, idx) => {
+          reordered.push({ ...c, order: reordered.length + idx + 1 });
+        });
+
+        return {
+          ...j,
+          cells: reordered,
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+  },
+
+  setCellStatus(jobId: string, cellId: string, status: CellExecutionStatus): void {
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) =>
+          c.id === cellId ? { ...c, status } : c
+        );
+        return { ...j, cells: updatedCells };
+      }),
+    };
+    saveState(state);
+    notify();
+  },
+
+  setActiveCell(jobId: string, cellId: string): void {
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const targetCell = (j.cells || []).find((c) => c.id === cellId);
+        return {
+          ...j,
+          activeCellId: cellId,
+          nodes: targetCell ? targetCell.nodes : j.nodes,
+          edges: targetCell ? targetCell.edges : j.edges,
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+  },
+
+  saveCellGraph(
+    jobId: string,
+    cellId: string,
+    nodes: Node<CanvasNodeData>[],
+    edges: Edge[],
+    viewport?: { x: number; y: number; zoom: number }
+  ): void {
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) =>
+          c.id === cellId ? { ...c, nodes, edges, viewport } : c
+        );
+        const isActive = j.activeCellId === cellId;
+        return {
+          ...j,
+          cells: updatedCells,
+          nodes: isActive ? nodes : j.nodes,
+          edges: isActive ? edges : j.edges,
+          viewport: isActive ? viewport : j.viewport,
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+  },
+
+  saveCellSchemas(jobId: string, cellId: string, schemas: Record<string, SchemaColumn[]>): void {
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) =>
+          c.id === cellId ? { ...c, nodeSchemas: schemas } : c
+        );
+        return {
+          ...j,
+          cells: updatedCells,
+          nodeSchemas: j.activeCellId === cellId ? schemas : j.nodeSchemas,
+          updatedAt: new Date().toISOString(),
+        };
+      }),
     };
     saveState(state);
     notify();
@@ -466,6 +985,26 @@ export const jobStore = {
     const environment = imported.environment || rawJob.environment || "dev";
     const viewport = imported.viewport || rawJob.viewport;
 
+    const importedCells: CanvasCellData[] =
+      Array.isArray((rawJob as any).cells) && (rawJob as any).cells.length > 0
+        ? (rawJob as any).cells
+        : [
+            {
+              id: "canvas-cell-01",
+              name: "canvas-cell-01",
+              description: "",
+              order: 1,
+              preconditions: [],
+              preconditionOperator: "AND",
+              nodes,
+              edges,
+              viewport,
+              nodeSchemas,
+              status: "idle",
+            },
+          ];
+    const activeCellId = (rawJob as any).activeCellId || importedCells[0]?.id || "canvas-cell-01";
+
     // Create new job with fresh ID to prevent collision
     const newId = `job-${Date.now()}`;
     const newJob: JobData = {
@@ -474,6 +1013,8 @@ export const jobStore = {
       folderId,
       nodes,
       edges,
+      cells: importedCells,
+      activeCellId,
       nodeSchemas,
       environment,
       viewport,
@@ -662,5 +1203,17 @@ export const jobStore = {
     };
     saveState(state);
     notify();
+  },
+
+  /** Filter queries by dialect and optional connectionRef */
+  getQueriesForConnection(dialect: QueryDialect, connectionRef?: string): QueryEntry[] {
+    return state.queryBank.filter((q) => {
+      const dialectMatch = q.dialect === dialect || q.dialect === "sql";
+      if (!dialectMatch) return false;
+      if (connectionRef && q.connectionRef) {
+        return q.connectionRef === connectionRef;
+      }
+      return true;
+    });
   },
 };

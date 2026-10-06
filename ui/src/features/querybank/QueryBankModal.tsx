@@ -2,9 +2,9 @@ import React, { useState, useMemo } from "react";
 import {
   X, Plus, Trash2, Search, Copy, Check, Edit3,
   BookOpen, Tag, Database, Clock, TrendingUp, ChevronDown,
-  Save, Play,
+  Save, Play, AlertCircle,
 } from "lucide-react";
-import { jobStore, QueryEntry, QueryDialect, ConnectionEntry } from "../../store/jobStore";
+import { jobStore, QueryEntry, QueryDialect, ConnectionEntry, SchemaColumn, SchemaColumnType } from "../../store/jobStore";
 import { useJobStore } from "../../store/useJobStore";
 
 interface QueryBankProps {
@@ -55,7 +55,14 @@ const EMPTY_FORM = {
   dialect: "sql" as QueryDialect,
   tags: [] as string[],
   connectionRef: "",
+  schema: [] as SchemaColumn[],
 };
+
+const COLUMN_TYPES: SchemaColumnType[] = [
+  "String", "Integer", "Long", "Float", "Double", "Decimal",
+  "Boolean", "Date", "DateTime", "Timestamp", "Time",
+  "Bytes", "JSON", "Array", "Object", "Unknown",
+];
 
 // ─── Main Component ───────────────────────────────────────────
 
@@ -108,6 +115,7 @@ export const QueryBankModal: React.FC<QueryBankProps> = ({ onClose, onInsertQuer
       dialect: q.dialect,
       tags: [...q.tags],
       connectionRef: q.connectionRef ?? "",
+      schema: q.schema ? [...q.schema] : [],
     });
     setTagInput("");
     setIsNew(false);
@@ -116,6 +124,7 @@ export const QueryBankModal: React.FC<QueryBankProps> = ({ onClose, onInsertQuer
 
   const handleSave = () => {
     if (!form.name.trim() || !form.sql.trim()) return;
+    const schemaToSave = form.schema.length > 0 ? form.schema : undefined;
     if (isNew) {
       const entry = jobStore.saveQuery({
         name: form.name.trim(),
@@ -124,6 +133,7 @@ export const QueryBankModal: React.FC<QueryBankProps> = ({ onClose, onInsertQuer
         dialect: form.dialect,
         tags: form.tags,
         connectionRef: form.connectionRef || undefined,
+        schema: schemaToSave,
       });
       setSelectedId(entry.id);
     } else if (selectedId) {
@@ -134,6 +144,7 @@ export const QueryBankModal: React.FC<QueryBankProps> = ({ onClose, onInsertQuer
         dialect: form.dialect,
         tags: form.tags,
         connectionRef: form.connectionRef || undefined,
+        schema: schemaToSave,
       });
     }
     setEditing(false);
@@ -149,9 +160,32 @@ export const QueryBankModal: React.FC<QueryBankProps> = ({ onClose, onInsertQuer
   };
 
   const handleCopy = (sql: string) => {
-    navigator.clipboard.writeText(sql);
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(sql).catch(() => {
+          // Fallback for non-HTTPS or permission denied
+          copyFallback(sql);
+        });
+      } else {
+        copyFallback(sql);
+      }
+    } catch {
+      copyFallback(sql);
+    }
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
+  };
+
+  const copyFallback = (text: string) => {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try { document.execCommand("copy"); } catch (_) {}
+    document.body.removeChild(ta);
   };
 
   const handleInsert = (q: QueryEntry) => {
@@ -391,6 +425,94 @@ export const QueryBankModal: React.FC<QueryBankProps> = ({ onClose, onInsertQuer
                       ))}
                     </div>
                   </div>
+
+                  {/* ── Schema Columns (optional) ── */}
+                  <div className="form-group">
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                      <label className="form-label" style={{ margin: 0 }}>
+                        Schema de Colunas
+                        <span style={{ fontSize: "0.68rem", color: "var(--text-muted)", fontWeight: 400, marginLeft: 6 }}>
+                          (opcional — importado automaticamente ao usar a query)
+                        </span>
+                      </label>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        style={{ fontSize: "0.7rem", padding: "3px 8px" }}
+                        onClick={() => {
+                          const newCol: SchemaColumn = {
+                            id: `col-${Date.now()}`,
+                            name: "",
+                            type: "String",
+                            nullable: true,
+                          };
+                          setForm((f) => ({ ...f, schema: [...f.schema, newCol] }));
+                        }}
+                      >
+                        <Plus size={11} /> Coluna
+                      </button>
+                    </div>
+                    {form.schema.length === 0 ? (
+                      <div style={{ fontSize: "0.72rem", color: "var(--text-muted)", padding: "8px 0", textAlign: "center", borderRadius: 6, border: "1px dashed var(--border-subtle)" }}>
+                        Sem colunas definidas — schema será inferido ao usar no job
+                      </div>
+                    ) : (
+                      <div className="qbank-schema-table">
+                        <div className="qbank-schema-header">
+                          <span style={{ flex: 2 }}>Nome</span>
+                          <span style={{ flex: 2 }}>Tipo</span>
+                          <span style={{ flex: 1, textAlign: "center" }}>Nullable</span>
+                          <span style={{ width: 28 }}></span>
+                        </div>
+                        {form.schema.map((col, idx) => (
+                          <div key={col.id} className="qbank-schema-row">
+                            <input
+                              className="form-input"
+                              style={{ flex: 2, fontSize: "0.75rem", padding: "4px 6px" }}
+                              value={col.name}
+                              placeholder="nome_coluna"
+                              onChange={(e) => {
+                                const updated = [...form.schema];
+                                updated[idx] = { ...col, name: e.target.value };
+                                setForm((f) => ({ ...f, schema: updated }));
+                              }}
+                            />
+                            <select
+                              className="form-select"
+                              style={{ flex: 2, fontSize: "0.75rem", padding: "4px 6px" }}
+                              value={col.type}
+                              onChange={(e) => {
+                                const updated = [...form.schema];
+                                updated[idx] = { ...col, type: e.target.value as SchemaColumnType };
+                                setForm((f) => ({ ...f, schema: updated }));
+                              }}
+                            >
+                              {COLUMN_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                            </select>
+                            <div style={{ flex: 1, display: "flex", justifyContent: "center", alignItems: "center" }}>
+                              <input
+                                type="checkbox"
+                                checked={col.nullable}
+                                onChange={(e) => {
+                                  const updated = [...form.schema];
+                                  updated[idx] = { ...col, nullable: e.target.checked };
+                                  setForm((f) => ({ ...f, schema: updated }));
+                                }}
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              className="icon-btn danger"
+                              style={{ width: 28, flexShrink: 0 }}
+                              onClick={() => setForm((f) => ({ ...f, schema: f.schema.filter((_, i) => i !== idx) }))}
+                            >
+                              <Trash2 size={11} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             ) : selectedQuery ? (
@@ -478,6 +600,37 @@ export const QueryBankModal: React.FC<QueryBankProps> = ({ onClose, onInsertQuer
                   </div>
                   <pre className="qbank-sql-code">{selectedQuery.sql}</pre>
                 </div>
+
+                {/* Schema columns */}
+                {selectedQuery.schema && selectedQuery.schema.length > 0 && (
+                  <div style={{ padding: "0 20px 16px" }}>
+                    <div style={{ fontSize: "0.72rem", color: "var(--text-muted)", marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+                      <Database size={11} /> Schema ({selectedQuery.schema.length} colunas — importado automaticamente)
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                      {selectedQuery.schema.map((col) => (
+                        <span
+                          key={col.id}
+                          style={{
+                            fontSize: "0.68rem",
+                            padding: "2px 7px",
+                            borderRadius: 4,
+                            background: "var(--bg-card)",
+                            border: "1px solid var(--border-subtle)",
+                            color: "var(--text-secondary)",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4,
+                          }}
+                        >
+                          <code style={{ color: "var(--accent-cyan)" }}>{col.name}</code>
+                          <span style={{ color: "var(--text-dim)" }}>{col.type}</span>
+                          {col.nullable && <span style={{ color: "var(--text-dim)", fontSize: "0.6rem" }}>?</span>}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="conn-detail-placeholder">

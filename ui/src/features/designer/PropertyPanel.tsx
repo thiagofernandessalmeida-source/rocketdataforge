@@ -20,8 +20,10 @@ import {
   Check,
   Wand2,
   Loader2,
+  BookOpen,
+  ChevronRight,
 } from "lucide-react";
-import { ConnectionEntry, ContextVariable, SchemaColumn, Environment } from "../../store/jobStore";
+import { ConnectionEntry, ContextVariable, SchemaColumn, Environment, QueryEntry, QueryDialect, ConnectionType } from "../../store/jobStore";
 
 export interface PropertyPanelProps {
   selectedNode: Node<CanvasNodeData> | null;
@@ -31,6 +33,7 @@ export interface PropertyPanelProps {
   onUpdateNodeId?: (oldId: string, newId: string) => void;
   onDeleteNode: (nodeId: string) => void;
   connections?: ConnectionEntry[];
+  queryBank?: QueryEntry[];
   contextVariables?: ContextVariable[];
   activeEnvironment?: Environment;
   allNodes?: Node<CanvasNodeData>[];
@@ -83,6 +86,125 @@ export const ConnectionSelect: React.FC<{
         <div className="conn-ref-chip">
           <Link2 size={11} />
           <code>{value}</code>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ─── Connection type → query dialect mapper ───────────────────
+const CONNECTION_TYPE_TO_DIALECT: Record<string, QueryDialect> = {
+  postgresql: "postgresql",
+  oracle: "oracle",
+  sqlserver: "sqlserver",
+  mysql: "mysql",
+  redshift: "redshift",
+  bigquery: "bigquery",
+  snowflake: "snowflake",
+  databricks: "databricks",
+};
+
+// ─── Query select dropdown ────────────────────────────────────
+export const QuerySelect: React.FC<{
+  queryBank: QueryEntry[];
+  connections: ConnectionEntry[];
+  connectionRef: string;
+  onSelect: (query: QueryEntry) => void;
+}> = ({ queryBank, connections, connectionRef, onSelect }) => {
+  const [open, setOpen] = useState(false);
+
+  // Find the connection entry to get its type/dialect
+  const connEntry = connections.find(
+    (c) => c.name.toLowerCase().replace(/\s+/g, "_") === connectionRef
+  );
+  const dialect: QueryDialect | undefined = connEntry
+    ? CONNECTION_TYPE_TO_DIALECT[connEntry.type]
+    : undefined;
+
+  // Filter queries: must match dialect (or be generic SQL) AND match connectionRef if defined
+  const filtered = queryBank.filter((q) => {
+    const dialectMatch = !dialect || q.dialect === dialect || q.dialect === "sql";
+    if (!dialectMatch) return false;
+    if (q.connectionRef && connectionRef) {
+      return q.connectionRef === connectionRef;
+    }
+    return dialectMatch;
+  });
+
+  if (filtered.length === 0) return null;
+
+  return (
+    <div style={{ position: "relative", marginBottom: 8 }}>
+      <button
+        type="button"
+        className="btn btn-secondary"
+        style={{ width: "100%", justifyContent: "space-between", fontSize: "0.78rem" }}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <BookOpen size={12} color="var(--accent-cyan)" />
+          Usar query do banco ({filtered.length} disponíve{filtered.length === 1 ? "l" : "is"})
+        </span>
+        <ChevronRight
+          size={12}
+          style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}
+        />
+      </button>
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: "100%",
+            left: 0,
+            right: 0,
+            zIndex: 200,
+            background: "var(--bg-card)",
+            border: "1px solid var(--border-medium)",
+            borderRadius: 8,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+            maxHeight: 260,
+            overflowY: "auto",
+            marginTop: 4,
+          }}
+        >
+          {filtered.map((q) => (
+            <button
+              key={q.id}
+              type="button"
+              style={{
+                display: "block",
+                width: "100%",
+                textAlign: "left",
+                background: "none",
+                border: "none",
+                borderBottom: "1px solid var(--border-subtle)",
+                padding: "9px 12px",
+                cursor: "pointer",
+                color: "var(--text-primary)",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-card-hover)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "none")}
+              onClick={() => {
+                onSelect(q);
+                setOpen(false);
+              }}
+            >
+              <div style={{ fontWeight: 600, fontSize: "0.78rem", marginBottom: 2 }}>{q.name}</div>
+              {q.description && (
+                <div style={{ fontSize: "0.68rem", color: "var(--text-muted)" }}>{q.description}</div>
+              )}
+              <div style={{ display: "flex", gap: 6, marginTop: 4, flexWrap: "wrap" }}>
+                <span style={{ fontSize: "0.65rem", padding: "1px 5px", borderRadius: 3, background: "var(--bg-card)", border: "1px solid var(--border-subtle)" }}>
+                  {q.dialect}
+                </span>
+                {q.schema && q.schema.length > 0 && (
+                  <span style={{ fontSize: "0.65rem", padding: "1px 5px", borderRadius: 3, background: "rgba(0,229,255,0.08)", border: "1px solid rgba(0,229,255,0.2)", color: "var(--accent-cyan)" }}>
+                    {q.schema.length} colunas
+                  </span>
+                )}
+              </div>
+            </button>
+          ))}
         </div>
       )}
     </div>
@@ -221,6 +343,7 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
   onUpdateNodeId,
   onDeleteNode,
   connections = [],
+  queryBank = [],
   contextVariables = [],
   activeEnvironment = "dev",
   allNodes = [],
@@ -741,7 +864,23 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                   />
                 </div>
                 <div className="form-group">
-                  <label className="form-label">Query SQL</label>
+                  <label className="form-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span>Query SQL</span>
+                  </label>
+                  {/* Query bank selector */}
+                  {queryBank.length > 0 && (
+                    <QuerySelect
+                      queryBank={queryBank}
+                      connections={connections}
+                      connectionRef={config.connection_ref ?? ""}
+                      onSelect={(q) => {
+                        handleChange("query", q.sql);
+                        if (q.schema && q.schema.length > 0) {
+                          onUpdateSchema?.(id, q.schema);
+                        }
+                      }}
+                    />
+                  )}
                   <DebouncedTextarea
                     value={config.query ?? ""}
                     placeholder={"SELECT *\nFROM tabela\nWHERE ativo = 1"}

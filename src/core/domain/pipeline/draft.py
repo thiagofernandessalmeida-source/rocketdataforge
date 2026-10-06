@@ -24,6 +24,7 @@ class PipelineDraft:
     nodes: Dict[str, Node] = field(default_factory=dict)
     edges: Dict[str, Edge] = field(default_factory=dict)
     parameters: Dict[str, Any] = field(default_factory=dict)
+    cells: List[Dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.id or not self.id.strip():
@@ -140,7 +141,7 @@ class PipelineDraft:
             key=lambda x: x["id"]
         )
 
-        return {
+        result = {
             "schemaVersion": "rdf.pipeline/v1",
             "kind": "Pipeline",
             "metadata": {
@@ -154,6 +155,9 @@ class PipelineDraft:
                 "edges": sorted_edges
             }
         }
+        if self.cells:
+            result["spec"]["cells"] = self.cells
+        return result
 
     def _increment_revision(self) -> None:
         self.revision += 1

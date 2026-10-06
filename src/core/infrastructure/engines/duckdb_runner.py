@@ -1,4 +1,5 @@
 import os
+import threading
 from typing import Any, Dict, List, Optional
 
 import duckdb
@@ -19,6 +20,7 @@ class DuckDBRunner:
         self.temp_directory = temp_directory
         self.database_path = database_path
         self._conn: Optional[duckdb.DuckDBPyConnection] = None
+        self._write_lock = threading.RLock()
 
     def get_connection(self) -> duckdb.DuckDBPyConnection:
         """Obtém ou inicializa a conexão com DuckDB com configurações de limite de memória."""
@@ -89,6 +91,27 @@ class DuckDBRunner:
         except Exception as e:
             raise DomainError(f"Falha ao executar query no banco DuckDB '{db_path}': {str(e)}", code="ERR_DUCKDB_DATABASE")
 
+    def materialize_cell_output(self, cell_id: str, df: pl.DataFrame) -> str:
+        """Materializa o DataFrame de saída da célula como tabela/view compartilhada no DuckDB em memória."""
+        clean_cell = cell_id.replace("-", "_").lower()
+        view_name = f"cell_output_{clean_cell}"
+        with self._write_lock:
+            self.register_dataframe(view_name, df)
+            # Também cria uma tabela/view sem prefixo se viável
+            conn = self.get_connection()
+            try:
+                conn.execute(f"CREATE OR REPLACE TEMPORARY TABLE {view_name} AS SELECT * FROM {view_name};")
+            except Exception:
+                pass
+        return view_name
+
+    def get_cell_output(self, cell_id: str) -> pl.DataFrame:
+        """Recupera o DataFrame resultante da execução de uma célula anterior."""
+        clean_cell = cell_id.replace("-", "_").lower()
+        view_name = f"cell_output_{clean_cell}"
+        with self._write_lock:
+            return self.execute_query_to_polars(f"SELECT * FROM {view_name};")
+
     def write_to_duckdb(
         self,
         df: pl.DataFrame,
@@ -99,49 +122,50 @@ class DuckDBRunner:
         keys: Optional[List[str]] = None,
         is_first_chunk: bool = True
     ) -> int:
-        """Grava dados no banco DuckDB com suporte a ações de tabela e dados no padrão Talend."""
-        db_path = database_path or self.database_path or ":memory:"
-        if db_path != ":memory:":
-            os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+        """Grava dados no banco DuckDB com suporte a ações de tabela e dados no padrão Talend (Thread-Safe)."""
+        with self._write_lock:
+            db_path = database_path or self.database_path or ":memory:"
+            if db_path != ":memory:":
+                os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
 
-        conn = duckdb.connect(db_path)
-        arrow_table = df.to_arrow()
-        conn.register("_chunk_batch", arrow_table)
+            conn = duckdb.connect(db_path)
+            arrow_table = df.to_arrow()
+            conn.register("_chunk_batch", arrow_table)
 
-        # 1. Executa Ação na Tabela apenas no primeiro chunk
-        if is_first_chunk:
-            if table_action in ("drop_create", "drop_if_exists_create"):
-                conn.execute(f"DROP TABLE IF EXISTS {table_name};")
-                conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM _chunk_batch WHERE 1=0;")
-            elif table_action == "create_if_not_exists":
-                conn.execute(f"CREATE TABLE IF NOT EXISTS {table_name} AS SELECT * FROM _chunk_batch WHERE 1=0;")
-            elif table_action in ("truncate", "delete_all"):
-                try:
-                    conn.execute(f"DELETE FROM {table_name};")
-                except Exception:
+            # 1. Executa Ação na Tabela apenas no primeiro chunk
+            if is_first_chunk:
+                if table_action in ("drop_create", "drop_if_exists_create"):
+                    conn.execute(f"DROP TABLE IF EXISTS {table_name};")
+                    conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM _chunk_batch WHERE 1=0;")
+                elif table_action == "create_if_not_exists":
                     conn.execute(f"CREATE TABLE IF NOT EXISTS {table_name} AS SELECT * FROM _chunk_batch WHERE 1=0;")
+                elif table_action in ("truncate", "delete_all"):
+                    try:
+                        conn.execute(f"DELETE FROM {table_name};")
+                    except Exception:
+                        conn.execute(f"CREATE TABLE IF NOT EXISTS {table_name} AS SELECT * FROM _chunk_batch WHERE 1=0;")
 
-        # Garante que a tabela existe antes de inserir
-        try:
-            conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1;")
-        except Exception:
-            conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM _chunk_batch WHERE 1=0;")
+            # Garante que a tabela existe antes de inserir
+            try:
+                conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1;")
+            except Exception:
+                conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM _chunk_batch WHERE 1=0;")
 
-        # 2. Executa Ação nos Dados
-        if data_action == "insert":
-            conn.execute(f"INSERT INTO {table_name} SELECT * FROM _chunk_batch;")
-        elif data_action in ("upsert", "update_or_insert", "insert_or_update") and keys:
-            join_cond = " AND ".join([f"{table_name}.{k} = _chunk_batch.{k}" for k in keys])
-            conn.execute(f"DELETE FROM {table_name} WHERE EXISTS (SELECT 1 FROM _chunk_batch WHERE {join_cond});")
-            conn.execute(f"INSERT INTO {table_name} SELECT * FROM _chunk_batch;")
-        elif data_action == "delete" and keys:
-            join_cond = " AND ".join([f"{table_name}.{k} = _chunk_batch.{k}" for k in keys])
-            conn.execute(f"DELETE FROM {table_name} WHERE EXISTS (SELECT 1 FROM _chunk_batch WHERE {join_cond});")
-        else:
-            conn.execute(f"INSERT INTO {table_name} SELECT * FROM _chunk_batch;")
+            # 2. Executa Ação nos Dados
+            if data_action == "insert":
+                conn.execute(f"INSERT INTO {table_name} SELECT * FROM _chunk_batch;")
+            elif data_action in ("upsert", "update_or_insert", "insert_or_update") and keys:
+                join_cond = " AND ".join([f"{table_name}.{k} = _chunk_batch.{k}" for k in keys])
+                conn.execute(f"DELETE FROM {table_name} WHERE EXISTS (SELECT 1 FROM _chunk_batch WHERE {join_cond});")
+                conn.execute(f"INSERT INTO {table_name} SELECT * FROM _chunk_batch;")
+            elif data_action == "delete" and keys:
+                join_cond = " AND ".join([f"{table_name}.{k} = _chunk_batch.{k}" for k in keys])
+                conn.execute(f"DELETE FROM {table_name} WHERE EXISTS (SELECT 1 FROM _chunk_batch WHERE {join_cond});")
+            else:
+                conn.execute(f"INSERT INTO {table_name} SELECT * FROM _chunk_batch;")
 
-        conn.close()
-        return df.height
+            conn.close()
+            return df.height
 
     def execute_join(
         self,

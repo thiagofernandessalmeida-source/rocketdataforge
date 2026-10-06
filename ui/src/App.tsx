@@ -12,6 +12,7 @@ import { Header } from "./components/Header";
 import { ToastContainer, ToastMessage } from "./components/Toast";
 import { Palette } from "./features/designer/Palette";
 import { Canvas } from "./features/designer/Canvas";
+import { MultiCanvasContainer } from "./features/designer/cells/MultiCanvasContainer";
 import { PropertyPanel } from "./features/designer/PropertyPanel";
 import { FloatingNodeConfig } from "./features/designer/FloatingNodeConfig";
 import { ExecutionConsole, ProblemItem } from "./features/execution/ExecutionConsole";
@@ -362,8 +363,21 @@ export const App: React.FC = () => {
           return n;
         })
       );
+      if (activeJobId) {
+        const j = jobStore.getJob(activeJobId);
+        if (j?.cells) {
+          j.cells.forEach((cell) => {
+            if (cell.nodes.some((n) => n.id === nodeId)) {
+              const updatedNodes = cell.nodes.map((n) =>
+                n.id === nodeId ? { ...n, data: { ...n.data, config: newConfig } } : n
+              );
+              jobStore.saveCellGraph(activeJobId, cell.id, updatedNodes, cell.edges);
+            }
+          });
+        }
+      }
     },
-    [setNodes]
+    [setNodes, activeJobId]
   );
 
   const handleUpdateSchema = useCallback(
@@ -379,8 +393,21 @@ export const App: React.FC = () => {
           return n;
         })
       );
+      if (activeJobId) {
+        const j = jobStore.getJob(activeJobId);
+        if (j?.cells) {
+          j.cells.forEach((cell) => {
+            if (cell.nodes.some((n) => n.id === nodeId)) {
+              const updatedNodes = cell.nodes.map((n) =>
+                n.id === nodeId ? { ...n, data: { ...n.data, schema } } : n
+              );
+              jobStore.saveCellGraph(activeJobId, cell.id, updatedNodes, cell.edges);
+            }
+          });
+        }
+      }
     },
-    [setNodes]
+    [setNodes, activeJobId]
   );
 
   const handleDeleteNode = useCallback(
@@ -388,9 +415,21 @@ export const App: React.FC = () => {
       setNodes((nds) => nds.filter((n) => n.id !== nodeId));
       setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
       setSelectedNode(null);
+      if (activeJobId) {
+        const j = jobStore.getJob(activeJobId);
+        if (j?.cells) {
+          j.cells.forEach((cell) => {
+            if (cell.nodes.some((n) => n.id === nodeId)) {
+              const updatedNodes = cell.nodes.filter((n) => n.id !== nodeId);
+              const updatedEdges = cell.edges.filter((e) => e.source !== nodeId && e.target !== nodeId);
+              jobStore.saveCellGraph(activeJobId, cell.id, updatedNodes, updatedEdges);
+            }
+          });
+        }
+      }
       showToast("info", `Nó '${nodeId}' removido.`);
     },
-    [setNodes, setEdges, showToast]
+    [setNodes, setEdges, showToast, activeJobId]
   );
 
   const handleUpdateLabel = useCallback(
@@ -402,8 +441,21 @@ export const App: React.FC = () => {
       );
       setSelectedNode((prev) => (prev && prev.id === nodeId ? { ...prev, data: { ...prev.data, label: newLabel } } : prev));
       setFloatingNode((prev) => (prev && prev.id === nodeId ? { ...prev, data: { ...prev.data, label: newLabel } } : prev));
+      if (activeJobId) {
+        const j = jobStore.getJob(activeJobId);
+        if (j?.cells) {
+          j.cells.forEach((cell) => {
+            if (cell.nodes.some((n) => n.id === nodeId)) {
+              const updatedNodes = cell.nodes.map((n) =>
+                n.id === nodeId ? { ...n, data: { ...n.data, label: newLabel } } : n
+              );
+              jobStore.saveCellGraph(activeJobId, cell.id, updatedNodes, cell.edges);
+            }
+          });
+        }
+      }
     },
-    [setNodes]
+    [setNodes, activeJobId]
   );
 
   const handleUpdateNodeId = useCallback(
@@ -430,11 +482,28 @@ export const App: React.FC = () => {
           return updated;
         })
       );
+      if (activeJobId) {
+        const j = jobStore.getJob(activeJobId);
+        if (j?.cells) {
+          j.cells.forEach((cell) => {
+            if (cell.nodes.some((n) => n.id === oldId)) {
+              const updatedNodes = cell.nodes.map((n) => (n.id === oldId ? { ...n, id: trimmed } : n));
+              const updatedEdges = cell.edges.map((e) => {
+                let updated = { ...e };
+                if (e.source === oldId) updated.source = trimmed;
+                if (e.target === oldId) updated.target = trimmed;
+                return updated;
+              });
+              jobStore.saveCellGraph(activeJobId, cell.id, updatedNodes, updatedEdges);
+            }
+          });
+        }
+      }
       setSelectedNode((prev) => (prev && prev.id === oldId ? { ...prev, id: trimmed } : prev));
       setFloatingNode((prev) => (prev && prev.id === oldId ? { ...prev, id: trimmed } : prev));
       showToast("success", `ID do nó atualizado: '${oldId}' -> '${trimmed}'`);
     },
-    [nodes, setNodes, setEdges, showToast]
+    [nodes, setNodes, setEdges, showToast, activeJobId]
   );
 
   // ─── Save Job Locally ──────────────────────────────────────
@@ -524,10 +593,24 @@ export const App: React.FC = () => {
       position: { x: n.position.x, y: n.position.y },
     }));
     const pipelineName = activeJobId ? (jobStore.getJob(activeJobId)?.name ?? "Pipeline") : "Pipeline";
+    const currentJob = activeJobId ? jobStore.getJob(activeJobId) : undefined;
+    const specCells = currentJob?.cells?.map((c) => ({
+      id: c.id,
+      name: c.name,
+      description: c.description || "",
+      order: c.order,
+      preconditions: c.preconditions || [],
+      precondition_operator: c.preconditionOperator || "AND",
+    }));
+
     return {
       definition: {
         metadata: { id: activePid, name: pipelineName },
-        spec: { nodes: specNodes, edges: specEdges },
+        spec: {
+          nodes: specNodes,
+          edges: specEdges,
+          ...(specCells && specCells.length > 0 ? { cells: specCells } : {}),
+        },
       },
       layout: { viewport: { x: 0, y: 0, zoom: 1.0 }, nodes: layoutNodes },
     };
@@ -917,21 +1000,33 @@ export const App: React.FC = () => {
             <div className="canvas-with-palette">
               {paletteVisible && <Palette components={components} />}
 
-              <ReactFlowProvider>
-                <Canvas
-                  nodes={nodes}
-                  edges={edges}
-                  onNodesChange={onNodesChange}
-                  onEdgesChange={onEdgesChange}
-                  setNodes={setNodes}
-                  setEdges={setEdges}
+              {activeJob ? (
+                <MultiCanvasContainer
+                  job={activeJob}
                   onSelectNode={setSelectedNode}
                   onDoubleClickNode={(node) => {
                     setFloatingNode(node);
-                    setSelectedNode(null); // deselect from sidebar when opening float
+                    setSelectedNode(null);
                   }}
+                  showToast={showToast}
                 />
-              </ReactFlowProvider>
+              ) : (
+                <ReactFlowProvider>
+                  <Canvas
+                    nodes={nodes}
+                    edges={edges}
+                    onNodesChange={onNodesChange}
+                    onEdgesChange={onEdgesChange}
+                    setNodes={setNodes}
+                    setEdges={setEdges}
+                    onSelectNode={setSelectedNode}
+                    onDoubleClickNode={(node) => {
+                      setFloatingNode(node);
+                      setSelectedNode(null);
+                    }}
+                  />
+                </ReactFlowProvider>
+              )}
             </div>
           ) : (
             <WelcomeScreen
@@ -965,10 +1060,11 @@ export const App: React.FC = () => {
             onUpdateNodeId={handleUpdateNodeId}
             onDeleteNode={handleDeleteNode}
             connections={storeState.connections}
+            queryBank={storeState.queryBank}
             contextVariables={jobStore.getVarsForJob(activeJobId ?? "")}
             activeEnvironment={activeJob?.environment ?? storeState.activeEnvironment}
-            allNodes={nodes}
-            edges={edges}
+            allNodes={activeJob?.cells ? activeJob.cells.flatMap((c) => c.nodes) : nodes}
+            edges={activeJob?.cells ? activeJob.cells.flatMap((c) => c.edges) : edges}
             onPopOut={(node) => {
               setFloatingNode(node);
               setSelectedNode(null);
@@ -1011,6 +1107,7 @@ export const App: React.FC = () => {
           onDeleteNode={handleDeleteNode}
           onClose={() => setFloatingNode(null)}
           connections={storeState.connections}
+          queryBank={storeState.queryBank}
           contextVariables={jobStore.getVarsForJob(activeJobId ?? "")}
           activeEnvironment={activeJob?.environment ?? storeState.activeEnvironment}
           allNodes={nodes}

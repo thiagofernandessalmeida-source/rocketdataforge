@@ -3,7 +3,7 @@ import { Node } from "reactflow";
 import { X, Minimize2, GripHorizontal } from "lucide-react";
 import { CanvasNodeData } from "../../types";
 import { PropertyPanel } from "./PropertyPanel";
-import { ConnectionEntry, ContextVariable, SchemaColumn, Environment } from "../../store/jobStore";
+import { ConnectionEntry, ContextVariable, SchemaColumn, Environment, QueryEntry } from "../../store/jobStore";
 
 interface FloatingNodeConfigProps {
   node: Node<CanvasNodeData>;
@@ -14,6 +14,7 @@ interface FloatingNodeConfigProps {
   onDeleteNode: (nodeId: string) => void;
   onClose: () => void;
   connections?: ConnectionEntry[];
+  queryBank?: QueryEntry[];
   contextVariables?: ContextVariable[];
   activeEnvironment?: Environment;
   allNodes?: Node<CanvasNodeData>[];
@@ -34,6 +35,7 @@ export const FloatingNodeConfig: React.FC<FloatingNodeConfigProps> = ({
   onDeleteNode,
   onClose,
   connections,
+  queryBank,
   contextVariables,
   activeEnvironment,
   allNodes,
@@ -139,6 +141,7 @@ export const FloatingNodeConfig: React.FC<FloatingNodeConfigProps> = ({
             onUpdateNodeId={onUpdateNodeId}
             onDeleteNode={handleDelete}
             connections={connections}
+            queryBank={queryBank}
             contextVariables={contextVariables}
             activeEnvironment={activeEnvironment}
             allNodes={allNodes}
