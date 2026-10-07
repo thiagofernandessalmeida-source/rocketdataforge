@@ -72,6 +72,27 @@ function detectCellCycles(cells) {
   return null;
 }
 
+function validateParallelCellConsistency(cells) {
+  const errors = [];
+  for (const cell of cells) {
+    for (const p of cell.preconditions || []) {
+      const target = cells.find((c) => c.id === p.targetCellId || c.name === p.targetCellId);
+      if (target) {
+        if (target.order === cell.order) {
+          errors.push(
+            `A célula "${cell.name}" depende de "${target.name}", mas ambas possuem a mesma ordem de execução (${cell.order}). Células com a mesma ordem executam em paralelo e não podem ter interdependência.`
+          );
+        } else if (target.order > cell.order) {
+          errors.push(
+            `A célula "${cell.name}" (ordem ${cell.order}) não pode depender da célula "${target.name}" que possui ordem posterior (${target.order}).`
+          );
+        }
+      }
+    }
+  }
+  return errors.length > 0 ? errors : null;
+}
+
 // ─── Simulation of jobStore methods for testing ───────────────
 function createTestJobStore() {
   let state = {
@@ -248,6 +269,44 @@ function createTestJobStore() {
           return c ? { ...c, order: index + 1 } : null;
         })
         .filter(Boolean);
+    },
+
+    setCellStatus(jobId, cellId, status) {
+      const job = state.jobs.find((j) => j.id === jobId);
+      if (!job) return;
+      const cell = job.cells.find((c) => c.id === cellId);
+      if (cell) cell.status = status;
+    },
+
+    resetCellStatus(jobId, cellId) {
+      const job = state.jobs.find((j) => j.id === jobId);
+      if (!job) return;
+      const cell = job.cells.find((c) => c.id === cellId);
+      if (cell) {
+        cell.status = "idle";
+        cell.metrics = undefined;
+        cell.logs = undefined;
+        cell.showMetricsPanel = false;
+        cell.nodes = (cell.nodes || []).map((n) => ({
+          ...n,
+          data: { ...n.data, status: undefined, metrics: undefined },
+        }));
+      }
+    },
+
+    resetAllCellsStatus(jobId) {
+      const job = state.jobs.find((j) => j.id === jobId);
+      if (!job) return;
+      job.cells.forEach((c) => {
+        c.status = "idle";
+        c.metrics = undefined;
+        c.logs = undefined;
+        c.showMetricsPanel = false;
+        c.nodes = (c.nodes || []).map((n) => ({
+          ...n,
+          data: { ...n.data, status: undefined, metrics: undefined },
+        }));
+      });
     },
 
     getJob(id) {
@@ -512,3 +571,73 @@ describe("Multi-Canvas (Canvas-Cells): Operações Estruturais (Duplicar, Reorde
     assert.equal(j.cells[2].order, 3);
   });
 });
+
+describe("Multi-Canvas (Canvas-Cells): Consistência de Paralelismo e Ordem", () => {
+  it("deve rejeitar pré-condição entre células com a mesma ordem de execução", () => {
+    const cells = [
+      { id: "c1", name: "Célula 1", order: 2, preconditions: [] },
+      { id: "c2", name: "Célula 2", order: 2, preconditions: [{ targetCellId: "c1", expectedStatus: "OK" }] },
+    ];
+
+    const errors = validateParallelCellConsistency(cells);
+    assert.notEqual(errors, null);
+    assert.equal(errors.length, 1);
+    assert.ok(errors[0].includes("mesma ordem de execução (2)"));
+  });
+
+  it("deve rejeitar pré-condição que aponta para célula com ordem posterior", () => {
+    const cells = [
+      { id: "c1", name: "Célula 1", order: 1, preconditions: [{ targetCellId: "c2", expectedStatus: "OK" }] },
+      { id: "c2", name: "Célula 2", order: 3, preconditions: [] },
+    ];
+
+    const errors = validateParallelCellConsistency(cells);
+    assert.notEqual(errors, null);
+    assert.equal(errors.length, 1);
+    assert.ok(errors[0].includes("ordem posterior (3)"));
+  });
+
+  it("deve aprovar pré-condição válida apontando para célula de ordem anterior", () => {
+    const cells = [
+      { id: "c1", name: "Célula 1", order: 1, preconditions: [] },
+      { id: "c2", name: "Célula 2", order: 2, preconditions: [{ targetCellId: "c1", expectedStatus: "OK" }] },
+      { id: "c3", name: "Célula 3", order: 2, preconditions: [{ targetCellId: "c1", expectedStatus: "OK" }] },
+    ];
+
+    const errors = validateParallelCellConsistency(cells);
+    assert.equal(errors, null);
+  });
+});
+
+describe("Multi-Canvas (Canvas-Cells): Reset de Status de Células", () => {
+  it("deve resetar o status de uma célula individualmente para idle", () => {
+    const store = createTestJobStore();
+    const job = store.createJob("Job Reset");
+    store.createCell(job.id, "cell_2");
+
+    store.setCellStatus(job.id, "canvas-cell-01", "success");
+    store.setCellStatus(job.id, "canvas-cell-02", "failed");
+
+    store.resetCellStatus(job.id, "canvas-cell-01");
+
+    const j = store.getJob(job.id);
+    assert.equal(j.cells[0].status, "idle");
+    assert.equal(j.cells[1].status, "failed");
+  });
+
+  it("deve resetar o status de todas as células do job para idle", () => {
+    const store = createTestJobStore();
+    const job = store.createJob("Job Reset All");
+    store.createCell(job.id, "cell_2");
+
+    store.setCellStatus(job.id, "canvas-cell-01", "success");
+    store.setCellStatus(job.id, "canvas-cell-02", "failed");
+
+    store.resetAllCellsStatus(job.id);
+
+    const j = store.getJob(job.id);
+    assert.equal(j.cells[0].status, "idle");
+    assert.equal(j.cells[1].status, "idle");
+  });
+});
+

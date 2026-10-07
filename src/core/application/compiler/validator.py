@@ -85,6 +85,34 @@ class GraphValidator:
                     ))
                     continue
 
+                # Consistência de Paralelismo: Células com a mesma ordem não podem ter interdependência
+                current_order = cell.get("order")
+                target_cell = next((c for c in cells if (c.get("id") == target_id or c.get("name") == target_id)), None)
+                if target_cell is not None:
+                    target_order = target_cell.get("order")
+                    if current_order is not None and target_order is not None:
+                        if current_order == target_order:
+                            errors.append(ValidationErrorItem(
+                                code="ERR_PARALLEL_CELL_INTERDEPENDENCY",
+                                node_id=cid,
+                                message=(
+                                    f"A canvas-cell '{cid}' possui pré-condição dependendo de '{target_id}', mas ambas "
+                                    f"possuem a mesma ordem de execução ({current_order}). Células com a mesma ordem "
+                                    f"executam em paralelo e não podem ter interdependência entre si."
+                                )
+                            ))
+                            continue
+                        elif target_order > current_order:
+                            errors.append(ValidationErrorItem(
+                                code="ERR_INVALID_ORDER_DEPENDENCY",
+                                node_id=cid,
+                                message=(
+                                    f"A canvas-cell '{cid}' (ordem {current_order}) não pode depender da célula "
+                                    f"'{target_id}' que possui ordem de execução posterior ({target_order})."
+                                )
+                            ))
+                            continue
+
                 adj_list[target_id].append(cid)
                 in_degree[cid] += 1
 

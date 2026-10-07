@@ -22,6 +22,12 @@ import {
   Loader2,
   Layers,
   ShieldCheck,
+  RotateCcw,
+  X,
+  Search,
+  Activity,
+  List,
+  Terminal,
 } from "lucide-react";
 
 import { Canvas } from "../Canvas";
@@ -45,6 +51,7 @@ interface CanvasCellCardProps {
   onMoveDown?: () => void;
   onToggleFocus: (cellId: string) => void;
   onRunSingleCell: (cell: CanvasCellData) => void;
+  onResetStatus?: (cellId: string) => void;
   onSelectNode: (node: Node<CanvasNodeData> | null) => void;
   onDoubleClickNode?: (node: Node<CanvasNodeData>) => void;
 }
@@ -65,6 +72,7 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
   onMoveDown,
   onToggleFocus,
   onRunSingleCell,
+  onResetStatus,
   onSelectNode,
   onDoubleClickNode,
 }) => {
@@ -76,6 +84,8 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
   const [showPreconditionsModal, setShowPreconditionsModal] = useState(false);
   const [isEditingOrder, setIsEditingOrder] = useState(false);
   const [orderInput, setOrderInput] = useState(String(cell.order));
+  const [metricsTab, setMetricsTab] = useState<"metrics" | "logs">("metrics");
+  const [logFilter, setLogFilter] = useState("");
 
   // Sync internal nodes/edges when cell prop changes externally
   useEffect(() => {
@@ -401,6 +411,47 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
 
         {/* Right: Actions Toolbar */}
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          {/* Show Metrics Button if available and closed */}
+          {cell.metrics && !cell.showMetricsPanel && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{
+                fontSize: "0.7rem",
+                padding: "3px 8px",
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                color: "var(--accent-cyan)",
+                borderColor: "rgba(6, 182, 212, 0.4)",
+              }}
+              title="Exibir métricas e logs desta célula"
+              onClick={(e) => {
+                e.stopPropagation();
+                onUpdateCellMeta(cell.id, { showMetricsPanel: true });
+              }}
+            >
+              <Activity size={12} />
+              Métricas & Logs
+            </button>
+          )}
+
+          {/* Reset Status Button */}
+          <button
+            type="button"
+            className="icon-btn"
+            style={{
+              color: currentStatus !== "idle" ? "#fbbf24" : "var(--text-muted)",
+            }}
+            title="Resetar status desta célula para idle"
+            onClick={(e) => {
+              e.stopPropagation();
+              onResetStatus?.(cell.id);
+            }}
+          >
+            <RotateCcw size={13} />
+          </button>
+
           {/* Run Single Cell Button */}
           <button
             type="button"
@@ -550,6 +601,195 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
           />
         </ReactFlowProvider>
       </div>
+
+      {/* ─── Cell Metrics & Logs Inspector ─── */}
+      {cell.showMetricsPanel && (
+        <div
+          className="cell-metrics-panel"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="cell-metrics-header">
+            <div className="cell-metrics-tabs">
+              <button
+                type="button"
+                className={`cell-tab-btn ${metricsTab === "metrics" ? "active" : ""}`}
+                onClick={() => setMetricsTab("metrics")}
+              >
+                <Activity size={13} />
+                Métricas
+                {cell.metrics && (
+                  <span style={{ fontSize: "0.68rem", opacity: 0.8, marginLeft: 2 }}>
+                    ({cell.metrics.durationMs}ms)
+                  </span>
+                )}
+              </button>
+              <button
+                type="button"
+                className={`cell-tab-btn ${metricsTab === "logs" ? "active" : ""}`}
+                onClick={() => setMetricsTab("logs")}
+              >
+                <Terminal size={13} />
+                Logs
+                {cell.logs && (
+                  <span style={{ fontSize: "0.68rem", opacity: 0.8, marginLeft: 2 }}>
+                    ({cell.logs.length})
+                  </span>
+                )}
+              </button>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span
+                style={{
+                  fontSize: "0.7rem",
+                  fontWeight: 600,
+                  padding: "1px 6px",
+                  borderRadius: 4,
+                  background: statusMeta.bg,
+                  color: statusMeta.color,
+                  border: `1px solid ${statusMeta.border}`,
+                }}
+              >
+                {statusMeta.label}
+              </span>
+              <button
+                type="button"
+                className="icon-btn"
+                title="Fechar painel de métricas"
+                onClick={() => onUpdateCellMeta(cell.id, { showMetricsPanel: false })}
+              >
+                <X size={14} />
+              </button>
+            </div>
+          </div>
+
+          <div className="cell-metrics-body">
+            {metricsTab === "metrics" ? (
+              <div>
+                {cell.metrics ? (
+                  <>
+                    <div className="cell-metrics-cards">
+                      <div className="cell-metric-card">
+                        <span className="card-label">⏱️ Duração</span>
+                        <span className="card-value">
+                          {cell.metrics.durationMs >= 1000
+                            ? `${(cell.metrics.durationMs / 1000).toFixed(2)}s`
+                            : `${cell.metrics.durationMs}ms`}
+                        </span>
+                      </div>
+                      <div className="cell-metric-card">
+                        <span className="card-label">📥 Linhas de Entrada</span>
+                        <span className="card-value">{cell.metrics.rowsIn.toLocaleString()}</span>
+                      </div>
+                      <div className="cell-metric-card">
+                        <span className="card-label">📤 Linhas de Saída</span>
+                        <span className="card-value">{cell.metrics.rowsOut.toLocaleString()}</span>
+                      </div>
+                      <div className="cell-metric-card">
+                        <span className="card-label">⚡ Vazão Estimada</span>
+                        <span className="card-value">
+                          {cell.metrics.durationMs > 0
+                            ? `${Math.round((cell.metrics.rowsOut / (cell.metrics.durationMs / 1000)) || 0).toLocaleString()} l/s`
+                            : "0 l/s"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {cell.metrics.tasks && cell.metrics.tasks.length > 0 && (
+                      <div style={{ marginTop: 6 }}>
+                        <div style={{ fontSize: "0.7rem", fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>
+                          Tarefas / Nós Processados nesta Célula:
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                          {cell.metrics.tasks.map((t) => (
+                            <div
+                              key={t.node_id}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                padding: "4px 8px",
+                                background: "rgba(0,0,0,0.18)",
+                                borderRadius: 4,
+                                border: "1px solid var(--border-subtle)",
+                                fontSize: "0.72rem",
+                              }}
+                            >
+                              <span style={{ fontFamily: "var(--font-mono)", fontWeight: 500 }}>
+                                {t.node_id}
+                              </span>
+                              <div style={{ display: "flex", gap: 10, color: "var(--text-muted)" }}>
+                                <span>In: <strong style={{ color: "var(--text-primary)" }}>{t.rows_in}</strong></span>
+                                <span>Out: <strong style={{ color: "var(--text-primary)" }}>{t.rows_out}</strong></span>
+                                <span>{t.duration_ms}ms</span>
+                                <span
+                                  style={{
+                                    color: t.status === "succeeded" ? "var(--status-success)" : "var(--status-danger)",
+                                    fontWeight: 600,
+                                  }}
+                                >
+                                  {t.status}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div style={{ textAlign: "center", padding: "12px", color: "var(--text-muted)" }}>
+                    Nenhuma métrica registrada ainda. Execute a célula individualmente para inspecionar.
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="cell-logs-container">
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                  <Search size={12} color="var(--text-muted)" />
+                  <input
+                    type="text"
+                    placeholder="Filtrar logs..."
+                    className="form-input"
+                    style={{ fontSize: "0.72rem", padding: "2px 6px", height: 24, width: "100%", maxWidth: 220 }}
+                    value={logFilter}
+                    onChange={(e) => setLogFilter(e.target.value)}
+                  />
+                </div>
+                {cell.logs && cell.logs.length > 0 ? (
+                  cell.logs
+                    .filter((l) =>
+                      logFilter
+                        ? l.message?.toLowerCase().includes(logFilter.toLowerCase()) ||
+                          l.level?.toLowerCase().includes(logFilter.toLowerCase())
+                        : true
+                    )
+                    .map((log, idx) => (
+                      <div key={idx} className="cell-log-row">
+                        <span style={{ color: "var(--text-muted)", fontSize: "0.68rem", minWidth: 50 }}>
+                          {log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : "--:--:--"}
+                        </span>
+                        <span className={`log-level-${String(log.level || "info").toLowerCase()}`} style={{ minWidth: 44 }}>
+                          [{log.level || "INFO"}]
+                        </span>
+                        {log.node_id && (
+                          <span style={{ color: "var(--accent-cyan)", opacity: 0.9 }}>
+                            ({log.node_id})
+                          </span>
+                        )}
+                        <span style={{ color: "var(--text-primary)" }}>{log.message}</span>
+                      </div>
+                    ))
+                ) : (
+                  <div style={{ textAlign: "center", padding: "12px", color: "var(--text-muted)" }}>
+                    Nenhum log registrado para esta célula.
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Preconditions Modal */}
       {showPreconditionsModal && (

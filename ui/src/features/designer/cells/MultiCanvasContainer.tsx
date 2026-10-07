@@ -13,6 +13,8 @@ import {
   ListOrdered,
   ChevronLeft,
   ChevronRight,
+  RotateCcw,
+  RefreshCw,
 } from "lucide-react";
 
 import { CanvasCellCard } from "./CanvasCellCard";
@@ -23,6 +25,7 @@ import {
   CellExecutionStatus,
   evaluateCellPreconditions,
   detectCellCycles,
+  validateParallelCellConsistency,
 } from "../../../store/jobStore";
 import { CanvasNodeData } from "../../../types";
 
@@ -172,6 +175,13 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
       return;
     }
 
+    // Check for parallel order consistency (cells with same order cannot depend on each other)
+    const orderErrors = validateParallelCellConsistency(sortedCells);
+    if (orderErrors && orderErrors.length > 0) {
+      showToast?.("error", `Impossível executar: ${orderErrors[0]}`);
+      return;
+    }
+
     setIsOrchestrating(true);
     showToast?.("info", `Iniciando orquestração completa do Job (${sortedCells.length} células)...`);
 
@@ -310,6 +320,36 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
 
         {/* Right: Actions */}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {/* Reset Status Options */}
+          <div style={{ display: "flex", gap: 4 }}>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{ fontSize: "0.74rem", padding: "4px 9px", color: "#fbbf24", borderColor: "rgba(245, 158, 11, 0.3)" }}
+              onClick={() => {
+                jobStore.resetCellStatus(job.id, activeCellId);
+                showToast?.("info", `Status da célula "${sortedCells.find((c) => c.id === activeCellId)?.name || activeCellId}" resetado.`);
+              }}
+              title="Resetar status da célula ativa para idle"
+            >
+              <RotateCcw size={12} />
+              <span>Reset Ativa</span>
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{ fontSize: "0.74rem", padding: "4px 9px", color: "#fbbf24", borderColor: "rgba(245, 158, 11, 0.3)" }}
+              onClick={() => {
+                jobStore.resetAllCellsStatus(job.id);
+                showToast?.("info", "Status de todas as células resetado.");
+              }}
+              title="Resetar status de todas as células do Job para idle"
+            >
+              <RefreshCw size={12} />
+              <span>Reset Todas</span>
+            </button>
+          </div>
+
           {/* Add Cell Button */}
           <button
             type="button"
@@ -366,6 +406,10 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
               onDuplicateCell={handleDuplicateCell}
               onToggleFocus={handleToggleFocus}
               onRunSingleCell={handleRunSingleCell}
+              onResetStatus={(cellId) => {
+                jobStore.resetCellStatus(job.id, cellId);
+                showToast?.("info", "Status da célula resetado.");
+              }}
               onSelectNode={onSelectNode}
               onDoubleClickNode={onDoubleClickNode}
             />
@@ -391,6 +435,10 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
                 onMoveDown={idx < sortedCells.length - 1 ? () => handleMoveDown(idx) : undefined}
                 onToggleFocus={handleToggleFocus}
                 onRunSingleCell={handleRunSingleCell}
+                onResetStatus={(cellId) => {
+                  jobStore.resetCellStatus(job.id, cellId);
+                  showToast?.("info", "Status da célula resetado.");
+                }}
                 onSelectNode={onSelectNode}
                 onDoubleClickNode={onDoubleClickNode}
               />

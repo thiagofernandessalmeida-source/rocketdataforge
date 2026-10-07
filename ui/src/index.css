@@ -4705,3 +4705,329 @@ html, body {
   animation: cellRunningPulse 2s ease-in-out infinite;
 }
 
+/* ─────────────────────────────────────────────────────────────────
+   STUDIO MENUBAR (TOP DROPDOWN MENUS)
+───────────────────────────────────────────────────────────────── */
+.studio-menubar {
+  height: 32px;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  user-select: none;
+  z-index: 95;
+  flex-shrink: 0;
+  font-size: 0.8rem;
+}
+
+.menubar-items {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.menubar-item-wrapper {
+  position: relative;
+}
+
+.menubar-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  padding: 3px 9px;
+  border-radius: 4px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.12s ease;
+  outline: none;
+}
+
+.menubar-btn:hover,
+.menubar-btn.active {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+
+.menubar-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 270px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-medium);
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+  border-radius: 6px;
+  padding: 4px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  backdrop-filter: blur(12px);
+  animation: menubarFadeIn 0.12s ease-out;
+}
+
+@keyframes menubarFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.dropdown-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 0.76rem;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.dropdown-entry:hover:not(:disabled) {
+  background: rgba(0, 229, 255, 0.12);
+  color: #fff;
+}
+
+.dropdown-entry.highlight {
+  font-weight: 600;
+}
+
+.dropdown-entry:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.dropdown-entry .entry-label {
+  flex: 1;
+}
+
+.dropdown-entry .shortcut {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.dropdown-entry .check-mark {
+  color: var(--accent-cyan);
+  font-weight: 700;
+  margin-left: 4px;
+}
+
+.dropdown-divider {
+  height: 1px;
+  background: var(--border-subtle);
+  margin: 3px 0;
+}
+
+.menubar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.menubar-quick-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.72rem;
+}
+
+.info-pill {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-subtle);
+  padding: 1px 7px;
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.info-pill.highlight {
+  background: rgba(6, 182, 212, 0.15);
+  border-color: rgba(6, 182, 212, 0.4);
+  color: var(--accent-cyan);
+  font-weight: 600;
+}
+
+.menubar-quick-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.menubar-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: #fbbf24;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.menubar-action-btn:hover:not(:disabled) {
+  background: rgba(245, 158, 11, 0.25);
+  border-color: #f59e0b;
+}
+
+.menubar-action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   CELL METRICS & LOGS PANEL (INSPECTOR DE CÉLULA)
+───────────────────────────────────────────────────────────────── */
+.cell-metrics-panel {
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  display: flex;
+  flex-direction: column;
+  animation: cellMetricsSlideUp 0.18s ease-out;
+  overflow: hidden;
+  max-height: 250px;
+}
+
+@keyframes cellMetricsSlideUp {
+  from {
+    opacity: 0;
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    max-height: 250px;
+  }
+}
+
+.cell-metrics-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: rgba(0, 0, 0, 0.25);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.cell-metrics-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.cell-tab-btn {
+  background: transparent;
+  border: none;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 0.74rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.12s ease;
+}
+
+.cell-tab-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.cell-tab-btn.active {
+  color: var(--accent-cyan);
+  background: rgba(6, 182, 212, 0.12);
+  font-weight: 600;
+}
+
+.cell-metrics-body {
+  padding: 8px 12px;
+  overflow-y: auto;
+  max-height: 200px;
+  font-size: 0.75rem;
+}
+
+.cell-metrics-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.cell-metric-card {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  padding: 6px 10px;
+  display: flex;
+  flex-direction: column;
+}
+
+.cell-metric-card .card-label {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
+.cell-metric-card .card-value {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.cell-logs-container {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+}
+
+.cell-log-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  line-height: 1.4;
+}
+
+.cell-log-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.cell-log-row .log-level-info {
+  color: var(--status-success);
+  font-weight: 600;
+}
+
+.cell-log-row .log-level-warn {
+  color: #f59e0b;
+  font-weight: 600;
+}
+
+.cell-log-row .log-level-error {
+  color: var(--status-danger);
+  font-weight: 600;
+}
+
+

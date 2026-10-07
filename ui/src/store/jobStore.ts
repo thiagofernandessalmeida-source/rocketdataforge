@@ -18,6 +18,22 @@ export interface CellPrecondition {
   expectedStatus: "OK" | "ERROR";
 }
 
+export interface CellExecutionTaskMetric {
+  node_id: string;
+  status: string;
+  rows_in: number;
+  rows_out: number;
+  duration_ms: number;
+  error_message?: string;
+}
+
+export interface CellExecutionMetrics {
+  durationMs: number;
+  rowsIn: number;
+  rowsOut: number;
+  tasks?: CellExecutionTaskMetric[];
+}
+
 export interface CanvasCellData {
   id: string;
   name: string;
@@ -30,6 +46,9 @@ export interface CanvasCellData {
   viewport?: { x: number; y: number; zoom: number };
   nodeSchemas?: Record<string, SchemaColumn[]>;
   status?: CellExecutionStatus;
+  metrics?: CellExecutionMetrics;
+  logs?: any[];
+  showMetricsPanel?: boolean;
 }
 
 export interface JobData {
@@ -428,6 +447,27 @@ export function detectCellCycles(cells: CanvasCellData[]): string[] | null {
     return cellIds.filter((id) => inDegree[id] > 0);
   }
   return null;
+}
+
+export function validateParallelCellConsistency(cells: CanvasCellData[]): string[] | null {
+  const errors: string[] = [];
+  for (const cell of cells) {
+    for (const p of cell.preconditions || []) {
+      const target = cells.find((c) => c.id === p.targetCellId || c.name === p.targetCellId);
+      if (target) {
+        if (target.order === cell.order) {
+          errors.push(
+            `A célula "${cell.name}" depende de "${target.name}", mas ambas possuem a mesma ordem de execução (${cell.order}). Células com a mesma ordem executam em paralelo e não podem ter interdependência.`
+          );
+        } else if (target.order > cell.order) {
+          errors.push(
+            `A célula "${cell.name}" (ordem ${cell.order}) não pode depender da célula "${target.name}" que possui ordem posterior (${target.order}).`
+          );
+        }
+      }
+    }
+  }
+  return errors.length > 0 ? errors : null;
 }
 
 export const jobStore = {
@@ -836,6 +876,148 @@ export const jobStore = {
         if (j.id !== jobId) return j;
         const updatedCells = (j.cells || []).map((c) =>
           c.id === cellId ? { ...c, status } : c
+        );
+        return { ...j, cells: updatedCells };
+      }),
+    };
+    saveState(state);
+    notify();
+  },
+
+  resetCellStatus(jobId: string, cellId: string): void {
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) => {
+          if (c.id !== cellId) return c;
+          const resetNodes = (c.nodes || []).map((n) => ({
+            ...n,
+            data: {
+              ...n.data,
+              status: undefined,
+              metrics: undefined,
+            },
+          }));
+          return {
+            ...c,
+            status: "idle" as CellExecutionStatus,
+            metrics: undefined,
+            logs: undefined,
+            showMetricsPanel: false,
+            nodes: resetNodes,
+          };
+        });
+        const activeCellObj = updatedCells.find((c) => c.id === j.activeCellId);
+        return {
+          ...j,
+          cells: updatedCells,
+          nodes: activeCellObj ? activeCellObj.nodes : j.nodes,
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+  },
+
+  resetAllCellsStatus(jobId: string): void {
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) => {
+          const resetNodes = (c.nodes || []).map((n) => ({
+            ...n,
+            data: {
+              ...n.data,
+              status: undefined,
+              metrics: undefined,
+            },
+          }));
+          return {
+            ...c,
+            status: "idle" as CellExecutionStatus,
+            metrics: undefined,
+            logs: undefined,
+            showMetricsPanel: false,
+            nodes: resetNodes,
+          };
+        });
+        const activeCellObj = updatedCells.find((c) => c.id === j.activeCellId);
+        return {
+          ...j,
+          cells: updatedCells,
+          nodes: activeCellObj ? activeCellObj.nodes : j.nodes,
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+  },
+
+  setCellExecutionResults(
+    jobId: string,
+    cellId: string,
+    status: CellExecutionStatus,
+    metrics?: CellExecutionMetrics,
+    logs?: any[],
+    showMetricsPanel = true
+  ): void {
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) => {
+          if (c.id !== cellId) return c;
+          let updatedNodes = c.nodes || [];
+          if (metrics?.tasks && metrics.tasks.length > 0) {
+            updatedNodes = updatedNodes.map((n) => {
+              const task = metrics.tasks?.find((t) => t.node_id === n.id);
+              if (task) {
+                return {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    status: task.status as any,
+                    metrics: {
+                      rowsIn: task.rows_in,
+                      rowsOut: task.rows_out,
+                      durationMs: task.duration_ms,
+                    },
+                  },
+                };
+              }
+              return n;
+            });
+          }
+          return {
+            ...c,
+            status,
+            metrics: metrics || c.metrics,
+            logs: logs || c.logs,
+            showMetricsPanel,
+            nodes: updatedNodes,
+          };
+        });
+        const activeCellObj = updatedCells.find((c) => c.id === j.activeCellId);
+        return {
+          ...j,
+          cells: updatedCells,
+          nodes: activeCellObj ? activeCellObj.nodes : j.nodes,
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+  },
+
+  setCellShowMetrics(jobId: string, cellId: string, show: boolean): void {
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) =>
+          c.id === cellId ? { ...c, showMetricsPanel: show } : c
         );
         return { ...j, cells: updatedCells };
       }),

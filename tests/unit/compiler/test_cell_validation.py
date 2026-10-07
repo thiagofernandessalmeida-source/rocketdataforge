@@ -138,3 +138,54 @@ def test_validate_pipeline_draft_with_cells():
     assert report.is_valid
     assert len(report.errors) == 0
     assert report.cell_topological_order == ["canvas-cell-01", "canvas-cell-02"]
+
+
+def test_validate_cells_same_order_interdependency_rejected():
+    """Valida que células com mesma ordem de execução não podem ter interdependência (quebra de paralelismo)."""
+    validator = GraphValidator()
+    cells = [
+        {
+            "id": "cell-a",
+            "name": "Cell A",
+            "order": 1,
+            "preconditions": []
+        },
+        {
+            "id": "cell-b",
+            "name": "Cell B",
+            "order": 1,  # Mesma ordem!
+            "preconditions": [
+                {"target_cell_id": "cell-a", "expected_status": "OK"}
+            ]
+        }
+    ]
+
+    errors, _ = validator.validate_cell_topology(cells)
+    assert len(errors) > 0
+    assert any(err.code == "ERR_PARALLEL_CELL_INTERDEPENDENCY" for err in errors)
+
+
+def test_validate_cells_reverse_order_dependency_rejected():
+    """Valida que uma célula não pode depender de uma célula com ordem posterior."""
+    validator = GraphValidator()
+    cells = [
+        {
+            "id": "cell-early",
+            "name": "Cell Early",
+            "order": 1,
+            "preconditions": [
+                {"target_cell_id": "cell-late", "expected_status": "OK"}
+            ]
+        },
+        {
+            "id": "cell-late",
+            "name": "Cell Late",
+            "order": 2,
+            "preconditions": []
+        }
+    ]
+
+    errors, _ = validator.validate_cell_topology(cells)
+    assert len(errors) > 0
+    assert any(err.code == "ERR_INVALID_ORDER_DEPENDENCY" for err in errors)
+

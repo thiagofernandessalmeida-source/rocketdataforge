@@ -9,6 +9,7 @@ import {
 } from "reactflow";
 
 import { Header } from "./components/Header";
+import { MenuBar } from "./components/MenuBar";
 import { ToastContainer, ToastMessage } from "./components/Toast";
 import { Palette } from "./features/designer/Palette";
 import { Canvas } from "./features/designer/Canvas";
@@ -24,7 +25,15 @@ import { QueryBankModal } from "./features/querybank/QueryBankModal";
 import { AboutModal } from "./components/AboutModal";
 import { api } from "./api/client";
 import { EXPANDED_CATALOG } from "./catalog/components";
-import { jobStore, SchemaColumn } from "./store/jobStore";
+import {
+  jobStore,
+  SchemaColumn,
+  CanvasCellData,
+  CellExecutionMetrics,
+  evaluateCellPreconditions,
+  detectCellCycles,
+  validateParallelCellConsistency,
+} from "./store/jobStore";
 import { useJobStore } from "./store/useJobStore";
 import {
   CanvasNodeData,
@@ -171,6 +180,8 @@ export const App: React.FC = () => {
   >({});
 
   const activeJobId = storeState.activeTabId;
+  const activeJob = activeJobId ? storeState.jobs.find((j) => j.id === activeJobId) : null;
+  const pipelineName = activeJob?.name ?? "RocketDataForge";
   const activeCanvas = activeJobId ? canvasMap[activeJobId] ?? EMPTY_CANVAS : EMPTY_CANVAS;
 
   const [nodes, setNodes, onNodesChange] = useNodesState<CanvasNodeData>(activeCanvas.nodes);
@@ -780,7 +791,257 @@ export const App: React.FC = () => {
     }
   };
 
+  // ─── Isolated Cell Execution (Real Backend Execution) ─────
+  const handleExecuteCellIsolated = useCallback(
+    async (cell: CanvasCellData): Promise<boolean> => {
+      if (!cell.nodes || cell.nodes.length === 0) {
+        showToast("error", `A célula "${cell.name}" não possui componentes adicionados.`);
+        return false;
+      }
+
+      try {
+        const activePid = await ensureBackend();
+        const currentConnections = jobStore.getState().connections;
+
+        const cellSpecNodes = cell.nodes.map((n) => {
+          const cfg = { ...(n.data.config || {}) };
+          if (cfg.connection_ref) {
+            const refNormalized = String(cfg.connection_ref).toLowerCase().trim();
+            const conn = currentConnections.find(
+              (c) =>
+                c.name.toLowerCase().replace(/\s+/g, "_") === refNormalized ||
+                c.id === cfg.connection_ref ||
+                c.name.toLowerCase().trim() === refNormalized
+            );
+            if (conn && conn.config) {
+              cfg.connection_details = {
+                type: conn.type,
+                host: conn.config.host,
+                port: conn.config.port,
+                database: conn.config.database,
+                username: conn.config.username,
+                password: conn.config.password,
+                sslMode: conn.config.sslMode,
+              };
+            }
+          }
+          if (cfg.path && typeof cfg.path === "string") {
+            cfg.path = cfg.path.trim().replace(/^["']|["']$/g, "");
+          }
+          if (n.data.schema && Array.isArray(n.data.schema) && n.data.schema.length > 0) {
+            cfg.schema_columns = n.data.schema.map((c: any) => c.name);
+            cfg.schema_definitions = n.data.schema;
+          }
+          return {
+            id: n.id,
+            component: { type: n.data.componentType, version: n.data.componentVersion || "1.0.0" },
+            config: cfg,
+          };
+        });
+
+        const cellSpecEdges = (cell.edges || []).map((e) => {
+          const fromPort =
+            e.data?.flowName ||
+            (typeof e.label === "string" ? e.label : "") ||
+            e.sourceHandle ||
+            "main";
+          return {
+            id: e.id,
+            from: `${e.source}.${fromPort}`,
+            to: `${e.target}.${e.targetHandle || "input"}`,
+          };
+        });
+
+        const cellLayoutNodes = cell.nodes.map((n) => ({
+          id: n.id,
+          position: { x: n.position.x, y: n.position.y },
+        }));
+
+        const definition = {
+          metadata: { id: activePid, name: `${activeJob?.name || "Pipeline"} - ${cell.name}` },
+          spec: {
+            nodes: cellSpecNodes,
+            edges: cellSpecEdges,
+          },
+        };
+
+        const layout = { viewport: { x: 0, y: 0, zoom: 1.0 }, nodes: cellLayoutNodes };
+
+        let freshRev = revision;
+        try {
+          const fresh = await api.getDraft(activePid);
+          freshRev = fresh.revision;
+          setRevision(fresh.revision);
+        } catch (_) {}
+
+        const updated = await api.updateDraft(activePid, freshRev, definition, layout);
+        setRevision(updated.revision);
+
+        const versionTag = `cell-${cell.id}-${Date.now().toString().slice(-6)}`;
+        const pubVersion = await api.publishVersion(activePid, versionTag);
+
+        const execRes = await api.executeVersion(pubVersion.id);
+        showToast("info", `Executando célula "${cell.name}" no backend...`);
+
+        const execResult = await new Promise<{ detail: ExecutionDetail; logs: LogEntry[] }>(
+          (resolve, reject) => {
+            const startTime = Date.now();
+            const timer = setInterval(async () => {
+              try {
+                const detail = await api.getExecution(execRes.execution_id);
+                const execLogs = await api.getExecutionLogs(execRes.execution_id).catch(() => []);
+                if (["succeeded", "failed", "cancelled"].includes(detail.status)) {
+                  clearInterval(timer);
+                  resolve({ detail, logs: execLogs });
+                } else if (Date.now() - startTime > 60000) {
+                  clearInterval(timer);
+                  reject(new Error("Tempo limite de execução excedido (60s)."));
+                }
+              } catch (pollErr) {
+                clearInterval(timer);
+                reject(pollErr);
+              }
+            }, 350);
+          }
+        );
+
+        const isSuccess = execResult.detail.status === "succeeded";
+        const totalRowsIn = (execResult.detail.tasks || []).reduce((sum, t) => sum + (t.rows_in || 0), 0);
+        const totalRowsOut = (execResult.detail.tasks || []).reduce((sum, t) => sum + (t.rows_out || 0), 0);
+        const totalDuration = (execResult.detail.tasks || []).reduce((max, t) => Math.max(max, t.duration_ms || 0), 0);
+
+        const cellMetrics: CellExecutionMetrics = {
+          durationMs: totalDuration,
+          rowsIn: totalRowsIn,
+          rowsOut: totalRowsOut,
+          tasks: (execResult.detail.tasks || []).map((t) => ({
+            node_id: t.node_id,
+            status: t.status,
+            rows_in: t.rows_in ?? 0,
+            rows_out: t.rows_out ?? 0,
+            duration_ms: t.duration_ms ?? 0,
+            error_message: t.error_message,
+          })),
+        };
+
+        setExecution(execResult.detail);
+        setLogs(execResult.logs);
+
+        if (activeJobId) {
+          jobStore.setCellExecutionResults(
+            activeJobId,
+            cell.id,
+            isSuccess ? "success" : "failed",
+            cellMetrics,
+            execResult.logs,
+            true
+          );
+        }
+
+        if (isSuccess) {
+          showToast("success", `Célula "${cell.name}" executada com SUCESSO! (${totalRowsOut} linhas geradas)`);
+        } else {
+          showToast("error", `Célula "${cell.name}" falhou durante a execução. Inspecione métricas e logs.`);
+        }
+
+        return isSuccess;
+      } catch (err: any) {
+        console.error(`Erro ao executar célula "${cell.name}":`, err);
+        showToast("error", `Falha ao executar célula "${cell.name}": ${err.message}`);
+        if (activeJobId) {
+          jobStore.setCellStatus(activeJobId, cell.id, "failed");
+        }
+        return false;
+      }
+    },
+    [activeJob, activeJobId, ensureBackend, revision, showToast]
+  );
+
+  const handleRunActiveCell = useCallback(async () => {
+    if (!activeJob || !activeJob.cells || activeJob.cells.length === 0) return;
+    const targetCell =
+      activeJob.cells.find((c) => c.id === activeJob.activeCellId) || activeJob.cells[0];
+    if (targetCell) {
+      jobStore.setCellStatus(activeJob.id, targetCell.id, "running");
+      await handleExecuteCellIsolated(targetCell);
+    }
+  }, [activeJob, handleExecuteCellIsolated]);
+
   const handleRun = async () => {
+    // Multi-canvas job orchestration
+    if (activeJob && activeJob.cells && activeJob.cells.length > 0) {
+      setLoadingAction("run");
+      const sortedCells = [...activeJob.cells].sort((a, b) => a.order - b.order);
+
+      const cycles = detectCellCycles(sortedCells);
+      if (cycles) {
+        showToast("error", `Impossível executar: Ciclo detectado nas dependências (${cycles.join(", ")})`);
+        setLoadingAction(null);
+        return;
+      }
+
+      const orderErrors = validateParallelCellConsistency(sortedCells);
+      if (orderErrors && orderErrors.length > 0) {
+        showToast("error", `Impossível executar: ${orderErrors[0]}`);
+        setLoadingAction(null);
+        return;
+      }
+
+      showToast("info", `Iniciando orquestração completa do Job (${sortedCells.length} células)...`);
+
+      sortedCells.forEach((c) => jobStore.setCellStatus(activeJob.id, c.id, "queued"));
+      const completedStatuses: Record<string, "success" | "failed" | "skipped"> = {};
+
+      const orderGroups = new Map<number, CanvasCellData[]>();
+      sortedCells.forEach((c) => {
+        const group = orderGroups.get(c.order) || [];
+        group.push(c);
+        orderGroups.set(c.order, group);
+      });
+
+      const sortedOrders = Array.from(orderGroups.keys()).sort((a, b) => a - b);
+
+      try {
+        for (const orderNum of sortedOrders) {
+          const parallelCells = orderGroups.get(orderNum) || [];
+          await Promise.all(
+            parallelCells.map(async (cell) => {
+              const canRun = evaluateCellPreconditions(cell, completedStatuses, sortedCells);
+              if (!canRun) {
+                jobStore.setCellStatus(activeJob.id, cell.id, "skipped");
+                completedStatuses[cell.id] = "skipped";
+                completedStatuses[cell.name] = "skipped";
+                return;
+              }
+
+              jobStore.setCellStatus(activeJob.id, cell.id, "running");
+              const ok = await handleExecuteCellIsolated(cell);
+              const finalStatus = ok ? "success" : "failed";
+              completedStatuses[cell.id] = finalStatus;
+              completedStatuses[cell.name] = finalStatus;
+            })
+          );
+        }
+
+        const totalFailed = Object.values(completedStatuses).filter((s) => s === "failed").length;
+        const totalSuccess = Object.values(completedStatuses).filter((s) => s === "success").length;
+        const totalSkipped = Object.values(completedStatuses).filter((s) => s === "skipped").length;
+
+        if (totalFailed > 0) {
+          showToast(
+            "error",
+            `Orquestração finalizada com falhas: ${totalSuccess} sucesso, ${totalFailed} falhas, ${totalSkipped} puladas.`
+          );
+        } else {
+          showToast("success", `Orquestração de todas as células (${totalSuccess}) finalizada com SUCESSO!`);
+        }
+      } finally {
+        setLoadingAction(null);
+      }
+      return;
+    }
+
+    // Default legacy single-canvas execution
     setLoadingAction("run");
     try {
       let vId = publishedVersionId;
@@ -808,7 +1069,15 @@ export const App: React.FC = () => {
             setNodes((nds) =>
               nds.map((n) => {
                 const task = detail.tasks.find((t) => t.node_id === n.id);
-                if (task) return { ...n, data: { ...n.data, status: task.status, metrics: { rowsIn: task.rows_in, rowsOut: task.rows_out, durationMs: task.duration_ms } } };
+                if (task)
+                  return {
+                    ...n,
+                    data: {
+                      ...n.data,
+                      status: task.status,
+                      metrics: { rowsIn: task.rows_in, rowsOut: task.rows_out, durationMs: task.duration_ms },
+                    },
+                  };
                 return n;
               })
             );
@@ -820,7 +1089,10 @@ export const App: React.FC = () => {
             else if (detail.status === "cancelled") showToast("info", "Execução CANCELADA.");
             else showToast("error", "Execução FALHOU. Verifique os logs.");
           }
-        } catch (_) { clearInterval(pollingRef.current); setLoadingAction(null); }
+        } catch (_) {
+          clearInterval(pollingRef.current);
+          setLoadingAction(null);
+        }
       }, 600);
     } catch (err: any) {
       showToast("error", `Falha ao executar: ${err.message}`);
@@ -935,8 +1207,13 @@ export const App: React.FC = () => {
     }
   };
 
-  const activeJob = activeJobId ? storeState.jobs.find((j) => j.id === activeJobId) : null;
-  const pipelineName = activeJob?.name ?? "RocketDataForge";
+  const handleCreateNewJob = () => {
+    const rootFolder = storeState.folders.find((f) => f.parentId === null) || storeState.folders[0];
+    if (!rootFolder) return;
+    const job = jobStore.createJob("Novo Job", rootFolder.id);
+    handleOpenJob(job.id);
+    showToast("success", `Job "${job.name}" criado com sucesso!`);
+  };
 
   return (
     <div className="app-container">
@@ -983,6 +1260,63 @@ export const App: React.FC = () => {
         onOpenQueryBank={() => setShowQueryBank(true)}
       />
 
+      {/* MenuBar Desktop - Menus Suspensos e Ações Rápidas */}
+      <MenuBar
+        activeJobName={activeJob?.name}
+        activeCellName={activeJob?.cells?.find((c) => c.id === activeJob.activeCellId)?.name}
+        hasActiveJob={Boolean(activeJobId)}
+        hasActiveCell={Boolean(activeJob?.cells && activeJob.cells.length > 0)}
+        loadingAction={loadingAction}
+        publishedVersionId={publishedVersionId}
+        repoVisible={repoVisible}
+        paletteVisible={paletteVisible}
+        propertiesVisible={propertiesVisible}
+        consoleVisible={consoleVisible}
+        onToggleRepo={() => setRepoVisible((v) => !v)}
+        onTogglePalette={() => setPaletteVisible((v) => !v)}
+        onToggleProperties={() => setPropertiesVisible((v) => !v)}
+        onToggleConsole={() => setConsoleVisible((v) => !v)}
+        onNewJob={handleCreateNewJob}
+        onSaveDraft={handleSaveDraft}
+        onImport={handleTriggerHeaderImport}
+        onExport={handleExport}
+        onPublish={handlePublish}
+        onRunFullJob={handleRun}
+        onRunSelectedCell={handleRunActiveCell}
+        onCompile={handleCompile}
+        onCancelExecution={handleCancelExecution}
+        onResetSelectedCellStatus={() => {
+          if (activeJobId && activeJob?.activeCellId) {
+            jobStore.resetCellStatus(activeJobId, activeJob.activeCellId);
+            showToast("info", "Status da célula ativa resetado.");
+          }
+        }}
+        onResetAllCellsStatus={() => {
+          if (activeJobId) {
+            jobStore.resetAllCellsStatus(activeJobId);
+            showToast("info", "Status de todas as células resetado.");
+          }
+        }}
+        onAddCell={() => {
+          if (activeJobId) {
+            const newCell = jobStore.createCell(activeJobId);
+            if (newCell) showToast("success", `Nova célula "${newCell.name}" criada.`);
+          }
+        }}
+        onDuplicateActiveCell={() => {
+          if (activeJobId && activeJob?.activeCellId) {
+            const dup = jobStore.duplicateCell(activeJobId, activeJob.activeCellId);
+            if (dup) showToast("success", `Célula duplicada como "${dup.name}".`);
+          }
+        }}
+        onValidate={handleValidate}
+        onOpenDiagnostics={handleOpenDiagnostics}
+        onOpenConnections={() => setShowConnManager(true)}
+        onOpenContextVars={() => setShowContextVars(true)}
+        onOpenQueryBank={() => setShowQueryBank(true)}
+        onOpenAbout={() => setShowAboutModal(true)}
+      />
+
       <div className="studio-body">
         {/* Left — Job Repository (Talend-style) */}
         {repoVisible && (
@@ -1008,6 +1342,8 @@ export const App: React.FC = () => {
                     setFloatingNode(node);
                     setSelectedNode(null);
                   }}
+                  onRunEntireJob={handleRun}
+                  onExecuteCellIsolated={handleExecuteCellIsolated}
                   showToast={showToast}
                 />
               ) : (

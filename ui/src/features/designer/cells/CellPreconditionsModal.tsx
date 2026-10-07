@@ -20,8 +20,29 @@ export const CellPreconditionsModal: React.FC<CellPreconditionsModalProps> = ({
     cell.preconditions ? [...cell.preconditions] : []
   );
 
-  // Other cells that can be targeted (cannot target itself)
-  const availableTargetCells = allCells.filter((c) => c.id !== cell.id);
+  // Only cells with strictly lower execution order can be targeted (same order = parallel execution)
+  const availableTargetCells = allCells.filter(
+    (c) => c.id !== cell.id && (c.order < cell.order || c.order === undefined)
+  );
+  const sameOrderCells = allCells.filter(
+    (c) => c.id !== cell.id && c.order === cell.order
+  );
+
+  // Check if any configured precondition has an order conflict (e.g. same order as this cell)
+  const orderConflicts = preconditions
+    .map((p, idx) => {
+      const target = allCells.find((c) => c.id === p.targetCellId || c.name === p.targetCellId);
+      if (target && target.order === cell.order) {
+        return { index: idx, message: `Mesma ordem de execução (#${cell.order}): paralelismo não permite dependência entre si.` };
+      }
+      if (target && target.order > cell.order) {
+        return { index: idx, message: `Ordem posterior (#${target.order} > #${cell.order}): não pode depender de célula futura.` };
+      }
+      return null;
+    })
+    .filter(Boolean);
+
+  const hasOrderConflicts = orderConflicts.length > 0;
 
   const handleAddPrecondition = () => {
     if (availableTargetCells.length === 0) return;
@@ -48,6 +69,7 @@ export const CellPreconditionsModal: React.FC<CellPreconditionsModalProps> = ({
   };
 
   const handleSave = () => {
+    if (hasOrderConflicts) return;
     onSave(preconditions, operator);
     onClose();
   };
@@ -56,7 +78,7 @@ export const CellPreconditionsModal: React.FC<CellPreconditionsModalProps> = ({
     <div className="modal-backdrop" onClick={onClose} style={{ zIndex: 1100 }}>
       <div
         className="modal-box"
-        style={{ width: 560, maxWidth: "95vw" }}
+        style={{ width: 580, maxWidth: "95vw" }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -128,6 +150,28 @@ export const CellPreconditionsModal: React.FC<CellPreconditionsModalProps> = ({
               </button>
             </div>
 
+            {sameOrderCells.length > 0 && (
+              <div
+                style={{
+                  marginTop: 12,
+                  padding: "8px 12px",
+                  borderRadius: 6,
+                  background: "rgba(6,182,212,0.08)",
+                  border: "1px solid rgba(6,182,212,0.25)",
+                  fontSize: "0.75rem",
+                  color: "var(--accent-cyan)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
+                <span>💡</span>
+                <span>
+                  <strong>Regra de Paralelismo:</strong> As células {sameOrderCells.map((c) => `"${c.name}"`).join(", ")} possuem a mesma ordem de execução (#{cell.order}) e rodarão em paralelo; por isso não podem ser definidas como pré-condição.
+                </span>
+              </div>
+            )}
+
             {preconditions.length === 0 ? (
               <div
                 style={{
@@ -144,86 +188,113 @@ export const CellPreconditionsModal: React.FC<CellPreconditionsModalProps> = ({
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {preconditions.map((prec, idx) => {
+                  const conflict = orderConflicts.find((c) => c?.index === idx);
                   return (
                     <div
                       key={prec.id}
                       style={{
                         display: "flex",
-                        alignItems: "center",
-                        gap: 8,
+                        flexDirection: "column",
+                        gap: 4,
                         padding: "8px 12px",
-                        background: "var(--bg-card)",
+                        background: conflict ? "rgba(239,68,68,0.08)" : "var(--bg-card)",
                         borderRadius: 6,
-                        border: "1px solid var(--border-subtle)",
+                        border: conflict
+                          ? "1px solid var(--status-danger)"
+                          : "1px solid var(--border-subtle)",
                       }}
                     >
-                      <span
-                        style={{
-                          fontSize: "0.75rem",
-                          color: "var(--text-muted)",
-                          minWidth: 20,
-                        }}
-                      >
-                        #{idx + 1}
-                      </span>
-
-                      {/* Target Cell Dropdown */}
-                      <div style={{ flex: 2 }}>
-                        <select
-                          className="form-select"
-                          style={{ width: "100%", fontSize: "0.78rem", padding: "4px 8px" }}
-                          value={prec.targetCellId}
-                          onChange={(e) =>
-                            handleUpdatePrecondition(idx, {
-                              targetCellId: e.target.value,
-                            })
-                          }
-                        >
-                          {availableTargetCells.map((tc) => (
-                            <option key={tc.id} value={tc.id}>
-                              {tc.name} (#{tc.order})
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <ArrowRight size={14} color="var(--text-muted)" />
-
-                      {/* Expected Status Dropdown */}
-                      <div style={{ flex: 1.5 }}>
-                        <select
-                          className="form-select"
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span
                           style={{
-                            width: "100%",
-                            fontSize: "0.78rem",
-                            padding: "4px 8px",
-                            color:
-                              prec.expectedStatus === "OK"
-                                ? "var(--status-success)"
-                                : "var(--status-danger)",
-                            fontWeight: 600,
+                            fontSize: "0.75rem",
+                            color: "var(--text-muted)",
+                            minWidth: 20,
                           }}
-                          value={prec.expectedStatus}
-                          onChange={(e) =>
-                            handleUpdatePrecondition(idx, {
-                              expectedStatus: e.target.value as "OK" | "ERROR",
-                            })
-                          }
                         >
-                          <option value="OK">Status: OK (Sucesso)</option>
-                          <option value="ERROR">Status: ERROR (Catch/Fallback)</option>
-                        </select>
+                          #{idx + 1}
+                        </span>
+
+                        {/* Target Cell Dropdown */}
+                        <div style={{ flex: 2 }}>
+                          <select
+                            className="form-select"
+                            style={{ width: "100%", fontSize: "0.78rem", padding: "4px 8px" }}
+                            value={prec.targetCellId}
+                            onChange={(e) =>
+                              handleUpdatePrecondition(idx, {
+                                targetCellId: e.target.value,
+                              })
+                            }
+                          >
+                            {availableTargetCells.map((tc) => (
+                              <option key={tc.id} value={tc.id}>
+                                {tc.name} (#{tc.order})
+                              </option>
+                            ))}
+                            {/* If current value is invalid or same order, show it marked */}
+                            {!availableTargetCells.some((tc) => tc.id === prec.targetCellId) && (
+                              <option value={prec.targetCellId}>
+                                {allCells.find((c) => c.id === prec.targetCellId)?.name || prec.targetCellId} (Conflito de Ordem)
+                              </option>
+                            )}
+                          </select>
+                        </div>
+
+                        <ArrowRight size={14} color="var(--text-muted)" />
+
+                        {/* Expected Status Dropdown */}
+                        <div style={{ flex: 1.5 }}>
+                          <select
+                            className="form-select"
+                            style={{
+                              width: "100%",
+                              fontSize: "0.78rem",
+                              padding: "4px 8px",
+                              color:
+                                prec.expectedStatus === "OK"
+                                  ? "var(--status-success)"
+                                  : "var(--status-danger)",
+                              fontWeight: 600,
+                            }}
+                            value={prec.expectedStatus}
+                            onChange={(e) =>
+                              handleUpdatePrecondition(idx, {
+                                expectedStatus: e.target.value as "OK" | "ERROR",
+                              })
+                            }
+                          >
+                            <option value="OK">Status: OK (Sucesso)</option>
+                            <option value="ERROR">Status: ERROR (Catch/Fallback)</option>
+                          </select>
+                        </div>
+
+                        {/* Remove Button */}
+                        <button
+                          type="button"
+                          className="icon-btn danger"
+                          title="Remover regra"
+                          onClick={() => handleRemovePrecondition(idx)}
+                        >
+                          <Trash2 size={13} />
+                        </button>
                       </div>
 
-                      {/* Remove Button */}
-                      <button
-                        type="button"
-                        className="icon-btn danger"
-                        title="Remover regra"
-                        onClick={() => handleRemovePrecondition(idx)}
-                      >
-                        <Trash2 size={13} />
-                      </button>
+                      {conflict && (
+                        <div
+                          style={{
+                            fontSize: "0.72rem",
+                            color: "var(--status-danger)",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 4,
+                            marginTop: 2,
+                          }}
+                        >
+                          <AlertTriangle size={12} />
+                          <span>{conflict.message}</span>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -246,7 +317,13 @@ export const CellPreconditionsModal: React.FC<CellPreconditionsModalProps> = ({
           <button type="button" className="btn btn-secondary" onClick={onClose}>
             Cancelar
           </button>
-          <button type="button" className="btn btn-primary" onClick={handleSave}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={handleSave}
+            disabled={hasOrderConflicts}
+            title={hasOrderConflicts ? "Resolva os conflitos de ordem antes de salvar" : "Salvar regras"}
+          >
             Salvar Regras
           </button>
         </div>
