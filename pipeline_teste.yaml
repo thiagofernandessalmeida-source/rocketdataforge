@@ -1,0 +1,389 @@
+schemaVersion: rdf.pipeline/v1
+kind: Pipeline
+metadata:
+  id: 01m4dxdwpzw0rvsmhex1pss2bb
+  name: teste - Cópia de canvas-cell-01
+spec:
+  nodes:
+  - id: csv_murra1to
+    component:
+      type: core.file.source.csv
+      version: 1.0.0
+    config:
+      path: C:/Users/thial/Downloads/Top Movies dataset.csv
+      schema_columns:
+      - Release_Date
+      - Title
+      - Overview
+      - Popularity
+      - Vote_Count
+      - Vote_Average
+      - Original_Language
+      - Genre
+      - Poster_Url
+      - Working URL
+      schema_definitions:
+      - id: col-1791055142128-0
+        name: Release_Date
+        type: String
+        nullable: true
+        physicalType: VARCHAR
+        length: 100000
+      - id: col-1791055142128-1
+        name: Title
+        type: String
+        nullable: true
+        physicalType: VARCHAR
+        length: 100000
+      - id: col-1791055142128-2
+        name: Overview
+        type: String
+        nullable: true
+        physicalType: VARCHAR
+        length: 100000
+      - id: col-1791055142128-3
+        name: Popularity
+        type: String
+        nullable: true
+        physicalType: DOUBLE
+        length: 100000
+      - id: col-1791055142128-4
+        name: Vote_Count
+        type: String
+        nullable: true
+        physicalType: VARCHAR
+        length: 100000
+      - id: col-1791055142128-5
+        name: Vote_Average
+        type: String
+        nullable: true
+        physicalType: VARCHAR
+        length: 100000
+      - id: col-1791055142128-6
+        name: Original_Language
+        type: String
+        nullable: true
+        physicalType: VARCHAR
+        length: 100000
+      - id: col-1791055142128-7
+        name: Genre
+        type: String
+        nullable: true
+        physicalType: VARCHAR
+        length: 100000
+      - id: col-1791055142128-8
+        name: Poster_Url
+        type: String
+        nullable: true
+        physicalType: VARCHAR
+        length: 100000
+      - id: col-1791055142128-9
+        name: Working URL
+        type: String
+        nullable: true
+        physicalType: VARCHAR
+        length: 100000
+  - id: data_mapper_1
+    component:
+      type: core.tmap
+      version: 1.0.0
+    config:
+      lookups: []
+      outputs:
+      - id: out1
+        name: out1
+        targetId: target_murren00
+        targetLabel: Output_parquet
+        filter_expression: ''
+        catch_output_reject: false
+        catch_lookup_reject: false
+        catch_inner_join_reject: false
+        schema_type: Built-in
+        is_reject: false
+        columns:
+        - id: col-1791055930675-tmev
+          target: Release_Date
+          expression: row1.Release_Date
+          type: String
+          nullable: true
+          length: 100000
+        - id: col-1791055930675-ooh2
+          target: Title
+          expression: row1.Title
+          type: String
+          nullable: true
+          length: 100000
+        - id: col-1791055930675-hh70
+          target: Overview
+          expression: row1.Overview
+          type: String
+          nullable: true
+          length: 100000
+        - id: col-1791055930675-sd90
+          target: Popularity
+          expression: row1.Popularity
+          type: String
+          nullable: true
+          length: 100000
+        - id: col-1791055930676-5c4v
+          target: Vote_Count
+          expression: row1.Vote_Count
+          type: String
+          nullable: true
+          length: 100000
+        - id: col-1791055930676-awpw
+          target: Vote_Average
+          expression: row1.Vote_Average
+          type: String
+          nullable: true
+          length: 100000
+        - id: col-1791055930676-fdm2
+          target: Original_Language
+          expression: row1.Original_Language
+          type: String
+          nullable: true
+          length: 100000
+        - id: col-1791055930676-47jf
+          target: Genre
+          expression: row1.Genre
+          type: String
+          nullable: true
+          length: 100000
+        - id: col-1791055930676-gy6e
+          target: Poster_Url
+          expression: row1.Poster_Url
+          type: String
+          nullable: true
+          length: 100000
+        - id: col-1791055930676-0vfr
+          target: Working URL
+          expression: row1.Working URL
+          type: String
+          nullable: true
+          length: 100000
+      - id: out2
+        name: out2
+        targetId: file_sink_1
+        targetLabel: Output_CSV
+        filter_expression: ''
+        catch_output_reject: false
+        catch_lookup_reject: false
+        catch_inner_join_reject: false
+        schema_type: Built-in
+        is_reject: false
+        columns:
+        - id: col-1791149658079-qqxf
+          target: Release_Date
+          expression: row1.Release_Date
+          type: String
+          nullable: true
+          length: 100000
+        - id: col-1791149658079-is3i
+          target: Title
+          expression: row1.Title
+          type: String
+          nullable: true
+          length: 100000
+        - id: col-1791149658079-j8r3
+          target: Overview
+          expression: row1.Overview
+          type: String
+          nullable: true
+          length: 100000
+      query: ' {csv_murra1to.Release_Date} {csv_murra1to.Overview} {csv_murra1to.Overview}
+        {csv_murra1to.Overview} {csv_murra1to.Popularity} {csv_murra1to.Vote_Count}'
+      schema_columns:
+      - Release_Date
+      - Title
+      - Overview
+      - Popularity
+      - Vote_Count
+      - Vote_Average
+      - Original_Language
+      - Genre
+      - Poster_Url
+      - Working URL
+      schema_definitions:
+      - id: col-1791149758984-ived
+        name: Release_Date
+        type: String
+        nullable: true
+        physicalType: VARCHAR
+        length: 100000
+      - id: col-1791149758984-q9qw
+        name: Title
+        type: String
+        nullable: true
+        physicalType: VARCHAR
+        length: 100000
+      - id: col-1791149758984-h134
+        name: Overview
+        type: String
+        nullable: true
+        physicalType: VARCHAR
+        length: 100000
+      - id: col-1791149758984-l3af
+        name: Popularity
+        type: String
+        nullable: true
+        physicalType: DOUBLE
+        length: 100000
+      - id: col-1791149758984-epjp
+        name: Vote_Count
+        type: String
+        nullable: true
+        physicalType: VARCHAR
+        length: 100000
+      - id: col-1791149758984-4qui
+        name: Vote_Average
+        type: String
+        nullable: true
+        physicalType: VARCHAR
+        length: 100000
+      - id: col-1791149758984-6y6c
+        name: Original_Language
+        type: String
+        nullable: true
+        physicalType: VARCHAR
+        length: 100000
+      - id: col-1791149758984-sq4d
+        name: Genre
+        type: String
+        nullable: true
+        physicalType: VARCHAR
+        length: 100000
+      - id: col-1791149758984-1hah
+        name: Poster_Url
+        type: String
+        nullable: true
+        physicalType: VARCHAR
+        length: 100000
+      - id: col-1791149758984-zj4b
+        name: Working URL
+        type: String
+        nullable: true
+        physicalType: VARCHAR
+        length: 100000
+      variables:
+      - id: v1
+        name: var1
+        type: String
+        expression: row1.Title
+  - id: file_sink_1
+    component:
+      type: core.file.target
+      version: 1.0.0
+    config:
+      format: csv
+      path: C:/Users/thial/Downloads/testeJob.csv
+      schema_columns:
+      - Release_Date
+      - Title
+      - Overview
+      schema_definitions:
+      - id: col-1791149658079-qqxf
+        name: Release_Date
+        type: String
+        nullable: true
+        isPrimaryKey: false
+        length: 100000
+      - id: col-1791149658079-is3i
+        name: Title
+        type: String
+        nullable: true
+        isPrimaryKey: false
+        length: 100000
+      - id: col-1791149658079-j8r3
+        name: Overview
+        type: String
+        nullable: true
+        isPrimaryKey: false
+        length: 100000
+  - id: target_murren00
+    component:
+      type: core.file.target
+      version: 1.0.0
+    config:
+      path: C:/Users/thial/Downloads/testeJob.parquet
+      schema_columns:
+      - Release_Date
+      - Title
+      - Overview
+      - Popularity
+      - Vote_Count
+      - Vote_Average
+      - Original_Language
+      - Genre
+      - Poster_Url
+      - Working URL
+      schema_definitions:
+      - id: col-1791055930675-tmev
+        name: Release_Date
+        type: String
+        nullable: true
+        isPrimaryKey: false
+        length: 100000
+      - id: col-1791055930675-ooh2
+        name: Title
+        type: String
+        nullable: true
+        isPrimaryKey: false
+        length: 100000
+      - id: col-1791055930675-hh70
+        name: Overview
+        type: String
+        nullable: true
+        isPrimaryKey: false
+        length: 100000
+      - id: col-1791055930675-sd90
+        name: Popularity
+        type: String
+        nullable: true
+        isPrimaryKey: false
+        length: 100000
+      - id: col-1791055930676-5c4v
+        name: Vote_Count
+        type: String
+        nullable: true
+        isPrimaryKey: false
+        length: 100000
+      - id: col-1791055930676-awpw
+        name: Vote_Average
+        type: String
+        nullable: true
+        isPrimaryKey: false
+        length: 100000
+      - id: col-1791055930676-fdm2
+        name: Original_Language
+        type: String
+        nullable: true
+        isPrimaryKey: false
+        length: 100000
+      - id: col-1791055930676-47jf
+        name: Genre
+        type: String
+        nullable: true
+        isPrimaryKey: false
+        length: 100000
+      - id: col-1791055930676-gy6e
+        name: Poster_Url
+        type: String
+        nullable: true
+        isPrimaryKey: false
+        length: 100000
+      - id: col-1791055930676-0vfr
+        name: Working URL
+        type: String
+        nullable: true
+        isPrimaryKey: false
+        length: 100000
+  edges:
+  - id: e_main1_1791149698369
+    from: csv_murra1to.main1
+    to: data_mapper_1.main
+  - id: e_out1_1791149709492
+    from: data_mapper_1.out1
+    to: target_murren00.input
+  - id: e_out2_1791149713828
+    from: data_mapper_1.out2
+    to: file_sink_1.input

@@ -1,8 +1,9 @@
 @echo off
-title RocketDataForge - Launcher
+title CellFlow Data Studio - Launcher
 
 echo ================================================================
-echo          ROCKETDATAFORGE - STUDIO DE ENGENHARIA DE DADOS
+echo          CELLFLOW DATA STUDIO - STUDIO DE ENGENHARIA DE DADOS
+echo                       Build smart. Flow fast
 echo ================================================================
 echo.
 
@@ -17,10 +18,10 @@ if exist "%~dp0.venv\Scripts\python.exe" (
 )
 
 echo [INFO] Iniciando o Backend FastAPI (porta 8000)...
-start "RocketDataForge - Backend" cmd /k "cd /d "%~dp0" && title RocketDataForge - Backend :8000 && set PYTHONPATH=. && "%PYTHON_EXE%" -m src.core.infrastructure.web.main"
+start "CellFlow Data Studio - Backend" cmd /k "cd /d "%~dp0" && title CellFlow Data Studio - Backend :8000 && set PYTHONPATH=. && "%PYTHON_EXE%" -m src.core.infrastructure.web.main"
 
 echo [INFO] Iniciando o Frontend Vite (porta 5173)...
-start "RocketDataForge - Frontend" cmd /k "cd /d "%~dp0ui" && title RocketDataForge - Frontend :5173 && npm run dev"
+start "CellFlow Data Studio - Frontend" cmd /k "cd /d "%~dp0ui" && title CellFlow Data Studio - Frontend :5173 && npm run dev"
 
 echo.
 echo [INFO] Aguardando inicializacao dos servicos...
@@ -31,7 +32,7 @@ start http://localhost:5173
 
 echo.
 echo ================================================================
-echo  RocketDataForge iniciado com sucesso!
+echo  CellFlow Data Studio iniciado com sucesso!
 echo  - Studio UI:   http://localhost:5173
 echo  - Swagger API: http://localhost:8000/docs
 echo ================================================================

@@ -112,7 +112,7 @@ export const Header: React.FC<HeaderProps> = ({
         <button
           className="brand-logo-btn"
           onClick={onOpenAbout}
-          title="Sobre o RocketDataForge — Versão e Detalhes"
+          title="Sobre o CellFlow Data Studio — Versão e Detalhes"
           style={{
             background: "transparent",
             border: "none",
@@ -127,9 +127,17 @@ export const Header: React.FC<HeaderProps> = ({
           onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.06)")}
           onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
         >
-          <span className="brand-logo">
-            <Rocket size={20} color="var(--accent-cyan)" />
-            <span>RocketDataForge</span>
+          <span className="brand-logo" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <img
+              src="/cellflow-logo.png"
+              alt="CellFlow Data Studio"
+              style={{
+                height: 28,
+                width: "auto",
+                objectFit: "contain",
+                display: "block",
+              }}
+            />
             <span
               style={{
                 fontSize: "0.68rem",

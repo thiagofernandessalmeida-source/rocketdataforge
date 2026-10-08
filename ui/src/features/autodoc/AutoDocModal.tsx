@@ -321,7 +321,7 @@ flowchart LR
         {/* Footer */}
         <div className="px-6 py-2.5 border-t border-[#334155] bg-[#0f172a] flex items-center justify-between text-xs text-slate-400">
           <span>
-            RocketDataForge Auto-Doc • Documentação técnica compatível com Markdown, MDX e Auditoria Corporativa
+            CellFlow Data Studio Auto-Doc • Documentação técnica compatível com Markdown, MDX e Auditoria Corporativa
           </span>
           <button
             onClick={onClose}
