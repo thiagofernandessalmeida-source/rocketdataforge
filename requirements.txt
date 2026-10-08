@@ -11,3 +11,5 @@ opentelemetry-sdk>=1.26.0
 jsonschema>=4.20.0
 pytest>=8.0.0
 starlette>=0.38.0
+cryptography>=42.0.0
+pyjwt>=2.8.0

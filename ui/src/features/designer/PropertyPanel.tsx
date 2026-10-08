@@ -126,9 +126,9 @@ export const QuerySelect: React.FC<{
     const dialectMatch = !dialect || q.dialect === dialect || q.dialect === "sql";
     if (!dialectMatch) return false;
     if (q.connectionRef && connectionRef) {
-      return q.connectionRef === connectionRef;
+      return q.connectionRef.toLowerCase().trim() === connectionRef.toLowerCase().trim();
     }
-    return dialectMatch;
+    return true;
   });
 
   if (filtered.length === 0) return null;
@@ -369,10 +369,10 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
   const handleChange = useCallback(
     (key: string, value: any) => {
       if (!selectedNode) return;
-      const config = selectedNode.data.config || {};
-      onUpdateConfig(selectedNode.id, { ...config, [key]: value });
+      const currentConfig = (allNodes.find((n) => n.id === selectedNode.id) || selectedNode).data.config || {};
+      onUpdateConfig(selectedNode.id, { ...currentConfig, [key]: value });
     },
-    [selectedNode, onUpdateConfig]
+    [selectedNode, allNodes, onUpdateConfig]
   );
 
   const handleSchemaChange = useCallback(
@@ -511,7 +511,11 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
   const isJoin = ct.includes("join");
   const isFileTarget = ct.includes("file.target");
   const isDbConnector =
-    ct.includes("connector.db") || ct.includes("connector.cloud") || ct.includes("connector.api");
+    ct.includes("connector.db") ||
+    ct.includes("core.database") ||
+    ct.includes("database.source") ||
+    ct.includes("connector.cloud") ||
+    ct.includes("connector.api");
   const isDbTarget =
     ct.includes(".output") || ct === "core.database.target" || isDuckDbOutput;
 
@@ -874,7 +878,12 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                       connections={connections}
                       connectionRef={config.connection_ref ?? ""}
                       onSelect={(q) => {
-                        handleChange("query", q.sql);
+                        const currentCfg = (allNodes.find((n) => n.id === id) || liveNode).data.config || {};
+                        onUpdateConfig(id, {
+                          ...currentCfg,
+                          query: q.sql,
+                          ...(q.connectionRef ? { connection_ref: q.connectionRef } : {}),
+                        });
                         if (q.schema && q.schema.length > 0) {
                           onUpdateSchema?.(id, q.schema);
                         }

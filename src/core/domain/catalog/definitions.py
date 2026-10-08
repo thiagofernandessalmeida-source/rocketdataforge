@@ -1,7 +1,7 @@
 """Definições e contratos dos componentes do Catálogo do Slice 001."""
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from src.core.domain.shared.types import PortDirection, PortType, SemanticVersion
 
@@ -36,6 +36,8 @@ class ComponentDefinition:
     ports: List[PortDefinition]
     config_schema: Dict[str, Any]
     capabilities: ComponentCapability = field(default_factory=ComponentCapability)
+    base_type_id: Optional[str] = None
+    constraints: Dict[str, Any] = field(default_factory=dict)
 
 
 # ============================================================================
@@ -427,6 +429,29 @@ AWS_SNS_TARGET = ComponentDefinition(
     capabilities=ComponentCapability(supports_bulk_write=True)
 )
 
+MYSQL_AGREEMENTS = ComponentDefinition(
+    type_id="connector.custom.mysql_agreements",
+    version=SemanticVersion(1, 0, 0),
+    name="MySQL Agreements (Restricted Target)",
+    category="target",
+    description="Componente corporativo derivado com Hard Constraints de lote (máximo 1000 registros).",
+    ports=[
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET, description="Dados de acordos comerciais")
+    ],
+    config_schema={
+        "type": "object",
+        "required": ["connection_ref", "table_name"],
+        "properties": {
+            "connection_ref": {"type": "string", "description": "Conexão com base de acordos"},
+            "table_name": {"type": "string", "description": "Nome da tabela de contratos"},
+            "batch_size": {"type": "integer", "description": "Tamanho do lote para inserção"}
+        }
+    },
+    capabilities=ComponentCapability(supports_bulk_write=True),
+    base_type_id="core.database.target",
+    constraints={"max_batch_size": 1000}
+)
+
 CATALOG_COMPONENTS: List[ComponentDefinition] = [
     DATABASE_SOURCE,
     FILE_SOURCE,
@@ -444,7 +469,8 @@ CATALOG_COMPONENTS: List[ComponentDefinition] = [
     KAFKA_TARGET,
     AWS_SQS_SOURCE,
     AWS_SQS_TARGET,
-    AWS_SNS_TARGET
+    AWS_SNS_TARGET,
+    MYSQL_AGREEMENTS
 ]
 
 

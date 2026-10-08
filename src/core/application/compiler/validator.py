@@ -8,7 +8,10 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from src.core.domain.catalog.definitions import get_component_definition
 from src.core.domain.pipeline.draft import PipelineDraft
+from src.core.domain.policy.evaluator import PolicyEvaluator
+from src.core.domain.policy.policy_model import PolicyDocument
 from src.core.domain.shared.exceptions import CyclicDependencyError, DomainValidationError
 
 
@@ -140,8 +143,12 @@ class GraphValidator:
 
         return errors, cell_order
 
-    def validate(self, draft: PipelineDraft) -> ValidationReport:
-        """Executa validação completa do draft."""
+    def validate(
+        self,
+        draft: PipelineDraft,
+        policy: Optional[Any] = None
+    ) -> ValidationReport:
+        """Executa validação completa do draft, incluindo constraints de componentes e políticas ABAC."""
         errors: List[ValidationErrorItem] = []
         warnings: List[ValidationWarningItem] = []
         cell_topological_order: List[str] = []
@@ -233,6 +240,80 @@ class GraphValidator:
                 code="WARN_NO_SINK",
                 message="Nenhum nó de saída (Sink/Target) identificado no pipeline."
             ))
+
+        # 4. Validação de Component Hard Constraints (ex: Componentes Customizados como mysql_agreements)
+        for node_id, node in draft.nodes.items():
+            try:
+                comp_def = get_component_definition(node.component_type)
+                if comp_def and comp_def.constraints:
+                    if "max_batch_size" in comp_def.constraints:
+                        max_b = comp_def.constraints["max_batch_size"]
+                        cfg_batch = (node.config or {}).get("batch_size")
+                        if cfg_batch is not None and int(cfg_batch) > max_b:
+                            errors.append(ValidationErrorItem(
+                                code="ERR_COMPONENT_CONSTRAINT_VIOLATION",
+                                node_id=node_id,
+                                message=(
+                                    f"O componente '{node.component_type}' no nó '{node_id}' viola a Hard Constraint: "
+                                    f"batch_size={cfg_batch} excede o limite máximo permitido de {max_b}."
+                                )
+                            ))
+            except KeyError:
+                # Componente não encontrado no catálogo
+                pass
+
+        # 5. Validação de Políticas Corporativas ABAC (se policy fornecida)
+        if policy is not None:
+            evaluator: PolicyEvaluator
+            if isinstance(policy, PolicyEvaluator):
+                evaluator = policy
+            elif isinstance(policy, PolicyDocument):
+                evaluator = PolicyEvaluator([policy])
+            elif isinstance(policy, list):
+                evaluator = PolicyEvaluator(policy)
+            else:
+                evaluator = PolicyEvaluator([])
+
+            # 5.1 Verificar exigência de documentação do Job
+            has_req_job_desc = False
+            has_req_cell_desc = False
+            for p in evaluator.policies:
+                for stmt in p.statements:
+                    if stmt.conditions.get("require_job_description"):
+                        has_req_job_desc = True
+                    if stmt.conditions.get("require_cell_description"):
+                        has_req_cell_desc = True
+
+            if has_req_job_desc and (not draft.description or not draft.description.strip()):
+                errors.append(ValidationErrorItem(
+                    code="ERR_POLICY_MISSING_JOB_DESCRIPTION",
+                    message="A política corporativa de governança exige descrição obrigatória para o Pipeline (require_job_description)."
+                ))
+
+            if has_req_cell_desc and draft.cells:
+                for cell in draft.cells:
+                    c_id = cell.get("id") or cell.get("name") or "célula"
+                    c_desc = cell.get("description")
+                    if not c_desc or not str(c_desc).strip():
+                        errors.append(ValidationErrorItem(
+                            code="ERR_POLICY_MISSING_CELL_DESCRIPTION",
+                            node_id=c_id,
+                            message=f"A política corporativa de governança exige descrição obrigatória na célula '{c_id}' (require_cell_description)."
+                        ))
+
+            # 5.2 Verificar autorização de conectores utilizados nos nós
+            for node_id, node in draft.nodes.items():
+                eval_res = evaluator.evaluate(
+                    action="connector:use",
+                    resource=f"urn:rdf:connector:{node.component_type}",
+                    context=node.config or {}
+                )
+                if not eval_res.allowed:
+                    errors.append(ValidationErrorItem(
+                        code="ERR_POLICY_FORBIDDEN_CONNECTOR",
+                        node_id=node_id,
+                        message=f"Uso do componente '{node.component_type}' no nó '{node_id}' negado pela política: {eval_res.reason}"
+                    ))
 
         return ValidationReport(
             is_valid=len(errors) == 0,

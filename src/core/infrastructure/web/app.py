@@ -10,11 +10,13 @@ from src.core.domain.shared.exceptions import (
     SecurityViolationError,
 )
 from src.core.infrastructure.web.routers import (
+    autodoc,
     catalog,
     connections,
     executions,
     git,
     pipelines,
+    policies,
     versions,
     workspaces,
 )
@@ -87,6 +89,8 @@ def create_app() -> FastAPI:
         versions.router,
         executions.router,
         git.router,
+        policies.router,
+        autodoc.router,
     ]
 
     for r in api_routers:

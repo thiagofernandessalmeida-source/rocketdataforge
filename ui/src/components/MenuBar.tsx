@@ -64,6 +64,8 @@ export interface MenuBarProps {
   onOpenConnections: () => void;
   onOpenContextVars: () => void;
   onOpenQueryBank: () => void;
+  onOpenPolicySimulator?: () => void;
+  onOpenAutoDoc?: () => void;
   onOpenAbout: () => void;
 }
 
@@ -102,6 +104,8 @@ export const MenuBar: React.FC<MenuBarProps> = ({
   onOpenConnections,
   onOpenContextVars,
   onOpenQueryBank,
+  onOpenPolicySimulator,
+  onOpenAutoDoc,
   onOpenAbout,
 }) => {
   const [openMenu, setOpenMenu] = useState<MenuKey>(null);
@@ -373,6 +377,27 @@ export const MenuBar: React.FC<MenuBarProps> = ({
                 <BookOpen size={14} color="#8b5cf6" />
                 <span className="entry-label">Banco de Queries SQL</span>
               </button>
+              <div className="dropdown-divider" />
+              {onOpenPolicySimulator && (
+                <button
+                  type="button"
+                  className="dropdown-entry"
+                  onClick={() => closeAndRun(onOpenPolicySimulator)}
+                >
+                  <ShieldCheck size={14} color="#38bdf8" />
+                  <span className="entry-label">Simulador de Políticas ABAC & Segurança</span>
+                </button>
+              )}
+              {onOpenAutoDoc && (
+                <button
+                  type="button"
+                  className="dropdown-entry"
+                  onClick={() => closeAndRun(onOpenAutoDoc)}
+                >
+                  <Sparkles size={14} color="#a855f7" />
+                  <span className="entry-label">Documentação Interativa (Auto-Doc & Linhagem)</span>
+                </button>
+              )}
             </div>
           )}
         </div>
