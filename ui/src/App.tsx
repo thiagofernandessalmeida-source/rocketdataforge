@@ -22,6 +22,8 @@ import { JobTabBar } from "./features/repository/JobTabBar";
 import { ConnectionManager } from "./features/connections/ConnectionManager";
 import { ContextVariablesModal } from "./features/context/ContextVariablesModal";
 import { QueryBankModal } from "./features/querybank/QueryBankModal";
+import { PolicySimulatorModal } from "./features/security/PolicySimulatorModal";
+import { AutoDocModal } from "./features/autodoc/AutoDocModal";
 import { AboutModal } from "./components/AboutModal";
 import { api } from "./api/client";
 import { EXPANDED_CATALOG } from "./catalog/components";
@@ -263,6 +265,8 @@ export const App: React.FC = () => {
   const [showConnManager, setShowConnManager] = useState(false);
   const [showContextVars, setShowContextVars] = useState(false);
   const [showQueryBank, setShowQueryBank] = useState(false);
+  const [showPolicySimulator, setShowPolicySimulator] = useState(false);
+  const [showAutoDoc, setShowAutoDoc] = useState(false);
   const [showAboutModal, setShowAboutModal] = useState(false);
   const [floatingNode, setFloatingNode] = useState<Node<CanvasNodeData> | null>(null);
   
@@ -356,23 +360,16 @@ export const App: React.FC = () => {
   // ─── Node Handlers ─────────────────────────────────────────
   const handleUpdateConfig = useCallback(
     (nodeId: string, newConfig: Record<string, any>) => {
+      setSelectedNode((sel) =>
+        sel?.id === nodeId ? { ...sel, data: { ...sel.data, config: newConfig } } : sel
+      );
+      setFloatingNode((fl) =>
+        fl?.id === nodeId ? { ...fl, data: { ...fl.data, config: newConfig } } : fl
+      );
       setNodes((nds) =>
-        nds.map((n) => {
-          if (n.id === nodeId) {
-            const updated = { ...n, data: { ...n.data, config: newConfig } };
-            // Only update selectedNode if NOT editing in floating window
-            // to avoid re-render cascade that causes textarea focus loss.
-            setSelectedNode((sel) =>
-              sel?.id === nodeId ? updated : sel
-            );
-            // Also update floating node if that's what's being edited
-            setFloatingNode((fl) =>
-              fl?.id === nodeId ? updated : fl
-            );
-            return updated;
-          }
-          return n;
-        })
+        nds.map((n) =>
+          n.id === nodeId ? { ...n, data: { ...n.data, config: newConfig } } : n
+        )
       );
       if (activeJobId) {
         const j = jobStore.getJob(activeJobId);
@@ -393,16 +390,16 @@ export const App: React.FC = () => {
 
   const handleUpdateSchema = useCallback(
     (nodeId: string, schema: SchemaColumn[]) => {
+      setSelectedNode((sel) =>
+        sel?.id === nodeId ? { ...sel, data: { ...sel.data, schema } } : sel
+      );
+      setFloatingNode((fl) =>
+        fl?.id === nodeId ? { ...fl, data: { ...fl.data, schema } } : fl
+      );
       setNodes((nds) =>
-        nds.map((n) => {
-          if (n.id === nodeId) {
-            const updated = { ...n, data: { ...n.data, schema } };
-            setSelectedNode((sel) => (sel?.id === nodeId ? updated : sel));
-            setFloatingNode((fl) => (fl?.id === nodeId ? updated : fl));
-            return updated;
-          }
-          return n;
-        })
+        nds.map((n) =>
+          n.id === nodeId ? { ...n, data: { ...n.data, schema } } : n
+        )
       );
       if (activeJobId) {
         const j = jobStore.getJob(activeJobId);
@@ -523,8 +520,16 @@ export const App: React.FC = () => {
       showToast("error", "Nenhum job aberto. Abra ou crie um job no Repositório.");
       return;
     }
-    jobStore.saveJob(activeJobId, nodes, edges);
-    setCanvasMap((m) => ({ ...m, [activeJobId]: { nodes, edges } }));
+    const currentJob = jobStore.getJob(activeJobId);
+    const hasCells = Boolean(currentJob?.cells && currentJob.cells.length > 0);
+    const effectiveNodes = hasCells
+      ? (currentJob?.cells || []).flatMap((c) => c.nodes || [])
+      : nodes;
+    const effectiveEdges = hasCells
+      ? (currentJob?.cells || []).flatMap((c) => c.edges || [])
+      : edges;
+    jobStore.saveJob(activeJobId, effectiveNodes, effectiveEdges);
+    setCanvasMap((m) => ({ ...m, [activeJobId]: { nodes: effectiveNodes, edges: effectiveEdges } }));
     showToast("success", `Job salvo localmente!`);
   }, [activeJobId, nodes, edges, showToast]);
 
@@ -552,7 +557,16 @@ export const App: React.FC = () => {
   const serializeCanvas = (customPipelineId?: string) => {
     const currentConnections = jobStore.getState().connections;
     const activePid = customPipelineId || pipelineId;
-    const specNodes = nodes.map((n) => {
+    const currentJob = activeJobId ? jobStore.getJob(activeJobId) : undefined;
+    const hasCells = Boolean(currentJob?.cells && currentJob.cells.length > 0);
+    const sourceNodes = hasCells
+      ? (currentJob?.cells || []).flatMap((c) => c.nodes || [])
+      : nodes;
+    const sourceEdges = hasCells
+      ? (currentJob?.cells || []).flatMap((c) => c.edges || [])
+      : edges;
+
+    const specNodes = sourceNodes.map((n) => {
       const cfg = { ...(n.data.config || {}) };
       if (cfg.connection_ref) {
         const refNormalized = String(cfg.connection_ref).toLowerCase().trim();
@@ -587,7 +601,7 @@ export const App: React.FC = () => {
         config: cfg,
       };
     });
-    const specEdges = edges.map((e) => {
+    const specEdges = sourceEdges.map((e) => {
       const fromPort =
         e.data?.flowName ||
         (typeof e.label === "string" ? e.label : "") ||
@@ -599,12 +613,11 @@ export const App: React.FC = () => {
         to: `${e.target}.${e.targetHandle || "input"}`,
       };
     });
-    const layoutNodes = nodes.map((n) => ({
+    const layoutNodes = sourceNodes.map((n) => ({
       id: n.id,
       position: { x: n.position.x, y: n.position.y },
     }));
     const pipelineName = activeJobId ? (jobStore.getJob(activeJobId)?.name ?? "Pipeline") : "Pipeline";
-    const currentJob = activeJobId ? jobStore.getJob(activeJobId) : undefined;
     const specCells = currentJob?.cells?.map((c) => ({
       id: c.id,
       name: c.name,
@@ -612,6 +625,8 @@ export const App: React.FC = () => {
       order: c.order,
       preconditions: c.preconditions || [],
       precondition_operator: c.preconditionOperator || "AND",
+      nodes: c.nodes,
+      edges: c.edges,
     }));
 
     return {
@@ -1314,6 +1329,8 @@ export const App: React.FC = () => {
         onOpenConnections={() => setShowConnManager(true)}
         onOpenContextVars={() => setShowContextVars(true)}
         onOpenQueryBank={() => setShowQueryBank(true)}
+        onOpenPolicySimulator={() => setShowPolicySimulator(true)}
+        onOpenAutoDoc={() => setShowAutoDoc(true)}
         onOpenAbout={() => setShowAboutModal(true)}
       />
 
@@ -1429,6 +1446,37 @@ export const App: React.FC = () => {
       {showQueryBank && (
         <QueryBankModal
           onClose={() => setShowQueryBank(false)}
+          onInsertQuery={(q) => {
+            if (selectedNode) {
+              const currentCfg = selectedNode.data.config || {};
+              handleUpdateConfig(selectedNode.id, {
+                ...currentCfg,
+                query: q.sql,
+                ...(q.connectionRef ? { connection_ref: q.connectionRef } : {}),
+              });
+              if (q.schema && q.schema.length > 0) {
+                handleUpdateSchema(selectedNode.id, q.schema);
+              }
+              showToast("success", `Query '${q.name}' importada para o nó '${selectedNode.data.label || selectedNode.id}'.`);
+              setShowQueryBank(false);
+            } else {
+              showToast("info", "Selecione um nó no canvas para aplicar a query diretamente.");
+            }
+          }}
+        />
+      )}
+      {showPolicySimulator && (
+        <PolicySimulatorModal
+          onClose={() => setShowPolicySimulator(false)}
+          currentUser="analyst_maria"
+        />
+      )}
+      {showAutoDoc && (
+        <AutoDocModal
+          onClose={() => setShowAutoDoc(false)}
+          pipelineId={pipelineId}
+          pipelineName={activeJob?.name || pipelineName}
+          cellsCount={activeJob?.cells?.length || 0}
         />
       )}
 

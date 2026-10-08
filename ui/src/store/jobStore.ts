@@ -571,14 +571,51 @@ export const jobStore = {
       ...state,
       jobs: state.jobs.map((j) => {
         if (j.id !== jobId) return j;
-        const cellId = targetCellId || j.activeCellId || j.cells?.[0]?.id || "canvas-cell-01";
-        const updatedCells = (j.cells || []).map((c) =>
-          c.id === cellId ? { ...c, nodes, edges, viewport } : c
-        );
+
+        let updatedCells = j.cells;
+        if (targetCellId) {
+          // Destino explícito de célula informado
+          updatedCells = (j.cells || []).map((c) =>
+            c.id === targetCellId ? { ...c, nodes, edges, viewport } : c
+          );
+        } else if (!j.cells || j.cells.length === 0) {
+          // Job sem células (canvas legado): cria a célula padrão
+          updatedCells = [
+            {
+              id: "canvas-cell-01",
+              name: "canvas-cell-01",
+              description: "",
+              order: 1,
+              preconditions: [],
+              preconditionOperator: "AND",
+              nodes,
+              edges,
+              status: "idle",
+              viewport,
+            },
+          ];
+        } else {
+          // Em multi-canvas sem targetCellId explícito:
+          // As células já são salvas individualmente via saveCellGraph.
+          // PRESERVA as células existentes sem sobrescrever nem zerar nós!
+          updatedCells = j.cells;
+        }
+
+        // Se os nós passados estiverem vazios mas o job possuir células,
+        // deriva j.nodes e j.edges de todas as células do job para consistência.
+        const effectiveNodes =
+          nodes && nodes.length > 0
+            ? nodes
+            : (updatedCells || []).flatMap((c) => c.nodes || []);
+        const effectiveEdges =
+          edges && edges.length > 0
+            ? edges
+            : (updatedCells || []).flatMap((c) => c.edges || []);
+
         return {
           ...j,
-          nodes,
-          edges,
+          nodes: effectiveNodes,
+          edges: effectiveEdges,
           viewport,
           cells: updatedCells,
           status: "saved",

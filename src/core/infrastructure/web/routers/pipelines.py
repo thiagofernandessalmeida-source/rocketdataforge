@@ -159,6 +159,7 @@ def update_pipeline_draft(
             revision=current_draft.revision + 1
         )
         updated_draft.parameters = spec.get("parameters", {})
+        updated_draft.cells = spec.get("cells", [])
 
         for n in spec.get("nodes", []):
             comp = n.get("component", {})

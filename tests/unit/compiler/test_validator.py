@@ -74,3 +74,61 @@ def test_branching_and_joining_dag():
     assert "sink_dw" == report.topological_order[-1]
     assert report.topological_order.index("join_node") > report.topological_order.index("src_customers")
     assert report.topological_order.index("join_node") > report.topological_order.index("src_orders")
+
+
+def test_validate_component_hard_constraints():
+    """Valida se ultrapassar o limite embutido (ex: max_batch_size) em componente derivado gera erro."""
+    draft = PipelineDraft(id="p1", project_id="pr1", name="Custom Component Pipeline")
+    ver = SemanticVersion(1, 0, 0)
+    draft.add_node("src", "core.file.source", ver)
+    # mysql_agreements possui hard constraint max_batch_size = 1000
+    draft.add_node("custom_sink", "connector.custom.mysql_agreements", ver, config={"batch_size": 2500, "table_name": "agreements", "connection_ref": "c1"})
+    draft.connect_ports(PortId("src", "main"), PortId("custom_sink", "input"))
+
+    validator = GraphValidator()
+    report = validator.validate(draft)
+
+    assert not report.is_valid
+    assert any(err.code == "ERR_COMPONENT_CONSTRAINT_VIOLATION" for err in report.errors)
+    err = next(e for e in report.errors if e.code == "ERR_COMPONENT_CONSTRAINT_VIOLATION")
+    assert "excede o limite máximo permitido de 1000" in err.message
+
+
+def test_validate_policy_mandatory_documentation_and_authorization():
+    """Valida aplicação de regras ABAC na validação do pipeline (require_job_description, require_cell_description, forbidden connector)."""
+    from src.core.domain.policy.policy_model import EffectEnum, PolicyDocument, PolicyStatement
+
+    policy = PolicyDocument(
+        principal="analyst_user",
+        statements=[
+            PolicyStatement(
+                sid="EnforceDocumentation",
+                effect=EffectEnum.ALLOW,
+                actions=["connector:use", "pipeline:execute"],
+                resources=["urn:rdf:connector:core.file.*"],
+                conditions={"require_job_description": True, "require_cell_description": True}
+            )
+        ]
+    )
+
+    draft = PipelineDraft(
+        id="p1",
+        project_id="pr1",
+        name="Doc Pipeline",
+        description="",  # Vazio propositalmente para disparar violação
+        cells=[{"id": "cell1", "description": ""}]
+    )
+    ver = SemanticVersion(1, 0, 0)
+    draft.add_node("src", "core.file.source", ver)
+    # Scylla não está na lista de recursos autorizados (somente core.file.*)
+    draft.add_node("sink_db", "connector.nosql.scylla.target", ver)
+    draft.connect_ports(PortId("src", "main"), PortId("sink_db", "input"))
+
+    validator = GraphValidator()
+    report = validator.validate(draft, policy=policy)
+
+    assert not report.is_valid
+    codes = [e.code for e in report.errors]
+    assert "ERR_POLICY_MISSING_JOB_DESCRIPTION" in codes
+    assert "ERR_POLICY_MISSING_CELL_DESCRIPTION" in codes
+    assert "ERR_POLICY_FORBIDDEN_CONNECTOR" in codes

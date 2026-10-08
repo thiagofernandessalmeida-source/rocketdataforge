@@ -9,8 +9,8 @@ import { useJobStore } from "../../store/useJobStore";
 
 interface QueryBankProps {
   onClose: () => void;
-  /** If provided, shows an "Insert" button to put SQL into a node */
-  onInsertQuery?: (sql: string) => void;
+  /** If provided, shows an "Insert" button to put SQL and schema into a node */
+  onInsertQuery?: (query: QueryEntry) => void;
 }
 
 const DIALECTS: { id: QueryDialect; label: string; color: string }[] = [
@@ -190,7 +190,7 @@ export const QueryBankModal: React.FC<QueryBankProps> = ({ onClose, onInsertQuer
 
   const handleInsert = (q: QueryEntry) => {
     jobStore.incrementQueryUsage(q.id);
-    onInsertQuery?.(q.sql);
+    onInsertQuery?.(q);
     onClose();
   };
 
