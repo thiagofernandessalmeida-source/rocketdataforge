@@ -638,7 +638,7 @@ export const PolicySimulatorModal: React.FC<PolicySimulatorModalProps> = ({
 
         {/* Footer */}
         <div className="px-6 py-3 border-t border-[#334155] bg-[#0f172a] flex items-center justify-between text-xs text-slate-400">
-          <span>RocketDataForge Enterprise Security • Módulo ABAC Criptográfico</span>
+          <span>CellFlow Data Studio Enterprise Security • Módulo ABAC Criptográfico</span>
           <button
             onClick={onClose}
             className="px-4 py-1.5 bg-slate-700 hover:bg-slate-600 text-white rounded font-medium transition-colors"

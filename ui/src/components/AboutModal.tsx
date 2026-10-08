@@ -49,31 +49,28 @@ export const AboutModal: React.FC<AboutModalProps> = ({
           </button>
 
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-            <div
+            <img
+              src="/cellflow-logo.png"
+              alt="CellFlow Data Studio"
               style={{
-                width: 48,
                 height: 48,
-                borderRadius: 12,
-                background: "linear-gradient(135deg, var(--accent-cyan), var(--accent-blue))",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
+                width: "auto",
+                objectFit: "contain",
+                borderRadius: 8,
                 boxShadow: "0 0 20px rgba(6,182,212,0.35)",
               }}
-            >
-              <Rocket size={26} color="#0f172a" />
-            </div>
+            />
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <h2 style={{ fontSize: "1.25rem", fontWeight: 700, margin: 0, letterSpacing: "-0.02em" }}>
-                  RocketDataForge
+                  CellFlow Data Studio
                 </h2>
                 <span className="badge badge-revision" style={{ background: "rgba(6,182,212,0.2)", borderColor: "var(--accent-cyan)" }}>
                   v1.2.0
                 </span>
               </div>
               <p style={{ margin: "4px 0 0 0", fontSize: "0.82rem", color: "var(--text-secondary)" }}>
-                Plataforma Unificada de Engenharia, Integração e Orquestração de Dados
+                Build smart. Flow fast • Plataforma Unificada de Engenharia de Dados
               </p>
             </div>
           </div>
@@ -154,7 +151,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({
 
           {/* Rodapé institucional */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 10, borderTop: "1px solid var(--border-subtle)", fontSize: "0.75rem", color: "var(--text-muted)" }}>
-            <span>RocketDataForge &copy; 2026 Natura &amp; Co.</span>
+            <span>CellFlow Data Studio &copy; 2026</span>
             <span style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--accent-cyan)" }}>
               <ShieldCheck size={14} /> Enterprise Ready
             </span>

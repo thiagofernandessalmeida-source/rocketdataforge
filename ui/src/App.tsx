@@ -183,7 +183,7 @@ export const App: React.FC = () => {
 
   const activeJobId = storeState.activeTabId;
   const activeJob = activeJobId ? storeState.jobs.find((j) => j.id === activeJobId) : null;
-  const pipelineName = activeJob?.name ?? "RocketDataForge";
+  const pipelineName = activeJob?.name ?? "CellFlow Data Studio";
   const activeCanvas = activeJobId ? canvasMap[activeJobId] ?? EMPTY_CANVAS : EMPTY_CANVAS;
 
   const [nodes, setNodes, onNodesChange] = useNodesState<CanvasNodeData>(activeCanvas.nodes);
@@ -1539,21 +1539,30 @@ const WelcomeScreen: React.FC<{
         }}
       />
       <div className="welcome-content">
-        <div className="welcome-logo">
-          <svg viewBox="0 0 60 60" width="64" height="64">
-            <defs>
-              <linearGradient id="rg" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stopColor="#00f2fe" />
-                <stop offset="100%" stopColor="#4facfe" />
-              </linearGradient>
-            </defs>
-            <path d="M30 5 L45 20 L40 25 L35 20 L35 40 Q35 50 25 55 L22 50 Q28 47 28 40 L28 20 L23 25 L18 20 Z" fill="url(#rg)" />
-            <circle cx="30" cy="30" r="4" fill="url(#rg)" opacity="0.4" />
-          </svg>
+        <div className="welcome-logo" style={{ marginBottom: 6 }}>
+          <img
+            src="/cellflow-logo.png"
+            alt="CellFlow Data Studio"
+            style={{
+              width: 320,
+              maxWidth: "85vw",
+              height: "auto",
+              filter: "drop-shadow(0 0 25px rgba(6, 182, 212, 0.4))",
+              borderRadius: 12,
+            }}
+          />
         </div>
-        <h1 className="welcome-title">RocketDataForge</h1>
-        <p className="welcome-subtitle">
-          Plataforma profissional de ETL — evolução do Talend Open Studio
+        <p
+          className="welcome-subtitle"
+          style={{
+            fontSize: "1.1rem",
+            fontWeight: 500,
+            letterSpacing: "0.03em",
+            color: "var(--accent-cyan)",
+            margin: "0 0 12px 0",
+          }}
+        >
+          Build smart. Flow fast
         </p>
 
         <div className="welcome-actions">

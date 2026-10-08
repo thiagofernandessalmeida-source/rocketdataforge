@@ -472,7 +472,7 @@ export const MenuBar: React.FC<MenuBarProps> = ({
                 onClick={() => closeAndRun(onOpenAbout)}
               >
                 <Info size={14} />
-                <span className="entry-label">Sobre o RocketDataForge...</span>
+                <span className="entry-label">Sobre o CellFlow Data Studio...</span>
               </button>
             </div>
           )}
