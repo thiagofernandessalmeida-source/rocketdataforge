@@ -29,6 +29,7 @@ import { api } from "./api/client";
 import { EXPANDED_CATALOG } from "./catalog/components";
 import {
   jobStore,
+  JobData,
   SchemaColumn,
   CanvasCellData,
   CellExecutionMetrics,
@@ -170,6 +171,87 @@ export const analyzeGraphProblems = (
   return problems;
 };
 
+export const analyzeJobProblems = (
+  job: JobData | null | undefined,
+  fallbackNodes: Node<CanvasNodeData>[],
+  fallbackEdges: Edge[]
+): ProblemItem[] => {
+  if (!job) {
+    return analyzeGraphProblems(fallbackNodes, fallbackEdges);
+  }
+
+  const hasCells = Boolean(job.cells && job.cells.length > 0);
+  if (!hasCells) {
+    const effectiveNodes = job.nodes && job.nodes.length > 0 ? job.nodes : fallbackNodes;
+    const effectiveEdges = job.edges && job.edges.length > 0 ? job.edges : fallbackEdges;
+    return analyzeGraphProblems(effectiveNodes, effectiveEdges);
+  }
+
+  // Multi-canvas job with cells
+  const totalNodesCount = (job.cells || []).reduce((acc, c) => acc + (c.nodes?.length || 0), 0);
+  if (totalNodesCount === 0) {
+    return [
+      {
+        code: "ERR_EMPTY_GRAPH",
+        message: "Nenhum componente foi adicionado ao Canvas.",
+        severity: "error",
+        suggestion: "Arraste componentes da paleta à esquerda para dentro de uma célula do fluxo.",
+      },
+    ];
+  }
+
+  const problems: ProblemItem[] = [];
+
+  // Check cell cycle dependencies
+  const cycles = detectCellCycles(job.cells || []);
+  if (cycles) {
+    problems.push({
+      code: "ERR_CYCLIC_DEPENDENCY",
+      message: `Ciclo circular detectado na ordem de execução das células (${cycles.join(" -> ")}).`,
+      severity: "error",
+      suggestion: "Ajuste as pré-condições das células para remover o ciclo de dependência.",
+    });
+  }
+
+  // Check cell parallelism consistency
+  const orderErrors = validateParallelCellConsistency(job.cells || []);
+  if (orderErrors && orderErrors.length > 0) {
+    orderErrors.forEach((err) => {
+      problems.push({
+        code: "ERR_CELL_PRECONDITION_ORDER",
+        message: err,
+        severity: "error",
+        suggestion: "Ajuste as pré-condições para apontar somente para células com ordem estritamente anterior.",
+      });
+    });
+  }
+
+  // Analyze each cell's internal DAG
+  (job.cells || []).forEach((cell) => {
+    const cellNodes = cell.nodes || [];
+    const cellEdges = cell.edges || [];
+    if (cellNodes.length === 0) {
+      problems.push({
+        code: "WARN_EMPTY_CELL",
+        message: `A célula "${cell.name}" está vazia (sem nenhum componente configurado).`,
+        severity: "warning",
+        suggestion: "Adicione componentes à célula ou exclua-a caso não seja necessária.",
+      });
+      return;
+    }
+    const cellProblems = analyzeGraphProblems(cellNodes, cellEdges);
+    cellProblems.forEach((p) => {
+      if (p.code === "ERR_EMPTY_GRAPH") return;
+      problems.push({
+        ...p,
+        message: `[${cell.name}] ${p.message}`,
+      });
+    });
+  });
+
+  return problems;
+};
+
 export const App: React.FC = () => {
   const storeState = useJobStore();
 
@@ -249,20 +331,24 @@ export const App: React.FC = () => {
 
   // ─── Real-time graph problem analysis ──────────────────────
   useEffect(() => {
-    if (nodes.length > 0) {
-      const clientProblems = analyzeGraphProblems(nodes, edges);
+    const totalCount = activeJob?.cells?.length
+      ? activeJob.cells.reduce((acc, c) => acc + (c.nodes?.length || 0), 0)
+      : nodes.length;
+
+    if (totalCount > 0) {
+      const clientProblems = analyzeJobProblems(activeJob, nodes, edges);
       setProblems(clientProblems);
       const hasErrors = clientProblems.some((p) => p.severity === "error");
       if (hasErrors) {
         setIsValid(false);
-      } else if (isValid === false && clientProblems.length === 0) {
+      } else {
         setIsValid(true);
       }
     } else {
       setProblems([]);
       setIsValid(null);
     }
-  }, [nodes, edges]);
+  }, [activeJob, nodes, edges]);
 
   // ─── UI Modals & Sidebars ───────────────────────────────────
   const [showConnManager, setShowConnManager] = useState(false);
@@ -681,7 +767,8 @@ export const App: React.FC = () => {
   const handleValidate = async () => {
     setLoadingAction("validate");
     try {
-      const clientProblems = analyzeGraphProblems(nodes, edges);
+      const currentJob = activeJobId ? jobStore.getJob(activeJobId) : activeJob;
+      const clientProblems = analyzeJobProblems(currentJob, nodes, edges);
       let allProblems = [...clientProblems];
       let isServerValid = true;
 
@@ -1549,7 +1636,7 @@ export const App: React.FC = () => {
             onUpdateSchema={handleUpdateSchema}
             onUpdateNodeId={handleUpdateNodeId}
             onDeleteNode={handleDeleteNode}
-            connections={storeState.connections}
+            connections={jobStore.getConnectionsForJob(activeJobId ?? undefined)}
             queryBank={storeState.queryBank}
             contextVariables={jobStore.getVarsForJob(activeJobId ?? "")}
             activeEnvironment={activeJob?.environment ?? storeState.activeEnvironment}
@@ -1572,7 +1659,11 @@ export const App: React.FC = () => {
         />
       )}
       {showConnManager && (
-        <ConnectionManager onClose={() => setShowConnManager(false)} />
+        <ConnectionManager
+          onClose={() => setShowConnManager(false)}
+          activeJobId={activeJobId}
+          activeJobName={activeJob?.name}
+        />
       )}
       {showContextVars && (
         <ContextVariablesModal
@@ -1620,19 +1711,23 @@ export const App: React.FC = () => {
       {/* Floating Node Config Window (double-click on node) */}
       {floatingNode && (
         <FloatingNodeConfig
-          node={floatingNode}
+          node={
+            (activeJob?.cells
+              ? activeJob.cells.flatMap((c) => c.nodes).find((n) => n.id === floatingNode.id)
+              : nodes.find((n) => n.id === floatingNode.id)) || floatingNode
+          }
           onUpdateConfig={handleUpdateConfig}
           onUpdateLabel={handleUpdateLabel}
           onUpdateSchema={handleUpdateSchema}
           onUpdateNodeId={handleUpdateNodeId}
           onDeleteNode={handleDeleteNode}
           onClose={() => setFloatingNode(null)}
-          connections={storeState.connections}
+          connections={jobStore.getConnectionsForJob(activeJobId ?? undefined)}
           queryBank={storeState.queryBank}
           contextVariables={jobStore.getVarsForJob(activeJobId ?? "")}
           activeEnvironment={activeJob?.environment ?? storeState.activeEnvironment}
-          allNodes={nodes}
-          edges={edges}
+          allNodes={activeJob?.cells ? activeJob.cells.flatMap((c) => c.nodes) : nodes}
+          edges={activeJob?.cells ? activeJob.cells.flatMap((c) => c.edges) : edges}
         />
       )}
 

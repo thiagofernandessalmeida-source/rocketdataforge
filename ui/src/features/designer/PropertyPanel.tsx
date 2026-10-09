@@ -47,11 +47,16 @@ export const ConnectionSelect: React.FC<{
   value: string;
   connections: ConnectionEntry[];
   activeEnvironment?: Environment;
+  allowedTypes?: ConnectionType[];
   onChange: (val: string) => void;
-}> = ({ value, connections, activeEnvironment, onChange }) => {
-  const filtered = activeEnvironment
+}> = ({ value, connections, activeEnvironment, allowedTypes, onChange }) => {
+  let filtered = activeEnvironment
     ? connections.filter((c) => c.environments && c.environments.includes(activeEnvironment))
     : connections;
+
+  if (allowedTypes && allowedTypes.length > 0) {
+    filtered = filtered.filter((c) => allowedTypes.includes(c.type));
+  }
 
   return (
     <div>
@@ -65,6 +70,7 @@ export const ConnectionSelect: React.FC<{
           {filtered.map((c) => (
             <option key={c.id} value={c.name.toLowerCase().replace(/\s+/g, "_")}>
               {c.name}
+              {c.scope === "local" ? " [Local]" : " [Global]"}
               {activeEnvironment && c.environments ? ` [${c.environments.join(",")}]` : ""}
             </option>
           ))}
@@ -75,7 +81,7 @@ export const ConnectionSelect: React.FC<{
           <span>
             {connections.length === 0
               ? "Nenhuma conexão cadastrada"
-              : `Nenhuma conexão para o ambiente ${activeEnvironment?.toUpperCase()}`}
+              : `Nenhuma conexão compatível para o ambiente ${activeEnvironment?.toUpperCase()}`}
           </span>
           <span style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>
             Abra o Gerenciador de Conexões no header
@@ -711,8 +717,50 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
             {/* ─── DuckDB Input Dedicated (TASK-033) ─── */}
             {isDuckDbInput && (
               <>
+                {connections.some((c) => c.type === "duckdb") && (
+                  <div className="form-group">
+                    <label className="form-label">
+                      <Database size={12} /> Conexão DuckDB Cadastrada (Opcional)
+                    </label>
+                    <ConnectionSelect
+                      value={config.connection_ref ?? ""}
+                      connections={connections}
+                      activeEnvironment={activeEnvironment}
+                      allowedTypes={["duckdb"]}
+                      onChange={(v) => {
+                        const conn = connections.find(
+                          (c) =>
+                            c.name.toLowerCase().replace(/\s+/g, "_") === v ||
+                            c.id === v
+                        );
+                        if (conn) {
+                          handleChange("connection_ref", v);
+                          const dbPath = conn.config?.database_path || conn.config?.database;
+                          if (dbPath) {
+                            handleChange("database_path", dbPath);
+                          }
+                        } else {
+                          handleChange("connection_ref", "");
+                        }
+                      }}
+                    />
+                  </div>
+                )}
                 <div className="form-group">
-                  <label className="form-label">Arquivo de Banco DuckDB (.duckdb ou :memory:)</label>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                    <label className="form-label" style={{ margin: 0 }}>Arquivo de Banco DuckDB (.duckdb ou :memory:)</label>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <button
+                        type="button"
+                        className="badge"
+                        style={{ cursor: "pointer", fontSize: "0.68rem", background: "rgba(234, 179, 8, 0.12)", borderColor: "rgba(234, 179, 8, 0.4)", color: "#facc15" }}
+                        onClick={() => handleChange("database_path", ":memory:")}
+                        title="Usar em memória RAM"
+                      >
+                        :memory:
+                      </button>
+                    </div>
+                  </div>
                   <DebouncedInput
                     value={config.database_path ?? ":memory:"}
                     placeholder=":memory: ou data/meu_banco.duckdb"
@@ -734,11 +782,62 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
             {/* ─── DuckDB Output Dedicated (TASK-033 & TASK-034) ─── */}
             {isDuckDbOutput && (
               <>
+                {connections.some((c) => c.type === "duckdb") && (
+                  <div className="form-group">
+                    <label className="form-label">
+                      <Database size={12} /> Conexão DuckDB Cadastrada (Opcional)
+                    </label>
+                    <ConnectionSelect
+                      value={config.connection_ref ?? ""}
+                      connections={connections}
+                      activeEnvironment={activeEnvironment}
+                      allowedTypes={["duckdb"]}
+                      onChange={(v) => {
+                        const conn = connections.find(
+                          (c) =>
+                            c.name.toLowerCase().replace(/\s+/g, "_") === v ||
+                            c.id === v
+                        );
+                        if (conn) {
+                          handleChange("connection_ref", v);
+                          const dbPath = conn.config?.database_path || conn.config?.database;
+                          if (dbPath) {
+                            handleChange("database_path", dbPath);
+                          }
+                        } else {
+                          handleChange("connection_ref", "");
+                        }
+                      }}
+                    />
+                  </div>
+                )}
                 <div className="form-group">
-                  <label className="form-label">Arquivo de Banco DuckDB Destino</label>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                    <label className="form-label" style={{ margin: 0 }}>Arquivo de Banco DuckDB Destino</label>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <button
+                        type="button"
+                        className="badge"
+                        style={{ cursor: "pointer", fontSize: "0.68rem", background: "rgba(234, 179, 8, 0.12)", borderColor: "rgba(234, 179, 8, 0.4)", color: "#facc15" }}
+                        onClick={() => handleChange("database_path", ":memory:")}
+                        title="Gravar em memória RAM"
+                      >
+                        :memory:
+                      </button>
+                      <button
+                        type="button"
+                        className="badge"
+                        style={{ cursor: "pointer", fontSize: "0.68rem", background: "rgba(234, 179, 8, 0.12)", borderColor: "rgba(234, 179, 8, 0.4)", color: "#facc15" }}
+                        onClick={() => handleChange("database_path", "data/output.duckdb")}
+                        title="Usar data/output.duckdb"
+                      >
+                        output.duckdb
+                      </button>
+                    </div>
+                  </div>
                   <DebouncedInput
                     value={config.database_path ?? "data/output.duckdb"}
-                    placeholder="data/output.duckdb"
+                    placeholder="data/output.duckdb ou :memory:"
                     onChange={(v) => handleChange("database_path", v)}
                   />
                 </div>

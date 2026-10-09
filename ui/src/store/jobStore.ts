@@ -131,10 +131,13 @@ export interface ConnectionConfig {
 }
 
 export type ConnectionType =
+  | "duckdb"
   | "oracle" | "sqlserver" | "mysql" | "postgresql" | "redshift"
   | "databricks" | "snowflake" | "bigquery" | "s3" | "azure_blob"
   | "gcs" | "rest_api" | "soap_api" | "mongodb" | "cassandra" | "scylla"
   | "elasticsearch" | "kafka" | "aws_sqs" | "aws_sns" | "sftp" | "ftp";
+
+export type ConnectionScope = "global" | "local";
 
 export interface ConnectionEntry {
   id: string;
@@ -143,6 +146,8 @@ export interface ConnectionEntry {
   config: ConnectionConfig;
   description?: string;
   environments: Environment[]; // Quais ambientes esta conexão pertence
+  scope?: ConnectionScope;      // "global" (todos jobs) ou "local" (restrito a um job)
+  jobId?: string;               // preenchido se scope === "local"
   testStatus?: "untested" | "success" | "failed";
   lastTestedAt?: string;
   createdAt: string;
@@ -542,7 +547,7 @@ export const jobStore = {
       status: "idle",
     };
     const job: JobData = {
-      id: `job-${Date.now()}`,
+      id: `job-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       name,
       folderId,
       nodes: [],
@@ -1293,6 +1298,8 @@ export const jobStore = {
     const entry: ConnectionEntry = {
       ...conn,
       id: `conn-${Date.now()}`,
+      scope: conn.scope ?? "global",
+      jobId: conn.scope === "local" ? conn.jobId : undefined,
       environments: conn.environments ?? ["dev"],
       testStatus: "untested",
       createdAt: now,
@@ -1327,6 +1334,16 @@ export const jobStore = {
   /** Retorna conexões disponíveis para um ambiente específico */
   getConnectionsForEnv(env: Environment): ConnectionEntry[] {
     return state.connections.filter((c) => c.environments.includes(env));
+  },
+
+  /** Retorna conexões para um job: conexões globais + conexões locais do job */
+  getConnectionsForJob(jobId?: string): ConnectionEntry[] {
+    if (!jobId) {
+      return state.connections.filter((c) => !c.scope || c.scope === "global");
+    }
+    return state.connections.filter(
+      (c) => !c.scope || c.scope === "global" || c.jobId === jobId
+    );
   },
 
   // ─── Context Variables ────────────────────────────────────

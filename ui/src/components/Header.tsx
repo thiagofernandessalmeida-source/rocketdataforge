@@ -405,8 +405,8 @@ export const Header: React.FC<HeaderProps> = ({
             className="btn btn-success"
             id="btn-run-pipeline"
             onClick={onRun}
-            disabled={loadingAction !== null || !publishedVersionId}
-            title={!publishedVersionId ? "Publique antes de executar" : "Executar Pipeline"}
+            disabled={loadingAction !== null}
+            title={loadingAction === "run" ? "Executando..." : "Executar Job Completo"}
           >
             <Play size={14} />
             <span>Executar</span>
