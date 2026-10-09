@@ -641,3 +641,46 @@ describe("Multi-Canvas (Canvas-Cells): Reset de Status de Células", () => {
   });
 });
 
+describe("Multi-Canvas (Canvas-Cells): Cancelamento e Parada de Execução", () => {
+  it("deve permitir transicionar status de uma célula para cancelled", () => {
+    const store = createTestJobStore();
+    const job = store.createJob("Job Cancel Test");
+    store.setCellStatus(job.id, "canvas-cell-01", "running");
+
+    const j1 = store.getJob(job.id);
+    assert.equal(j1.cells[0].status, "running");
+
+    store.setCellStatus(job.id, "canvas-cell-01", "cancelled");
+
+    const j2 = store.getJob(job.id);
+    assert.equal(j2.cells[0].status, "cancelled");
+  });
+
+  it("ao cancelar orquestração do job, deve marcar células em execução como cancelled e na fila como skipped", () => {
+    const store = createTestJobStore();
+    const job = store.createJob("Job Stop Orchestration");
+    store.createCell(job.id, "cell_2");
+    store.createCell(job.id, "cell_3");
+
+    store.setCellStatus(job.id, "canvas-cell-01", "running");
+    store.setCellStatus(job.id, "canvas-cell-02", "queued");
+    store.setCellStatus(job.id, "canvas-cell-03", "queued");
+
+    // Simulação do comportamento de parada implementado no MultiCanvasContainer/App
+    const j = store.getJob(job.id);
+    j.cells.forEach((c) => {
+      if (c.status === "running") {
+        store.setCellStatus(job.id, c.id, "cancelled");
+      } else if (c.status === "queued") {
+        store.setCellStatus(job.id, c.id, "skipped");
+      }
+    });
+
+    const updated = store.getJob(job.id);
+    assert.equal(updated.cells[0].status, "cancelled");
+    assert.equal(updated.cells[1].status, "skipped");
+    assert.equal(updated.cells[2].status, "skipped");
+  });
+});
+
+

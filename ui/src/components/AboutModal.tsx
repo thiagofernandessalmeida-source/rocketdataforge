@@ -50,7 +50,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({
 
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <img
-              src="/cellflow-logo.png"
+              src="./cellflow-logo.png"
               alt="CellFlow Data Studio"
               style={{
                 height: 48,
@@ -58,6 +58,9 @@ export const AboutModal: React.FC<AboutModalProps> = ({
                 objectFit: "contain",
                 borderRadius: 8,
                 boxShadow: "0 0 20px rgba(6,182,212,0.35)",
+              }}
+              onError={(e) => {
+                (e.currentTarget as HTMLElement).style.display = "none";
               }}
             />
             <div>

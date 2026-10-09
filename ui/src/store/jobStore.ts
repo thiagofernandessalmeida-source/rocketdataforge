@@ -10,7 +10,7 @@ export type Environment = "dev" | "hml" | "prd";
 
 // ─── Multi-Canvas Cell Models ───────────────────────────────
 
-export type CellExecutionStatus = "idle" | "queued" | "running" | "success" | "failed" | "skipped";
+export type CellExecutionStatus = "idle" | "queued" | "running" | "success" | "failed" | "skipped" | "cancelled";
 
 export interface CellPrecondition {
   id: string;

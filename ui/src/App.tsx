@@ -243,6 +243,9 @@ export const App: React.FC = () => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [compiledPlans, setCompiledPlans] = useState<CompiledPlans | null>(null);
   const pollingRef = useRef<any>(null);
+  const cancelOrchestrationRef = useRef<boolean>(false);
+  const activeCellExecutionsRef = useRef<Map<string, string>>(new Map());
+  const activeCellAbortRef = useRef<Map<string, () => void>>(new Map());
 
   // ─── Real-time graph problem analysis ──────────────────────
   useEffect(() => {
@@ -896,29 +899,64 @@ export const App: React.FC = () => {
         const pubVersion = await api.publishVersion(activePid, versionTag);
 
         const execRes = await api.executeVersion(pubVersion.id);
+        activeCellExecutionsRef.current.set(cell.id, execRes.execution_id);
         showToast("info", `Executando célula "${cell.name}" no backend...`);
 
-        const execResult = await new Promise<{ detail: ExecutionDetail; logs: LogEntry[] }>(
-          (resolve, reject) => {
-            const startTime = Date.now();
-            const timer = setInterval(async () => {
-              try {
-                const detail = await api.getExecution(execRes.execution_id);
-                const execLogs = await api.getExecutionLogs(execRes.execution_id).catch(() => []);
-                if (["succeeded", "failed", "cancelled"].includes(detail.status)) {
+        let abortFn: (() => void) | null = null;
+        let execResult: { detail: ExecutionDetail; logs: LogEntry[]; cancelled?: boolean };
+
+        try {
+          execResult = await new Promise<{ detail: ExecutionDetail; logs: LogEntry[]; cancelled?: boolean }>(
+            (resolve, reject) => {
+              const startTime = Date.now();
+              const timer = setInterval(async () => {
+                try {
+                  const detail = await api.getExecution(execRes.execution_id);
+                  const execLogs = await api.getExecutionLogs(execRes.execution_id).catch(() => []);
+                  if (["succeeded", "failed", "cancelled"].includes(detail.status)) {
+                    clearInterval(timer);
+                    resolve({ detail, logs: execLogs, cancelled: detail.status === "cancelled" });
+                  } else if (Date.now() - startTime > 60000) {
+                    clearInterval(timer);
+                    reject(new Error("Tempo limite de execução excedido (60s)."));
+                  }
+                } catch (pollErr) {
                   clearInterval(timer);
-                  resolve({ detail, logs: execLogs });
-                } else if (Date.now() - startTime > 60000) {
-                  clearInterval(timer);
-                  reject(new Error("Tempo limite de execução excedido (60s)."));
+                  reject(pollErr);
                 }
-              } catch (pollErr) {
+              }, 350);
+
+              abortFn = () => {
                 clearInterval(timer);
-                reject(pollErr);
-              }
-            }, 350);
+                resolve({
+                  detail: {
+                    execution_id: execRes.execution_id,
+                    pipeline_version_id: pubVersion.id,
+                    status: "cancelled",
+                    attempt: 1,
+                    started_at: new Date().toISOString(),
+                    finished_at: new Date().toISOString(),
+                    tasks: [],
+                  },
+                  logs: [],
+                  cancelled: true,
+                });
+              };
+              activeCellAbortRef.current.set(cell.id, abortFn);
+            }
+          );
+        } finally {
+          activeCellExecutionsRef.current.delete(cell.id);
+          activeCellAbortRef.current.delete(cell.id);
+        }
+
+        if (execResult.cancelled || execResult.detail.status === "cancelled") {
+          if (activeJobId) {
+            jobStore.setCellStatus(activeJobId, cell.id, "cancelled");
           }
-        );
+          showToast("info", `Célula "${cell.name}" cancelada.`);
+          return false;
+        }
 
         const isSuccess = execResult.detail.status === "succeeded";
         const totalRowsIn = (execResult.detail.tasks || []).reduce((sum, t) => sum + (t.rows_in || 0), 0);
@@ -972,6 +1010,37 @@ export const App: React.FC = () => {
     [activeJob, activeJobId, ensureBackend, revision, showToast]
   );
 
+  const handleStopCellIsolated = useCallback(
+    async (cell: CanvasCellData) => {
+      const execId = activeCellExecutionsRef.current.get(cell.id);
+      if (execId) {
+        try {
+          await api.cancelExecution(execId);
+        } catch (_) {}
+        activeCellExecutionsRef.current.delete(cell.id);
+      }
+      const abortFn = activeCellAbortRef.current.get(cell.id);
+      if (abortFn) {
+        abortFn();
+        activeCellAbortRef.current.delete(cell.id);
+      }
+      if (activeJobId) {
+        jobStore.setCellStatus(activeJobId, cell.id, "cancelled");
+      }
+      showToast("info", `Execução da célula "${cell.name}" interrompida pelo usuário.`);
+    },
+    [activeJobId, showToast]
+  );
+
+  const handleStopActiveCell = useCallback(async () => {
+    if (!activeJob || !activeJob.cells) return;
+    const targetCell =
+      activeJob.cells.find((c) => c.id === activeJob.activeCellId) || activeJob.cells[0];
+    if (targetCell) {
+      await handleStopCellIsolated(targetCell);
+    }
+  }, [activeJob, handleStopCellIsolated]);
+
   const handleRunActiveCell = useCallback(async () => {
     if (!activeJob || !activeJob.cells || activeJob.cells.length === 0) return;
     const targetCell =
@@ -982,9 +1051,53 @@ export const App: React.FC = () => {
     }
   }, [activeJob, handleExecuteCellIsolated]);
 
+  const handleStopJob = useCallback(async () => {
+    cancelOrchestrationRef.current = true;
+
+    // 1. Cancel all active cell executions in backend
+    for (const [, execId] of activeCellExecutionsRef.current.entries()) {
+      try {
+        await api.cancelExecution(execId);
+      } catch (_) {}
+    }
+    activeCellExecutionsRef.current.clear();
+
+    // 2. Abort all cell polling timers
+    for (const abortFn of activeCellAbortRef.current.values()) {
+      abortFn();
+    }
+    activeCellAbortRef.current.clear();
+
+    // 3. If legacy execution is active, cancel it
+    if (execution && execution.execution_id) {
+      try {
+        await api.cancelExecution(execution.execution_id);
+      } catch (_) {}
+    }
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+
+    // 4. Update multi-canvas job statuses to cancelled / skipped
+    if (activeJob && activeJob.cells) {
+      activeJob.cells.forEach((c) => {
+        if (c.status === "running") {
+          jobStore.setCellStatus(activeJob.id, c.id, "cancelled");
+        } else if (c.status === "queued") {
+          jobStore.setCellStatus(activeJob.id, c.id, "skipped");
+        }
+      });
+    }
+
+    setLoadingAction(null);
+    showToast("info", "Execução do Job parada pelo usuário.");
+  }, [activeJob, execution, showToast]);
+
   const handleRun = async () => {
     // Multi-canvas job orchestration
     if (activeJob && activeJob.cells && activeJob.cells.length > 0) {
+      cancelOrchestrationRef.current = false;
       setLoadingAction("run");
       const sortedCells = [...activeJob.cells].sort((a, b) => a.order - b.order);
 
@@ -1005,7 +1118,7 @@ export const App: React.FC = () => {
       showToast("info", `Iniciando orquestração completa do Job (${sortedCells.length} células)...`);
 
       sortedCells.forEach((c) => jobStore.setCellStatus(activeJob.id, c.id, "queued"));
-      const completedStatuses: Record<string, "success" | "failed" | "skipped"> = {};
+      const completedStatuses: Record<string, "success" | "failed" | "skipped" | "cancelled"> = {};
 
       const orderGroups = new Map<number, CanvasCellData[]>();
       sortedCells.forEach((c) => {
@@ -1018,10 +1131,22 @@ export const App: React.FC = () => {
 
       try {
         for (const orderNum of sortedOrders) {
+          if (cancelOrchestrationRef.current) {
+            showToast("info", "Orquestração interrompida pelo usuário.");
+            break;
+          }
+
           const parallelCells = orderGroups.get(orderNum) || [];
           await Promise.all(
             parallelCells.map(async (cell) => {
-              const canRun = evaluateCellPreconditions(cell, completedStatuses, sortedCells);
+              if (cancelOrchestrationRef.current) {
+                jobStore.setCellStatus(activeJob.id, cell.id, "skipped");
+                completedStatuses[cell.id] = "skipped";
+                completedStatuses[cell.name] = "skipped";
+                return;
+              }
+
+              const canRun = evaluateCellPreconditions(cell, completedStatuses as any, sortedCells);
               if (!canRun) {
                 jobStore.setCellStatus(activeJob.id, cell.id, "skipped");
                 completedStatuses[cell.id] = "skipped";
@@ -1031,6 +1156,12 @@ export const App: React.FC = () => {
 
               jobStore.setCellStatus(activeJob.id, cell.id, "running");
               const ok = await handleExecuteCellIsolated(cell);
+              if (cancelOrchestrationRef.current) {
+                jobStore.setCellStatus(activeJob.id, cell.id, "cancelled");
+                completedStatuses[cell.id] = "cancelled";
+                completedStatuses[cell.name] = "cancelled";
+                return;
+              }
               const finalStatus = ok ? "success" : "failed";
               completedStatuses[cell.id] = finalStatus;
               completedStatuses[cell.name] = finalStatus;
@@ -1038,17 +1169,21 @@ export const App: React.FC = () => {
           );
         }
 
-        const totalFailed = Object.values(completedStatuses).filter((s) => s === "failed").length;
-        const totalSuccess = Object.values(completedStatuses).filter((s) => s === "success").length;
-        const totalSkipped = Object.values(completedStatuses).filter((s) => s === "skipped").length;
-
-        if (totalFailed > 0) {
-          showToast(
-            "error",
-            `Orquestração finalizada com falhas: ${totalSuccess} sucesso, ${totalFailed} falhas, ${totalSkipped} puladas.`
-          );
+        if (cancelOrchestrationRef.current) {
+          showToast("info", "Orquestração do Job cancelada pelo usuário.");
         } else {
-          showToast("success", `Orquestração de todas as células (${totalSuccess}) finalizada com SUCESSO!`);
+          const totalFailed = Object.values(completedStatuses).filter((s) => s === "failed").length;
+          const totalSuccess = Object.values(completedStatuses).filter((s) => s === "success").length;
+          const totalSkipped = Object.values(completedStatuses).filter((s) => s === "skipped").length;
+
+          if (totalFailed > 0) {
+            showToast(
+              "error",
+              `Orquestração finalizada com falhas: ${totalSuccess} sucesso, ${totalFailed} falhas, ${totalSkipped} puladas.`
+            );
+          } else {
+            showToast("success", `Orquestração de todas as células (${totalSuccess}) finalizada com SUCESSO!`);
+          }
         }
       } finally {
         setLoadingAction(null);
@@ -1116,13 +1251,7 @@ export const App: React.FC = () => {
   };
 
   const handleCancelExecution = async () => {
-    if (!execution) return;
-    try {
-      await api.cancelExecution(execution.execution_id);
-      showToast("info", "Cancelamento enviado.");
-    } catch (err: any) {
-      showToast("error", `Falha ao cancelar: ${err.message}`);
-    }
+    await handleStopJob();
   };
 
   const handleExport = async () => {
@@ -1266,6 +1395,7 @@ export const App: React.FC = () => {
         onPublish={handlePublish}
         onCompile={handleCompile}
         onRun={handleRun}
+        onStopJob={handleStopJob}
         onExport={handleExport}
         onImport={handleTriggerHeaderImport}
         onOpenDiagnostics={handleOpenDiagnostics}
@@ -1298,8 +1428,13 @@ export const App: React.FC = () => {
         onPublish={handlePublish}
         onRunFullJob={handleRun}
         onRunSelectedCell={handleRunActiveCell}
+        onStopSelectedCell={handleStopActiveCell}
+        activeCellIsRunning={Boolean(
+          activeJob?.cells?.find((c) => c.id === activeJob.activeCellId)?.status === "running" ||
+            activeJob?.cells?.[0]?.status === "running"
+        )}
         onCompile={handleCompile}
-        onCancelExecution={handleCancelExecution}
+        onCancelExecution={handleStopJob}
         onResetSelectedCellStatus={() => {
           if (activeJobId && activeJob?.activeCellId) {
             jobStore.resetCellStatus(activeJobId, activeJob.activeCellId);
@@ -1360,7 +1495,9 @@ export const App: React.FC = () => {
                     setSelectedNode(null);
                   }}
                   onRunEntireJob={handleRun}
+                  onStopJob={handleStopJob}
                   onExecuteCellIsolated={handleExecuteCellIsolated}
+                  onStopCellIsolated={handleStopCellIsolated}
                   showToast={showToast}
                 />
               ) : (
@@ -1541,14 +1678,15 @@ const WelcomeScreen: React.FC<{
       <div className="welcome-content">
         <div className="welcome-logo" style={{ marginBottom: 6 }}>
           <img
-            src="/cellflow-logo.png"
+            src="./cellflow-logo.png"
             alt="CellFlow Data Studio"
             style={{
               width: 320,
               maxWidth: "85vw",
               height: "auto",
               filter: "drop-shadow(0 0 25px rgba(6, 182, 212, 0.4))",
-              borderRadius: 12,
+              display: "block",
+              margin: "0 auto",
             }}
           />
         </div>

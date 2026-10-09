@@ -23,6 +23,7 @@ import {
   Layers,
   ShieldCheck,
   RotateCcw,
+  Square,
   X,
   Search,
   Activity,
@@ -51,6 +52,7 @@ interface CanvasCellCardProps {
   onMoveDown?: () => void;
   onToggleFocus: (cellId: string) => void;
   onRunSingleCell: (cell: CanvasCellData) => void;
+  onStopSingleCell?: (cell: CanvasCellData) => void;
   onResetStatus?: (cellId: string) => void;
   onSelectNode: (node: Node<CanvasNodeData> | null) => void;
   onDoubleClickNode?: (node: Node<CanvasNodeData>) => void;
@@ -72,6 +74,7 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
   onMoveDown,
   onToggleFocus,
   onRunSingleCell,
+  onStopSingleCell,
   onResetStatus,
   onSelectNode,
   onDoubleClickNode,
@@ -207,6 +210,13 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
       border: "var(--border-subtle)",
       icon: null,
     },
+    cancelled: {
+      label: "Cancelado",
+      color: "#f97316",
+      bg: "rgba(249, 115, 22, 0.15)",
+      border: "#f97316",
+      icon: <Square size={12} fill="currentColor" />,
+    },
   };
 
   const currentStatus = cell.status || "idle";
@@ -216,6 +226,7 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
   const getBorderColor = () => {
     if (currentStatus === "running") return "var(--accent-cyan)";
     if (currentStatus === "failed") return "var(--status-danger)";
+    if (currentStatus === "cancelled") return "#f97316";
     if (currentStatus === "success") return "var(--status-success)";
     if (currentStatus === "queued") return "#f59e0b";
     if (isActive) return "rgba(6, 182, 212, 0.4)";
@@ -225,6 +236,7 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
   const getBoxShadow = () => {
     if (currentStatus === "running") return "0 0 16px rgba(6, 182, 212, 0.35)";
     if (currentStatus === "failed") return "0 0 14px rgba(239, 68, 68, 0.3)";
+    if (currentStatus === "cancelled") return "0 0 12px rgba(249, 115, 22, 0.3)";
     if (currentStatus === "success") return "0 0 12px rgba(16, 185, 129, 0.25)";
     if (currentStatus === "queued") return "0 0 10px rgba(245, 158, 11, 0.25)";
     if (isActive) return "0 4px 16px rgba(0, 0, 0, 0.3)";
@@ -452,28 +464,53 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
             <RotateCcw size={13} />
           </button>
 
-          {/* Run Single Cell Button */}
-          <button
-            type="button"
-            className="btn btn-secondary"
-            style={{
-              fontSize: "0.72rem",
-              padding: "3px 9px",
-              display: "flex",
-              alignItems: "center",
-              gap: 4,
-              color: "var(--status-success)",
-              borderColor: "rgba(16, 185, 129, 0.4)",
-            }}
-            title="Executar apenas esta célula de forma isolada"
-            onClick={(e) => {
-              e.stopPropagation();
-              onRunSingleCell(cell);
-            }}
-          >
-            <Play size={11} fill="currentColor" />
-            Executar Célula
-          </button>
+          {/* Run or Stop Single Cell Button */}
+          {currentStatus === "running" ? (
+            <button
+              type="button"
+              className="btn btn-danger"
+              style={{
+                fontSize: "0.72rem",
+                padding: "3px 9px",
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                background: "rgba(239, 68, 68, 0.2)",
+                color: "var(--status-danger)",
+                borderColor: "var(--status-danger)",
+              }}
+              title="Parar a execução desta célula imediatamente"
+              onClick={(e) => {
+                e.stopPropagation();
+                onStopSingleCell?.(cell);
+              }}
+            >
+              <Square size={11} fill="currentColor" />
+              Parar Célula
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{
+                fontSize: "0.72rem",
+                padding: "3px 9px",
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                color: "var(--status-success)",
+                borderColor: "rgba(16, 185, 129, 0.4)",
+              }}
+              title="Executar apenas esta célula de forma isolada"
+              onClick={(e) => {
+                e.stopPropagation();
+                onRunSingleCell(cell);
+              }}
+            >
+              <Play size={11} fill="currentColor" />
+              Executar Célula
+            </button>
+          )}
 
           {/* Move Up */}
           {onMoveUp && !isFocusMode && (

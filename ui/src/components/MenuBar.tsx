@@ -53,6 +53,8 @@ export interface MenuBarProps {
   onPublish: () => void;
   onRunFullJob: () => void;
   onRunSelectedCell: () => void;
+  onStopSelectedCell?: () => void;
+  activeCellIsRunning?: boolean;
   onCompile: () => void;
   onCancelExecution: () => void;
   onResetSelectedCellStatus: () => void;
@@ -93,6 +95,8 @@ export const MenuBar: React.FC<MenuBarProps> = ({
   onPublish,
   onRunFullJob,
   onRunSelectedCell,
+  onStopSelectedCell,
+  activeCellIsRunning,
   onCompile,
   onCancelExecution,
   onResetSelectedCellStatus,
@@ -262,7 +266,7 @@ export const MenuBar: React.FC<MenuBarProps> = ({
                 onClick={() => closeAndRun(onCancelExecution)}
               >
                 <Square size={14} color="var(--status-danger)" />
-                <span className="entry-label">Cancelar Execução</span>
+                <span className="entry-label">Parar Execução do Job</span>
               </button>
             </div>
           )}
@@ -280,6 +284,17 @@ export const MenuBar: React.FC<MenuBarProps> = ({
           </button>
           {openMenu === "celulas" && (
             <div className="menubar-dropdown">
+              <button
+                type="button"
+                className="dropdown-entry"
+                disabled={!hasActiveCell || !activeCellIsRunning || !onStopSelectedCell}
+                onClick={() => onStopSelectedCell && closeAndRun(onStopSelectedCell)}
+              >
+                <Square size={14} color="var(--status-danger)" />
+                <span className="entry-label">
+                  Parar Execução da Célula {activeCellName ? `("${activeCellName}")` : ""}
+                </span>
+              </button>
               <button
                 type="button"
                 className="dropdown-entry"
