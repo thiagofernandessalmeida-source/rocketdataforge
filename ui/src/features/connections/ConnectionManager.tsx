@@ -23,6 +23,8 @@ import { useJobStore } from "../../store/useJobStore";
 
 interface ConnectionManagerProps {
   onClose: () => void;
+  activeJobId?: string | null;
+  activeJobName?: string | null;
 }
 
 type ConnTypeGroup = {
@@ -33,9 +35,10 @@ type ConnTypeGroup = {
 
 const CONNECTION_GROUPS: ConnTypeGroup[] = [
   {
-    label: "Bancos Relacionais",
+    label: "Bancos Relacionais & Analíticos",
     icon: <Database size={14} />,
     types: [
+      { type: "duckdb", label: "DuckDB (In-Memory / Arquivo)", color: "#eab308" },
       { type: "oracle", label: "Oracle Database", color: "#c74634" },
       { type: "sqlserver", label: "SQL Server / Azure SQL", color: "#0078d4" },
       { type: "mysql", label: "MySQL / MariaDB", color: "#4479a1" },
@@ -95,6 +98,89 @@ function getTypeColor(type: ConnectionType): string {
 }
 
 // ─── Specific config forms ────────────────────────────────────
+
+const DuckDbForm: React.FC<{
+  config: any;
+  onChange: (key: string, val: any) => void;
+}> = ({ config, onChange }) => (
+  <>
+    <div className="form-group">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+        <label className="form-label" style={{ margin: 0 }}>Caminho do Banco (.duckdb ou :memory:)</label>
+        <div style={{ display: "flex", gap: 4 }}>
+          <button
+            type="button"
+            className="badge"
+            style={{ cursor: "pointer", fontSize: "0.68rem", background: "rgba(234, 179, 8, 0.12)", borderColor: "rgba(234, 179, 8, 0.4)", color: "#facc15" }}
+            onClick={() => {
+              onChange("database_path", ":memory:");
+              onChange("database", ":memory:");
+            }}
+            title="Usar banco puramente em memória RAM"
+          >
+            :memory:
+          </button>
+          <button
+            type="button"
+            className="badge"
+            style={{ cursor: "pointer", fontSize: "0.68rem", background: "rgba(234, 179, 8, 0.12)", borderColor: "rgba(234, 179, 8, 0.4)", color: "#facc15" }}
+            onClick={() => {
+              onChange("database_path", "data/analytics.duckdb");
+              onChange("database", "data/analytics.duckdb");
+            }}
+            title="Usar arquivo local data/analytics.duckdb"
+          >
+            data/analytics.duckdb
+          </button>
+        </div>
+      </div>
+      <input
+        className="form-input"
+        value={config.database_path ?? config.database ?? ":memory:"}
+        placeholder=":memory: ou data/meu_banco.duckdb"
+        onChange={(e) => {
+          onChange("database_path", e.target.value);
+          onChange("database", e.target.value);
+        }}
+      />
+      <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginTop: 4 }}>
+        Use <code>:memory:</code> para dados voláteis em memória RAM ou especifique um arquivo local (ex: <code>data/warehouse.duckdb</code>).
+      </div>
+    </div>
+
+    <div className="conn-form-row">
+      <div className="form-group">
+        <label className="form-label">Limite de Memória (Max RAM)</label>
+        <input
+          className="form-input"
+          value={config.memory_limit ?? "1GB"}
+          placeholder="512MB, 1GB, 4GB"
+          onChange={(e) => onChange("memory_limit", e.target.value)}
+        />
+      </div>
+      <div className="form-group">
+        <label className="form-label">Diretório Temporário (Opcional)</label>
+        <input
+          className="form-input"
+          value={config.temp_directory ?? ""}
+          placeholder="temp/duckdb"
+          onChange={(e) => onChange("temp_directory", e.target.value)}
+        />
+      </div>
+    </div>
+
+    <div className="form-group">
+      <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "0.78rem" }}>
+        <input
+          type="checkbox"
+          checked={Boolean(config.read_only)}
+          onChange={(e) => onChange("read_only", e.target.checked)}
+        />
+        <span>Modo Somente Leitura (Read-Only)</span>
+      </label>
+    </div>
+  </>
+);
 
 const SqlDbForm: React.FC<{
   config: any;
@@ -474,7 +560,11 @@ const ENVS: { id: Environment; label: string; color: string }[] = [
   { id: "prd", label: "PRD", color: "#ef4444" },
 ];
 
-export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ onClose }) => {
+export const ConnectionManager: React.FC<ConnectionManagerProps> = ({
+  onClose,
+  activeJobId,
+  activeJobName,
+}) => {
   const state = useJobStore();
   const [selectedConnId, setSelectedConnId] = useState<string | null>(
     state.connections[0]?.id ?? null
@@ -485,6 +575,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ onClose })
   const [showPassword, setShowPassword] = useState(false);
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const [showQuickAdd, setShowQuickAdd] = useState(false);
+  const [scopeFilter, setScopeFilter] = useState<"all" | "global" | "local">("all");
 
   const selectedConn = state.connections.find((c) => c.id === selectedConnId);
 
@@ -493,6 +584,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ onClose })
     setSelectedConnId(null);
     setShowQuickAdd(false);
     const defaults: Record<ConnectionType, any> = {
+      duckdb: { database_path: ":memory:", memory_limit: "1GB", read_only: false },
       oracle: { port: 1521 }, sqlserver: { port: 1433 }, mysql: { port: 3306 },
       postgresql: { port: 5432 }, redshift: { port: 5439 }, databricks: {},
       snowflake: {}, bigquery: {}, s3: { region: "us-east-1" },
@@ -509,11 +601,16 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ onClose })
       config: defaults[type] ?? {},
       description: "",
       environments: ["dev"] as Environment[],
+      scope: "global",
+      jobId: undefined,
     });
   };
 
   const handleSave = () => {
     if (!editingConn?.name || !editingConn.type) return;
+    const finalScope = editingConn.scope ?? "global";
+    const finalJobId = finalScope === "local" ? (activeJobId || editingConn.jobId) : undefined;
+
     if (isCreating) {
       const entry = jobStore.saveConnection({
         name: editingConn.name!,
@@ -521,6 +618,8 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ onClose })
         config: editingConn.config ?? {},
         description: editingConn.description,
         environments: (editingConn.environments ?? ["dev"]) as Environment[],
+        scope: finalScope,
+        jobId: finalJobId,
       });
       setSelectedConnId(entry.id);
       setIsCreating(false);
@@ -530,6 +629,8 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ onClose })
         config: editingConn!.config,
         description: editingConn!.description,
         environments: editingConn!.environments ?? ["dev"],
+        scope: finalScope,
+        jobId: finalJobId,
       });
     }
     setEditingConn(null);
@@ -537,6 +638,16 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ onClose })
 
   const handleTest = async (connId: string) => {
     setTestingId(connId);
+    const targetConn = state.connections.find((c) => c.id === connId) || editingConn;
+    if (targetConn?.type === "duckdb") {
+      await new Promise((r) => setTimeout(r, 600));
+      jobStore.updateConnection(connId, {
+        testStatus: "success",
+        lastTestedAt: new Date().toISOString(),
+      });
+      setTestingId(null);
+      return;
+    }
     await new Promise((r) => setTimeout(r, 1500));
     // Simulate test result
     const success = Math.random() > 0.3;
@@ -560,6 +671,8 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ onClose })
     const commonProps = { config, onChange: configField, showPassword, toggleShowPw: () => setShowPassword((p) => !p) };
 
     switch (type) {
+      case "duckdb":
+        return <DuckDbForm config={config} onChange={configField} />;
       case "oracle":
         return (
           <SqlDbForm {...commonProps} extra={
@@ -697,35 +810,116 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ onClose })
                 )}
               </div>
             </div>
+
+            {/* Scope Filter Tabs */}
+            <div
+              style={{
+                display: "flex",
+                gap: 4,
+                padding: "6px 8px",
+                borderBottom: "1px solid var(--border-subtle)",
+                background: "rgba(0,0,0,0.18)",
+              }}
+            >
+              <button
+                type="button"
+                className={`badge ${scopeFilter === "all" ? "active" : ""}`}
+                style={{
+                  cursor: "pointer",
+                  fontSize: "0.68rem",
+                  background: scopeFilter === "all" ? "var(--accent-blue)" : "transparent",
+                  color: scopeFilter === "all" ? "#fff" : "var(--text-secondary)",
+                  border: "none",
+                  padding: "2px 6px",
+                  borderRadius: 4,
+                }}
+                onClick={() => setScopeFilter("all")}
+              >
+                Todas ({state.connections.length})
+              </button>
+              <button
+                type="button"
+                className={`badge ${scopeFilter === "global" ? "active" : ""}`}
+                style={{
+                  cursor: "pointer",
+                  fontSize: "0.68rem",
+                  background: scopeFilter === "global" ? "var(--accent-blue)" : "transparent",
+                  color: scopeFilter === "global" ? "#fff" : "var(--text-secondary)",
+                  border: "none",
+                  padding: "2px 6px",
+                  borderRadius: 4,
+                }}
+                onClick={() => setScopeFilter("global")}
+              >
+                🌐 Globais ({state.connections.filter((c) => !c.scope || c.scope === "global").length})
+              </button>
+              <button
+                type="button"
+                className={`badge ${scopeFilter === "local" ? "active" : ""}`}
+                style={{
+                  cursor: "pointer",
+                  fontSize: "0.68rem",
+                  background: scopeFilter === "local" ? "var(--accent-blue)" : "transparent",
+                  color: scopeFilter === "local" ? "#fff" : "var(--text-secondary)",
+                  border: "none",
+                  padding: "2px 6px",
+                  borderRadius: 4,
+                }}
+                onClick={() => setScopeFilter("local")}
+              >
+                💼 Deste Job ({state.connections.filter((c) => c.scope === "local" && (!activeJobId || c.jobId === activeJobId)).length})
+              </button>
+            </div>
+
             <div className="conn-list-items">
-              {state.connections.map((conn) => (
-                <div
-                  key={conn.id}
-                  className={`conn-list-item ${selectedConnId === conn.id && !isCreating ? "active" : ""}`}
-                  onClick={() => { setSelectedConnId(conn.id); setIsCreating(false); setEditingConn(null); }}
-                >
-                  <div className="conn-type-dot" style={{ background: getTypeColor(conn.type) }} />
-                  <div className="conn-list-info">
-                    <div className="conn-list-name">{conn.name}</div>
-                    <div className="conn-list-type-row">
-                      <span className="conn-list-type">{getTypeLabel(conn.type)}</span>
-                      <div className="conn-env-badges">
-                        {(conn.environments ?? []).map((env) => (
-                          <span
-                            key={env}
-                            className="conn-env-mini-badge"
-                            style={{ color: ENVS.find((e) => e.id === env)?.color }}
-                          >
-                            {env.toUpperCase()}
-                          </span>
-                        ))}
+              {state.connections
+                .filter((c) => {
+                  if (scopeFilter === "global") return !c.scope || c.scope === "global";
+                  if (scopeFilter === "local") return c.scope === "local" && (!activeJobId || c.jobId === activeJobId);
+                  return true;
+                })
+                .map((conn) => (
+                  <div
+                    key={conn.id}
+                    className={`conn-list-item ${selectedConnId === conn.id && !isCreating ? "active" : ""}`}
+                    onClick={() => { setSelectedConnId(conn.id); setIsCreating(false); setEditingConn(null); }}
+                  >
+                    <div className="conn-type-dot" style={{ background: getTypeColor(conn.type) }} />
+                    <div className="conn-list-info">
+                      <div className="conn-list-name" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                        <span>{conn.name}</span>
+                        <span
+                          style={{
+                            fontSize: "0.62rem",
+                            padding: "1px 4px",
+                            borderRadius: 3,
+                            background: conn.scope === "local" ? "rgba(168, 85, 247, 0.15)" : "rgba(59, 130, 246, 0.15)",
+                            color: conn.scope === "local" ? "#c084fc" : "#93c5fd",
+                            border: `1px solid ${conn.scope === "local" ? "rgba(168, 85, 247, 0.3)" : "rgba(59, 130, 246, 0.3)"}`,
+                          }}
+                        >
+                          {conn.scope === "local" ? "💼 Local" : "🌐 Global"}
+                        </span>
+                      </div>
+                      <div className="conn-list-type-row">
+                        <span className="conn-list-type">{getTypeLabel(conn.type)}</span>
+                        <div className="conn-env-badges">
+                          {(conn.environments ?? []).map((env) => (
+                            <span
+                              key={env}
+                              className="conn-env-mini-badge"
+                              style={{ color: ENVS.find((e) => e.id === env)?.color }}
+                            >
+                              {env.toUpperCase()}
+                            </span>
+                          ))}
+                        </div>
                       </div>
                     </div>
+                    {conn.testStatus === "success" && <CheckCircle2 size={13} color="var(--status-success)" />}
+                    {conn.testStatus === "failed" && <XCircle size={13} color="var(--status-danger)" />}
                   </div>
-                  {conn.testStatus === "success" && <CheckCircle2 size={13} color="var(--status-success)" />}
-                  {conn.testStatus === "failed" && <XCircle size={13} color="var(--status-danger)" />}
-                </div>
-              ))}
+                ))}
               {state.connections.length === 0 && (
                 <div className="conn-list-empty">
                   <Database size={28} opacity={0.2} />
@@ -877,14 +1071,71 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ onClose })
                         </div>
                       </div>
 
+                      {/* Scope Selection (Global vs Local) */}
+                      <div className="form-group" style={{ background: "rgba(0,0,0,0.18)", padding: 10, borderRadius: 8, border: "1px solid var(--border-subtle)" }}>
+                        <label className="form-label" style={{ fontWeight: 600, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span>Disponibilidade da Conexão (Escopo)</span>
+                          <span
+                            className="badge"
+                            style={{
+                              fontSize: "0.68rem",
+                              background: (editingConn.scope ?? "global") === "local" ? "rgba(168, 85, 247, 0.2)" : "rgba(59, 130, 246, 0.2)",
+                              color: (editingConn.scope ?? "global") === "local" ? "#c084fc" : "#93c5fd",
+                            }}
+                          >
+                            {(editingConn.scope ?? "global") === "local" ? "💼 Conexão Local" : "🌐 Conexão Global"}
+                          </span>
+                        </label>
+                        <div style={{ display: "flex", gap: 14, marginTop: 6 }}>
+                          <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: "0.78rem" }}>
+                            <input
+                              type="radio"
+                              name="conn-scope-radio"
+                              checked={(editingConn.scope ?? "global") === "global"}
+                              onChange={() => {
+                                setEditingConn((p) => ({ ...p!, scope: "global", jobId: undefined }));
+                              }}
+                            />
+                            <span>🌐 <strong>Global</strong> (Disponível em todos os jobs)</span>
+                          </label>
+                          <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: "0.78rem" }}>
+                            <input
+                              type="radio"
+                              name="conn-scope-radio"
+                              checked={(editingConn.scope ?? "global") === "local"}
+                              onChange={() => {
+                                setEditingConn((p) => ({ ...p!, scope: "local", jobId: activeJobId || p?.jobId }));
+                              }}
+                            />
+                            <span>💼 <strong>Local</strong> {activeJobName ? `(Restrito ao job "${activeJobName}")` : "(Restrito a este job)"}</span>
+                          </label>
+                        </div>
+                        <div className="conn-env-hint" style={{ marginTop: 6 }}>
+                          {(editingConn.scope ?? "global") === "local"
+                            ? "🔒 Conexões locais só aparecem na lista e nós deste job, evitando poluir o catálogo global."
+                            : "🌍 Conexões globais ficam disponíveis para qualquer pipeline ou job do projeto."}
+                        </div>
+                      </div>
+
                       <div className="conn-section-divider">Parâmetros de Conexão</div>
                       {renderConfigForm()}
                     </>
                   ) : selectedConn ? (
                     <div className="conn-readonly-view">
-                      {/* Environment badges */}
-                      <div className="conn-env-badges-row">
-                        <span className="form-label">Ambientes:</span>
+                      {/* Environment and Scope badges */}
+                      <div className="conn-env-badges-row" style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <span className="form-label" style={{ margin: 0 }}>Escopo:</span>
+                        <span
+                          className="conn-env-badge-pill"
+                          style={{
+                            borderColor: selectedConn.scope === "local" ? "rgba(168, 85, 247, 0.4)" : "rgba(59, 130, 246, 0.4)",
+                            color: selectedConn.scope === "local" ? "#c084fc" : "#93c5fd",
+                            background: selectedConn.scope === "local" ? "rgba(168, 85, 247, 0.12)" : "rgba(59, 130, 246, 0.12)",
+                          }}
+                        >
+                          {selectedConn.scope === "local" ? "💼 LOCAL (Job Atual)" : "🌐 GLOBAL (Todos os Jobs)"}
+                        </span>
+                        <span className="form-label" style={{ margin: 0, marginLeft: 8 }}>Ambientes:</span>
                         {(selectedConn.environments ?? []).map((env) => (
                           <span
                             key={env}

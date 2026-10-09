@@ -97,6 +97,7 @@ function validateParallelCellConsistency(cells) {
 function createTestJobStore() {
   let state = {
     jobs: [],
+    connections: [],
   };
 
   return {
@@ -113,7 +114,7 @@ function createTestJobStore() {
         status: "idle",
       };
       const job = {
-        id: `job-${Date.now()}`,
+        id: `job-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         name,
         nodes: [],
         edges: [],
@@ -311,6 +312,26 @@ function createTestJobStore() {
 
     getJob(id) {
       return state.jobs.find((j) => j.id === id);
+    },
+
+    saveConnection(conn) {
+      const entry = {
+        ...conn,
+        id: `conn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        scope: conn.scope ?? "global",
+        jobId: conn.scope === "local" ? conn.jobId : undefined,
+      };
+      state.connections.push(entry);
+      return entry;
+    },
+
+    getConnectionsForJob(jobId) {
+      if (!jobId) {
+        return state.connections.filter((c) => !c.scope || c.scope === "global");
+      }
+      return state.connections.filter(
+        (c) => !c.scope || c.scope === "global" || c.jobId === jobId
+      );
     },
   };
 }
@@ -682,5 +703,136 @@ describe("Multi-Canvas (Canvas-Cells): Cancelamento e Parada de Execução", () 
     assert.equal(updated.cells[2].status, "skipped");
   });
 });
+
+describe("Multi-Canvas: Validação de Grafo e Prevenção de ERR_EMPTY_GRAPH", () => {
+  function testAnalyzeJobProblems(job, fallbackNodes = [], fallbackEdges = []) {
+    const hasCells = Boolean(job?.cells && job.cells.length > 0);
+    if (!hasCells) {
+      if (fallbackNodes.length === 0) {
+        return [{ code: "ERR_EMPTY_GRAPH", message: "Nenhum componente foi adicionado ao Canvas." }];
+      }
+      return [];
+    }
+
+    const totalNodesCount = (job.cells || []).reduce((acc, c) => acc + (c.nodes?.length || 0), 0);
+    if (totalNodesCount === 0) {
+      return [{ code: "ERR_EMPTY_GRAPH", message: "Nenhum componente foi adicionado ao Canvas." }];
+    }
+
+    const problems = [];
+    (job.cells || []).forEach((cell) => {
+      if (!cell.nodes || cell.nodes.length === 0) {
+        problems.push({ code: "WARN_EMPTY_CELL", message: `A célula "${cell.name}" está vazia.` });
+      }
+    });
+    return problems;
+  }
+
+  it("não deve gerar ERR_EMPTY_GRAPH quando um job multi-canvas possui componentes em qualquer célula", () => {
+    const store = createTestJobStore();
+    const job = store.createJob("Pipeline com Nós na Célula 1");
+    // Adiciona nós dentro da célula
+    job.cells[0].nodes = [
+      { id: "csv_source_01", data: { componentType: "file.source.csv", category: "source" } },
+      { id: "duckdb_sink_01", data: { componentType: "connector.db.duckdb.output", category: "target" } },
+    ];
+    job.cells[0].edges = [
+      { id: "e1", source: "csv_source_01", target: "duckdb_sink_01" },
+    ];
+
+    // fallbackNodes no App.tsx estariam vazios ([]), mas o job tem componentes
+    const fallbackNodes = [];
+    const fallbackEdges = [];
+    const problems = testAnalyzeJobProblems(job, fallbackNodes, fallbackEdges);
+
+    const hasEmptyGraphError = problems.some((p) => p.code === "ERR_EMPTY_GRAPH");
+    assert.equal(hasEmptyGraphError, false, "Não deve reportar ERR_EMPTY_GRAPH quando a célula possui componentes");
+  });
+
+  it("deve gerar ERR_EMPTY_GRAPH se todas as células estiverem totalmente vazias", () => {
+    const store = createTestJobStore();
+    const job = store.createJob("Job Vazio");
+    job.cells[0].nodes = [];
+    job.cells[0].edges = [];
+
+    const problems = testAnalyzeJobProblems(job, [], []);
+    assert.equal(problems[0].code, "ERR_EMPTY_GRAPH");
+  });
+});
+
+describe("Gerenciador de Conexões: Suporte a DuckDB e Escopo Global vs Local", () => {
+  it("deve permitir cadastrar e persistir conexão DuckDB com parâmetros em memória e arquivo", () => {
+    const store = createTestJobStore();
+    const duckConn = store.saveConnection({
+      name: "DuckDB In-Memory Dev",
+      type: "duckdb",
+      config: {
+        database_path: ":memory:",
+        memory_limit: "2GB",
+        read_only: false,
+      },
+      environments: ["dev", "hml"],
+      scope: "global",
+    });
+
+    assert.equal(duckConn.type, "duckdb");
+    assert.equal(duckConn.config.database_path, ":memory:");
+    assert.equal(duckConn.scope, "global");
+  });
+
+  it("deve suportar escopo local atribuído a um job específico e filtrar corretamente", () => {
+    const store = createTestJobStore();
+    const jobA = store.createJob("Job A");
+    const jobB = store.createJob("Job B");
+
+    // Conexão Global
+    const globalConn = store.saveConnection({
+      name: "PostgreSQL Corporativo",
+      type: "postgresql",
+      config: { host: "db.empresa.com", port: 5432 },
+      environments: ["dev", "prd"],
+      scope: "global",
+    });
+
+    // Conexão Local do Job A (DuckDB de staging exclusivo do Job A)
+    const localConnA = store.saveConnection({
+      name: "DuckDB Local Staging A",
+      type: "duckdb",
+      config: { database_path: "data/job_a_stage.duckdb" },
+      environments: ["dev"],
+      scope: "local",
+      jobId: jobA.id,
+    });
+
+    // Conexão Local do Job B
+    const localConnB = store.saveConnection({
+      name: "DuckDB Local Staging B",
+      type: "duckdb",
+      config: { database_path: "data/job_b_stage.duckdb" },
+      environments: ["dev"],
+      scope: "local",
+      jobId: jobB.id,
+    });
+
+    // No Job A: deve ver a conexão Global e a conexão Local do Job A, mas NÃO a do Job B
+    const connsJobA = store.getConnectionsForJob(jobA.id);
+    assert.equal(connsJobA.some((c) => c.name === "PostgreSQL Corporativo"), true);
+    assert.equal(connsJobA.some((c) => c.name === "DuckDB Local Staging A"), true);
+    assert.equal(connsJobA.some((c) => c.name === "DuckDB Local Staging B"), false);
+
+    // No Job B: deve ver a conexão Global e a conexão Local do Job B, mas NÃO a do Job A
+    const connsJobB = store.getConnectionsForJob(jobB.id);
+    assert.equal(connsJobB.some((c) => c.name === "PostgreSQL Corporativo"), true);
+    assert.equal(connsJobB.some((c) => c.name === "DuckDB Local Staging A"), false);
+    assert.equal(connsJobB.some((c) => c.name === "DuckDB Local Staging B"), true);
+
+    // Sem jobId (visão geral/global): vê apenas conexões globais
+    const connsGeneral = store.getConnectionsForJob(undefined);
+    assert.equal(connsGeneral.some((c) => c.name === "PostgreSQL Corporativo"), true);
+    assert.equal(connsGeneral.some((c) => c.name === "DuckDB Local Staging A"), false);
+    assert.equal(connsGeneral.some((c) => c.name === "DuckDB Local Staging B"), false);
+  });
+});
+
 
 
