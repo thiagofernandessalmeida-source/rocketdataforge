@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Node, Edge } from "reactflow";
 import {
   Plus,
   Play,
+  Square,
   Layers,
   LayoutGrid,
   Maximize2,
@@ -34,7 +35,9 @@ interface MultiCanvasContainerProps {
   onSelectNode: (node: Node<CanvasNodeData> | null) => void;
   onDoubleClickNode?: (node: Node<CanvasNodeData>) => void;
   onRunEntireJob?: () => void;
+  onStopJob?: () => void;
   onExecuteCellIsolated?: (cell: CanvasCellData) => Promise<boolean>;
+  onStopCellIsolated?: (cell: CanvasCellData) => void;
   showToast?: (type: "success" | "error" | "info", msg: string) => void;
 }
 
@@ -43,7 +46,9 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
   onSelectNode,
   onDoubleClickNode,
   onRunEntireJob,
+  onStopJob,
   onExecuteCellIsolated,
+  onStopCellIsolated,
   showToast,
 }) => {
   const [focusCellId, setFocusCellId] = useState<string | null>(null);
@@ -51,6 +56,7 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
     job.activeCellId || job.cells?.[0]?.id || "canvas-cell-01"
   );
   const [isOrchestrating, setIsOrchestrating] = useState(false);
+  const cancelOrchestrationRef = useRef(false);
 
   const cells = job.cells && job.cells.length > 0 ? job.cells : [];
 
@@ -160,7 +166,32 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
     }
   };
 
-  // ─── Orchestrated Job Run (Multi-Cell Mesh Execution) ─────────
+  const handleStopSingleCell = (cell: CanvasCellData) => {
+    if (onStopCellIsolated) {
+      onStopCellIsolated(cell);
+    }
+    jobStore.setCellStatus(job.id, cell.id, "cancelled");
+    showToast?.("info", `Execução da célula "${cell.name}" interrompida.`);
+  };
+
+  // ─── Orchestrated Job Run & Stop (Multi-Cell Mesh Execution) ─────────
+
+  const handleStopOrchestrated = () => {
+    cancelOrchestrationRef.current = true;
+    if (onStopJob) {
+      onStopJob();
+    }
+    // Cancel queued / running cells
+    sortedCells.forEach((c) => {
+      if (c.status === "queued") {
+        jobStore.setCellStatus(job.id, c.id, "skipped");
+      } else if (c.status === "running") {
+        jobStore.setCellStatus(job.id, c.id, "cancelled");
+      }
+    });
+    setIsOrchestrating(false);
+    showToast?.("info", "Orquestração do Job interrompida pelo usuário.");
+  };
 
   const handleRunOrchestrated = async () => {
     if (isOrchestrating) return;
@@ -182,13 +213,14 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
       return;
     }
 
+    cancelOrchestrationRef.current = false;
     setIsOrchestrating(true);
     showToast?.("info", `Iniciando orquestração completa do Job (${sortedCells.length} células)...`);
 
     // Reset status to queued
     sortedCells.forEach((c) => jobStore.setCellStatus(job.id, c.id, "queued"));
 
-    const completedStatuses: Record<string, "success" | "failed" | "skipped"> = {};
+    const completedStatuses: Record<string, "success" | "failed" | "skipped" | "cancelled"> = {};
 
     // Group cells by execution order
     const orderGroups = new Map<number, CanvasCellData[]>();
@@ -202,12 +234,24 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
 
     try {
       for (const orderNum of sortedOrders) {
+        if (cancelOrchestrationRef.current) {
+          showToast?.("info", "Orquestração do Job interrompida.");
+          break;
+        }
+
         const parallelCells = orderGroups.get(orderNum) || [];
 
         // Safe Parallel Execution for cells with the same order
         await Promise.all(
           parallelCells.map(async (cell) => {
-            const canRun = evaluateCellPreconditions(cell, completedStatuses, sortedCells);
+            if (cancelOrchestrationRef.current) {
+              jobStore.setCellStatus(job.id, cell.id, "skipped");
+              completedStatuses[cell.id] = "skipped";
+              completedStatuses[cell.name] = "skipped";
+              return;
+            }
+
+            const canRun = evaluateCellPreconditions(cell, completedStatuses as any, sortedCells);
 
             if (!canRun) {
               jobStore.setCellStatus(job.id, cell.id, "skipped");
@@ -221,6 +265,12 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
             try {
               if (onExecuteCellIsolated) {
                 const ok = await onExecuteCellIsolated(cell);
+                if (cancelOrchestrationRef.current) {
+                  jobStore.setCellStatus(job.id, cell.id, "cancelled");
+                  completedStatuses[cell.id] = "cancelled";
+                  completedStatuses[cell.name] = "cancelled";
+                  return;
+                }
                 const finalStatus = ok ? "success" : "failed";
                 jobStore.setCellStatus(job.id, cell.id, finalStatus);
                 completedStatuses[cell.id] = finalStatus;
@@ -228,6 +278,12 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
               } else {
                 // Simulation delay
                 await new Promise((res) => setTimeout(res, 600));
+                if (cancelOrchestrationRef.current) {
+                  jobStore.setCellStatus(job.id, cell.id, "cancelled");
+                  completedStatuses[cell.id] = "cancelled";
+                  completedStatuses[cell.name] = "cancelled";
+                  return;
+                }
                 jobStore.setCellStatus(job.id, cell.id, "success");
                 completedStatuses[cell.id] = "success";
                 completedStatuses[cell.name] = "success";
@@ -241,14 +297,18 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
         );
       }
 
-      const totalFailed = Object.values(completedStatuses).filter((s) => s === "failed").length;
-      const totalSkipped = Object.values(completedStatuses).filter((s) => s === "skipped").length;
-      const totalSuccess = Object.values(completedStatuses).filter((s) => s === "success").length;
-
-      if (totalFailed > 0) {
-        showToast?.("error", `Orquestração finalizada com falhas: ${totalSuccess} sucesso, ${totalFailed} falhas, ${totalSkipped} puladas.`);
+      if (cancelOrchestrationRef.current) {
+        showToast?.("info", "Orquestração cancelada pelo usuário.");
       } else {
-        showToast?.("success", `Orquestração do Job finalizada com sucesso! (${totalSuccess} células executadas)`);
+        const totalFailed = Object.values(completedStatuses).filter((s) => s === "failed").length;
+        const totalSkipped = Object.values(completedStatuses).filter((s) => s === "skipped").length;
+        const totalSuccess = Object.values(completedStatuses).filter((s) => s === "success").length;
+
+        if (totalFailed > 0) {
+          showToast?.("error", `Orquestração finalizada com falhas: ${totalSuccess} sucesso, ${totalFailed} falhas, ${totalSkipped} puladas.`);
+        } else {
+          showToast?.("success", `Orquestração do Job finalizada com sucesso! (${totalSuccess} células executadas)`);
+        }
       }
     } finally {
       setIsOrchestrating(false);
@@ -362,18 +422,37 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
             <span>Nova Canvas-Cell</span>
           </button>
 
-          {/* Orchestrated Run Button */}
-          <button
-            type="button"
-            className="btn btn-success"
-            style={{ fontSize: "0.76rem", padding: "4px 12px", gap: 6 }}
-            disabled={isOrchestrating}
-            onClick={handleRunOrchestrated}
-            title="Executa todas as células respeitando ordens, pré-condições e isolamento de escrita DuckDB"
-          >
-            <Play size={12} fill="currentColor" />
-            <span>{isOrchestrating ? "Orquestrando..." : "Executar Job Orquestrado"}</span>
-          </button>
+          {/* Orchestrated Run / Stop Button */}
+          {isOrchestrating ? (
+            <button
+              type="button"
+              className="btn btn-danger"
+              style={{
+                fontSize: "0.76rem",
+                padding: "4px 12px",
+                gap: 6,
+                background: "rgba(239, 68, 68, 0.25)",
+                borderColor: "var(--status-danger)",
+                color: "var(--status-danger)",
+              }}
+              onClick={handleStopOrchestrated}
+              title="Parar a execução do Job imediatamente"
+            >
+              <Square size={12} fill="currentColor" />
+              <span>Parar Job</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-success"
+              style={{ fontSize: "0.76rem", padding: "4px 12px", gap: 6 }}
+              onClick={handleRunOrchestrated}
+              title="Executa todas as células respeitando ordens, pré-condições e isolamento de escrita DuckDB"
+            >
+              <Play size={12} fill="currentColor" />
+              <span>Executar Job Orquestrado</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -406,6 +485,7 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
               onDuplicateCell={handleDuplicateCell}
               onToggleFocus={handleToggleFocus}
               onRunSingleCell={handleRunSingleCell}
+              onStopSingleCell={handleStopSingleCell}
               onResetStatus={(cellId) => {
                 jobStore.resetCellStatus(job.id, cellId);
                 showToast?.("info", "Status da célula resetado.");
@@ -435,6 +515,7 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
                 onMoveDown={idx < sortedCells.length - 1 ? () => handleMoveDown(idx) : undefined}
                 onToggleFocus={handleToggleFocus}
                 onRunSingleCell={handleRunSingleCell}
+                onStopSingleCell={handleStopSingleCell}
                 onResetStatus={(cellId) => {
                   jobStore.resetCellStatus(job.id, cellId);
                   showToast?.("info", "Status da célula resetado.");

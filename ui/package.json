@@ -3,11 +3,15 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "node --test tests/query_feature.test.mjs tests/multi_canvas.test.mjs"
+    "test": "node --test tests/query_feature.test.mjs tests/multi_canvas.test.mjs",
+    "electron": "electron electron/main.cjs",
+    "electron:dev": "electron electron/main.cjs --dev",
+    "app": "npm run build && electron electron/main.cjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -21,6 +25,7 @@
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^44.7.0",
     "typescript": "^5.7.3",
     "vite": "^6.1.0"
   }

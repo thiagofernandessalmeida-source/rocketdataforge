@@ -6,6 +6,7 @@ import {
   UploadCloud,
   Upload,
   Play,
+  Square,
   Download,
   Loader2,
   Cpu,
@@ -59,6 +60,7 @@ interface HeaderProps {
   onPublish: () => void;
   onCompile: () => void;
   onRun: () => void;
+  onStopJob?: () => void;
   onExport: () => void;
   onImport?: () => void;
   onOpenDiagnostics?: () => void;
@@ -95,6 +97,7 @@ export const Header: React.FC<HeaderProps> = ({
   onPublish,
   onCompile,
   onRun,
+  onStopJob,
   onExport,
   onImport,
   onOpenDiagnostics,
@@ -129,13 +132,16 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <span className="brand-logo" style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <img
-              src="/cellflow-logo.png"
+              src="./cellflow-logo.png"
               alt="CellFlow Data Studio"
               style={{
                 height: 28,
                 width: "auto",
                 objectFit: "contain",
                 display: "block",
+              }}
+              onError={(e) => {
+                (e.currentTarget as HTMLElement).style.display = "none";
               }}
             />
             <span
@@ -255,31 +261,6 @@ export const Header: React.FC<HeaderProps> = ({
           <Globe size={12} opacity={0.7} />
         </button>
 
-        {/* Connections Button */}
-        <button
-          className="btn btn-secondary header-conn-btn"
-          onClick={onOpenConnections}
-          title="Gerenciar Conexões de Banco de Dados"
-          id="btn-connections"
-        >
-          <Database size={14} />
-          <span>Conexões</span>
-          {connectionsCount > 0 && (
-            <span className="conn-count-badge">{connectionsCount}</span>
-          )}
-        </button>
-
-        {/* Query Bank Button */}
-        <button
-          className="btn btn-secondary header-conn-btn"
-          onClick={onOpenQueryBank}
-          title="Banco de Queries — Salve e reutilize SQL"
-          id="btn-query-bank"
-        >
-          <BookOpen size={14} />
-          <span>Queries</span>
-        </button>
-
         {/* Sidebar & Panel Visibility Toggles */}
         <div style={{ display: "flex", alignItems: "center", gap: 3, marginLeft: 6, background: "rgba(0,0,0,0.25)", padding: "2px 4px", borderRadius: 6, border: "1px solid var(--border-subtle)" }}>
           <button
@@ -346,17 +327,17 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* Right — Pipeline Actions */}
       <div className="header-actions">
-        {/* Save */}
+        {/* Save (apenas ícone) */}
         <button
           type="button"
           className="btn btn-secondary"
           id="btn-save-draft"
           onClick={onSaveDraft}
           disabled={loadingAction !== null}
+          style={{ padding: "6px 10px" }}
           title="Salvar Job (Ctrl+S)"
         >
-          {loadingAction === "save" ? <Loader2 size={14} className="spin" /> : <Save size={14} />}
-          <span>Salvar</span>
+          {loadingAction === "save" ? <Loader2 size={15} className="spin" /> : <Save size={15} />}
         </button>
 
         {/* Validate */}
@@ -366,38 +347,11 @@ export const Header: React.FC<HeaderProps> = ({
           id="btn-validate"
           onClick={onValidate}
           disabled={loadingAction !== null}
+          title="Validar integridade do Grafo DAG"
         >
           {loadingAction === "validate" ? <Loader2 size={14} className="spin" /> : <CheckSquare size={14} />}
           <span>Validar</span>
         </button>
-
-        {/* Export */}
-        <button
-          type="button"
-          className="btn btn-secondary"
-          id="btn-export"
-          onClick={onExport}
-          disabled={loadingAction !== null}
-          title="Exportar Job (.rdf.json)"
-        >
-          {loadingAction === "export" ? <Loader2 size={14} className="spin" /> : <Download size={14} />}
-          <span>Exportar</span>
-        </button>
-
-        {/* Import */}
-        {onImport && (
-          <button
-            type="button"
-            className="btn btn-secondary"
-            id="btn-import"
-            onClick={onImport}
-            disabled={loadingAction !== null}
-            title="Importar Job (.rdf.json / .json)"
-          >
-            <Upload size={14} />
-            <span>Importar</span>
-          </button>
-        )}
 
         <div className="header-divider" />
 
@@ -408,6 +362,7 @@ export const Header: React.FC<HeaderProps> = ({
           id="btn-publish"
           onClick={onPublish}
           disabled={loadingAction !== null}
+          title="Publicar versão imutável do pipeline"
         >
           {loadingAction === "publish" ? <Loader2 size={14} className="spin" /> : <UploadCloud size={14} />}
           <span>Publicar</span>
@@ -426,18 +381,37 @@ export const Header: React.FC<HeaderProps> = ({
           <span>Compilar</span>
         </button>
 
-        {/* Run */}
-        <button
-          type="button"
-          className="btn btn-success"
-          id="btn-run-pipeline"
-          onClick={onRun}
-          disabled={loadingAction !== null || !publishedVersionId}
-          title={!publishedVersionId ? "Publique antes de executar" : "Executar Pipeline"}
-        >
-          {loadingAction === "run" ? <Loader2 size={14} className="spin" /> : <Play size={14} />}
-          <span>Executar</span>
-        </button>
+        {/* Run / Stop Job */}
+        {loadingAction === "run" ? (
+          <button
+            type="button"
+            className="btn btn-danger"
+            id="btn-stop-pipeline"
+            onClick={onStopJob}
+            style={{
+              background: "rgba(239, 68, 68, 0.25)",
+              borderColor: "var(--status-danger)",
+              color: "var(--status-danger)",
+              gap: 6,
+            }}
+            title="Parar a execução do Job em andamento"
+          >
+            <Square size={13} fill="currentColor" />
+            <span>Parar Job</span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-success"
+            id="btn-run-pipeline"
+            onClick={onRun}
+            disabled={loadingAction !== null || !publishedVersionId}
+            title={!publishedVersionId ? "Publique antes de executar" : "Executar Pipeline"}
+          >
+            <Play size={14} />
+            <span>Executar</span>
+          </button>
+        )}
       </div>
     </header>
   );

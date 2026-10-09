@@ -9,16 +9,28 @@ import {
   ValidationReport,
 } from "../types";
 
+const getBaseApiUrl = () => {
+  if (
+    typeof window !== "undefined" &&
+    window.location &&
+    window.location.protocol.startsWith("http") &&
+    window.location.port === "5173"
+  ) {
+    return "/api/v1";
+  }
+  return "http://127.0.0.1:8000/api/v1";
+};
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = {
     "Content-Type": "application/json",
     ...(options?.headers || {})
   };
 
-  // Always use the Vite dev-server proxy (/api → http://127.0.0.1:8000)
+  const baseUrl = getBaseApiUrl();
   let res: Response;
   try {
-    res = await fetch(`/api/v1${path}`, { ...options, headers });
+    res = await fetch(`${baseUrl}${path}`, { ...options, headers });
   } catch (err: any) {
     // Network-level failure: proxy itself couldn't reach the backend
     throw new Error(
