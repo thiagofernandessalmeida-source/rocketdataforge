@@ -217,3 +217,55 @@ def test_worker_db_scan_named_cursor_success(monkeypatch, tmp_path):
     assert len(named_execute_calls) == 1
     assert "SELECT id, val FROM my_table" in named_execute_calls[0]
     mock_setup_cur.execute.assert_called_once_with("SET statement_timeout = 0;")
+
+
+def test_duckdb_sink_uses_custom_table_name(tmp_path):
+    import duckdb
+
+    db_path = tmp_path / "custom_test.duckdb"
+    plan = PhysicalPlan(
+        pipeline_id="pipe-duckdb-table-test",
+        execution_order=["src_node", "sink_node"],
+        operators={
+            "src_node": PhysicalOperator(
+                id="src_node",
+                operator_type="scan",
+                engine="duckdb",
+                input_ids=[],
+                config={
+                    "format": "duckdb",
+                    "source": "SELECT 101 AS consultant_code, 202601 AS operational_cycle, 95.5 AS index_value",
+                },
+            ),
+            "sink_node": PhysicalOperator(
+                id="sink_node",
+                operator_type="sink",
+                engine="duckdb",
+                input_ids=["src_node"],
+                config={
+                    "format": "duckdb",
+                    "database_path": str(db_path),
+                    "table": "consultant_index",
+                    "target": "consultant_index",
+                    "table_action": "create_if_not_exists",
+                    "data_action": "insert",
+                    "raw_config": {
+                        "table": "consultant_index",
+                    },
+                },
+            ),
+        },
+    )
+
+    execution = Execution(id="exec-table-1", pipeline_version_id="ver-1.0.0", correlation_id="corr-table")
+    worker = ExecutionWorker()
+    res = worker.run(execution, plan)
+
+    assert res.status == ExecutionStatus.SUCCEEDED
+    conn = duckdb.connect(str(db_path))
+    tables = [r[0] for r in conn.execute("SHOW TABLES;").fetchall()]
+    conn.close()
+
+    assert "consultant_index" in tables
+    assert "output_table" not in tables
+

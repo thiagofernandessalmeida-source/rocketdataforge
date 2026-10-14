@@ -15,7 +15,7 @@ from src.core.application.compiler.physical_planner import PhysicalPlan
 from src.core.domain.execution.execution import Execution
 from src.core.domain.execution.status import ExecutionStatus
 from src.core.domain.shared.exceptions import DomainError, DomainValidationError
-from src.core.domain.metadata.connection import Connection
+from src.core.domain.metadata.connection import Connection, FORBIDDEN_PLAINTEXT_KEYS
 from src.core.domain.shared.types import SecretReference
 from src.core.infrastructure.connectors.file_connector import LocalFileConnector
 from src.core.infrastructure.connectors.oracle_connector import OracleConnector
@@ -227,13 +227,29 @@ class ExecutionWorker:
             or "localhost"
         )
 
-        secret = conn_details.get("password") or conn_details.get("secretKey") or conn_details.get("secret_ref") or "secret://empty"
+        secret = (
+            conn_details.get("password")
+            or conn_details.get("pwd")
+            or conn_details.get("secret")
+            or conn_details.get("secretKey")
+            or conn_details.get("secret_ref")
+            or raw_cfg.get("password")
+            or raw_cfg.get("secretKey")
+            or "secret://empty"
+        )
         if not str(secret).startswith("secret://"):
             secret_key = f"SECRET_{connector_type.upper()}"
             self.secret_resolver.custom_env[secret_key] = str(secret)
             secret_ref = SecretReference(f"secret://env/{secret_key}")
         else:
             secret_ref = SecretReference(str(secret))
+
+        # Filtra chaves confidenciais de options para respeitar validação de segurança da Connection
+        merged_options = {**conn_details, **raw_cfg}
+        safe_options = {
+            k: v for k, v in merged_options.items()
+            if k.lower() not in FORBIDDEN_PLAINTEXT_KEYS and k.lower() not in ("secretkey", "accesskey", "secret_key")
+        }
 
         return Connection(
             id=f"conn_{connector_type}",
@@ -242,7 +258,7 @@ class ExecutionWorker:
             connector_type=connector_type,
             endpoint=str(endpoint),
             secret_ref=secret_ref,
-            options={**conn_details, **raw_cfg}
+            options=safe_options
         )
 
     def _interpolate_tokens(self, text: str, row_dict: Dict[str, Any], upstream_id: str, is_sql: bool = True) -> str:
@@ -376,7 +392,18 @@ class ExecutionWorker:
         if fmt == "scylla":
             conn = self._build_connection_from_cfg(cfg, "scylla")
             query = cfg.get("source") or cfg.get("query") or ""
-            df = self.scylla_connector.read_cql(conn, query=query)
+            fetch_size = int(cfg.get("fetch_size") or 5000)
+            consistency = cfg.get("consistency_level") or cfg.get("consistencyLevel") or "LOCAL_QUORUM"
+            parallel_scans = int(cfg.get("parallel_scans") or 1)
+            timeout = int(cfg.get("timeout_seconds") or cfg.get("timeout") or 30)
+            df = self.scylla_connector.read_cql(
+                conn,
+                query=query,
+                fetch_size=fetch_size,
+                consistency_level=consistency,
+                parallel_scans=parallel_scans,
+                timeout=timeout
+            )
             task.record_progress(rows_in_increment=df.height, rows_out_increment=df.height)
             node_buffers[phys_op.id] = [df]
             return
@@ -510,6 +537,84 @@ class ExecutionWorker:
                     pass
                 raise DomainError(f"Erro durante a iteração de query SQL no Oracle: {sanitize_message(str(e))}", code="ERR_DB_QUERY")
 
+        # Para ScyllaDB / Apache Cassandra NoSQL
+        elif fmt in ("scylla", "scylladb", "cassandra"):
+            conn = self._build_connection_from_cfg(cfg, "scylla")
+            raw_cfg = cfg.get("raw_config") or {}
+            fetch_size = int(cfg.get("fetch_size") or raw_cfg.get("fetch_size") or 5000)
+            consistency = (
+                cfg.get("consistency_level")
+                or cfg.get("consistencyLevel")
+                or raw_cfg.get("consistency_level")
+                or raw_cfg.get("consistencyLevel")
+                or "LOCAL_QUORUM"
+            )
+            timeout = int(cfg.get("timeout_seconds") or cfg.get("timeout") or raw_cfg.get("timeout_seconds") or raw_cfg.get("timeout") or 30)
+
+            hosts, port, keyspace = self.scylla_connector.parse_endpoint(conn)
+            if not keyspace and (cfg.get("keyspace") or raw_cfg.get("keyspace")):
+                keyspace = cfg.get("keyspace") or raw_cfg.get("keyspace")
+
+            raw_password = self.secret_resolver.resolve(conn.secret_ref)
+            user = conn.options.get("user") or conn.options.get("username", "")
+
+            try:
+                from cassandra.auth import PlainTextAuthProvider
+                from cassandra.query import SimpleStatement
+            except ImportError:
+                raise DomainError(
+                    "Driver 'cassandra-driver' não está instalado no ambiente. Execute 'pip install cassandra-driver'.",
+                    code="ERR_DRIVER_MISSING"
+                )
+
+            auth_provider = PlainTextAuthProvider(username=user, password=raw_password) if user and raw_password else None
+            cluster = None
+            session = None
+            try:
+                cluster = self.scylla_connector._create_cluster(hosts=hosts, port=port, auth_provider=auth_provider, connect_timeout=10)
+                session = cluster.connect(keyspace if keyspace else None)
+            except Exception as conn_err:
+                if cluster:
+                    try:
+                        cluster.shutdown()
+                    except Exception:
+                        pass
+                err_msg = self.scylla_connector._format_scylla_error(conn_err, hosts, port, keyspace, "conexão ScyllaDB para iteração")
+                raise DomainError(f"Falha ao conectar no banco para iteração: {err_msg}", code="ERR_DB_CONNECTION")
+
+            try:
+                cql_consistency = self.scylla_connector._map_cql_consistency(consistency)
+                for row in upstream_df.iter_rows(named=True):
+                    token.check_cancelled()
+                    query = self._interpolate_tokens(base_query, row, upstream_id)
+                    unresolved = re.findall(r"\{\{\s*([a-zA-Z0-9_\-\.]+)\s*\}\}|\{\s*([a-zA-Z0-9_\-\.]+)\s*\}", query)
+                    if unresolved:
+                        first_missing = unresolved[0][0] or unresolved[0][1]
+                        cols_available = list(row.keys())
+                        raise DomainError(
+                            f"Parâmetro não encontrado no nó a montante: '{{{first_missing}}}'. "
+                            f"Colunas disponíveis em '{upstream_id}': {cols_available}",
+                            code="ERR_UNRESOLVED_TOKEN"
+                        )
+                    stmt = SimpleStatement(query, fetch_size=fetch_size, consistency_level=cql_consistency)
+                    rows = session.execute(stmt, timeout=timeout)
+                    data = [dict(r._asdict()) for r in rows]
+                    res_df = pl.DataFrame(data) if data else pl.DataFrame()
+                    all_results.append(res_df)
+                    total_rows += res_df.height
+                    task.record_progress(rows_in_increment=1, rows_out_increment=res_df.height)
+            except DomainError:
+                raise
+            except Exception as query_err:
+                err_msg = self.scylla_connector._format_scylla_error(query_err, hosts, port, keyspace, "iteração CQL")
+                raise DomainError(f"Erro durante a iteração de query CQL no ScyllaDB: {err_msg}", code="ERR_DB_QUERY")
+            finally:
+                if cluster:
+                    try:
+                        cluster.shutdown()
+                    except Exception:
+                        pass
+
         # Para Banco de Dados Relacional (PostgreSQL / Relacional)
         else:
             conn_details = cfg.get("connection_details") or {}
@@ -570,6 +675,11 @@ class ExecutionWorker:
                 combined = all_results[0]
         else:
             combined = pl.DataFrame()
+
+        if not combined.columns:
+            node_schema = cfg.get("schema") or cfg.get("schema_definitions") or []
+            if node_schema:
+                combined = create_empty_df_from_schema(schema_defs=node_schema)
 
         node_buffers[phys_op.id] = [combined]
         logger.info(f"Nó Iterativo '{phys_op.id}': {upstream_df.height} iterações executadas com sucesso ({combined.height} registros combinados via Union).")
@@ -969,7 +1079,13 @@ class ExecutionWorker:
             from src.core.application.workspace.workspace_manager import workspace_manager
             db_path = workspace_manager.resolve_duckdb_path(raw_db_path)
 
-            table = raw_cfg.get("table") or cfg.get("table") or cfg.get("target") or "output_table"
+            table = (
+                (raw_cfg.get("table") or "").strip()
+                or (raw_cfg.get("target") or "").strip()
+                or (cfg.get("table") or "").strip()
+                or (cfg.get("target") or "").strip()
+                or "output_table"
+            )
             table_act = raw_cfg.get("table_action") or cfg.get("table_action", "none")
             data_act = raw_cfg.get("data_action") or cfg.get("data_action", "insert")
             keys = raw_cfg.get("keys") or cfg.get("keys", [])
@@ -1000,7 +1116,13 @@ class ExecutionWorker:
         if fmt in ("postgres", "postgresql", "db"):
             conn_details = cfg.get("connection_details") or {}
             if conn_details or cfg.get("connection_ref"):
-                table = cfg.get("table") or cfg.get("target") or "output_table"
+                table = (
+                    (raw_cfg.get("table") or "").strip()
+                    or (raw_cfg.get("target") or "").strip()
+                    or (cfg.get("table") or "").strip()
+                    or (cfg.get("target") or "").strip()
+                    or "output_table"
+                )
                 table_act = cfg.get("table_action", "none")
                 data_act = cfg.get("data_action", "insert")
                 keys = cfg.get("keys", [])
@@ -1034,7 +1156,13 @@ class ExecutionWorker:
         if fmt == "oracle":
             conn_details = cfg.get("connection_details") or {}
             if conn_details or cfg.get("connection_ref"):
-                table = cfg.get("table") or cfg.get("target") or "output_table"
+                table = (
+                    (raw_cfg.get("table") or "").strip()
+                    or (raw_cfg.get("target") or "").strip()
+                    or (cfg.get("table") or "").strip()
+                    or (cfg.get("target") or "").strip()
+                    or "output_table"
+                )
                 table_act = cfg.get("table_action", "none")
                 data_act = cfg.get("data_action", "insert")
                 keys = cfg.get("keys", [])
@@ -1063,12 +1191,31 @@ class ExecutionWorker:
         if fmt == "scylla":
             conn = self._build_connection_from_cfg(cfg, "scylla")
             table = cfg.get("target") or cfg.get("table") or "records"
+            write_strategy = cfg.get("write_strategy") or "concurrent"
+            concurrency = int(cfg.get("concurrency") or 100)
+            batch_size = int(cfg.get("batch_size") or 1000)
+            consistency = cfg.get("consistency_level") or cfg.get("consistencyLevel") or "LOCAL_QUORUM"
+            table_action = str(cfg.get("table_action") or "append").lower()
+            truncate_flag = (table_action == "truncate")
+            timeout = int(cfg.get("timeout_seconds") or cfg.get("timeout") or 30)
+
             total = 0
-            for chunk in input_chunks:
-                written = self.scylla_connector.write_rows(conn, table=table, df=chunk)
+            for idx, chunk in enumerate(input_chunks):
+                should_truncate = truncate_flag and (idx == 0)
+                written = self.scylla_connector.write_rows(
+                    conn,
+                    table=table,
+                    df=chunk,
+                    write_strategy=write_strategy,
+                    concurrency=concurrency,
+                    batch_size=batch_size,
+                    consistency_level=consistency,
+                    truncate=should_truncate,
+                    timeout=timeout
+                )
                 total += written
                 task.record_progress(rows_in_increment=chunk.height, rows_out_increment=written)
-            logger.info(f"Nó Scylla sink '{phys_op.id}': {total} linhas gravadas na tabela '{table}'.")
+            logger.info(f"Nó Scylla sink '{phys_op.id}': {total} linhas gravadas na tabela '{table}' (Estratégia: {write_strategy}, Concorrência: {concurrency}, Batch: {batch_size}).")
             return
 
         if fmt == "kafka":

@@ -252,7 +252,16 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
       { name: "input", direction: "input", type: "dataset" },
       { name: "main", direction: "output", type: "dataset" }
     ],
-    config_schema: { connection_ref: "string", keyspace: "string", table: "string", query: "string" },
+    config_schema: {
+      connection_ref: "string",
+      keyspace: "string",
+      table: "string",
+      query: "string",
+      fetch_size: "number",
+      consistency_level: "string",
+      parallel_scans: "number",
+      timeout_seconds: "number",
+    },
     capabilities: { supports_filter_pushdown: true, supports_projection_pushdown: true, supports_chunked_read: true, supports_bulk_write: false },
   },
   {
@@ -542,7 +551,17 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     category: "target",
     description: "Grava registros em alta performance no ScyllaDB via batches CQL",
     ports: [{ name: "input", direction: "input", type: "dataset" }],
-    config_schema: { connection_ref: "string", table: "string", batch_size: "number" },
+    config_schema: {
+      connection_ref: "string",
+      keyspace: "string",
+      table: "string",
+      write_strategy: "string",
+      concurrency: "number",
+      batch_size: "number",
+      consistency_level: "string",
+      table_action: "string",
+      timeout_seconds: "number",
+    },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: true },
   },
   {

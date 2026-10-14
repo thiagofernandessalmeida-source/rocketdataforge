@@ -804,6 +804,9 @@ export const App: React.FC = () => {
               cfg.database_path = conn.config.database_path || conn.config.database || ":memory:";
             }
           }
+          if ((conn.type === "scylla" || conn.type === "cassandra") && !cfg.keyspace && conn.config.keyspace) {
+            cfg.keyspace = conn.config.keyspace;
+          }
         }
       }
       if (cfg.database_path && typeof cfg.database_path === "string") {
@@ -811,6 +814,11 @@ export const App: React.FC = () => {
       }
       if (cfg.path && typeof cfg.path === "string") {
         cfg.path = cfg.path.trim().replace(/^["']|["']$/g, "");
+      }
+      const tableVal = String(cfg.table || cfg.target || "").trim();
+      if (tableVal) {
+        cfg.table = tableVal;
+        cfg.target = tableVal;
       }
       if (n.data.schema && Array.isArray(n.data.schema) && n.data.schema.length > 0) {
         cfg.schema_columns = n.data.schema.map((c: any) => c.name);
@@ -1031,6 +1039,100 @@ export const App: React.FC = () => {
   // ─── Isolated Cell Execution (Real Backend Execution) ─────
   const handleExecuteCellIsolated = useCallback(
     async (cell: CanvasCellData): Promise<boolean> => {
+      // 1. Tratamento dedicado para células Python (Jupyter / Script)
+      if (cell.cellType === "PYTHON") {
+        try {
+          showToast("info", `Executando célula Python "${cell.name}"...`);
+          setConsoleVisible(true);
+          setConsoleTab("logs");
+
+          // Coleta saídas das células anteriores para State Handoff
+          const currentJob = activeJobId ? jobStore.getJob(activeJobId) : activeJob;
+          const allCells = currentJob?.cells || [];
+          const sharedOutputs: Record<string, any> = {};
+          for (const c of allCells) {
+            if (c.id !== cell.id && c.metrics?.rowsOut !== undefined) {
+              sharedOutputs[c.id] = c.id;
+              sharedOutputs[c.name] = c.name;
+            }
+          }
+
+          const res = await fetch(`${getBaseApiUrl()}/pipelines/cells/python/execute`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              code: cell.codeSnippet || "",
+              cell_id: cell.id,
+              cell_name: cell.name,
+              shared_outputs: sharedOutputs,
+            }),
+          });
+
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || `Erro HTTP ${res.status}`);
+          }
+
+          const data = await res.json();
+          const isSuccess = Boolean(data.success);
+          const rowsOut = data.rows_out || (data.output_preview?.rowCount ?? 0);
+
+          const cellMetrics: CellExecutionMetrics = {
+            durationMs: data.duration_ms ?? 0,
+            rowsIn: 0,
+            rowsOut: rowsOut,
+          };
+
+          const logs: LogEntry[] = [];
+          if (data.stdout) {
+            logs.push({
+              timestamp: new Date().toISOString(),
+              level: "INFO",
+              execution_id: `py-${cell.id}`,
+              node_id: cell.id,
+              message: data.stdout,
+            });
+          }
+          if (data.stderr || data.error) {
+            logs.push({
+              timestamp: new Date().toISOString(),
+              level: "ERROR",
+              execution_id: `py-${cell.id}`,
+              node_id: cell.id,
+              message: data.stderr || data.error,
+            });
+          }
+
+          if (activeJobId) {
+            jobStore.setCellExecutionResults(
+              activeJobId,
+              cell.id,
+              isSuccess ? "success" : "failed",
+              cellMetrics,
+              logs,
+              true
+            );
+          }
+
+          setLogs(logs);
+
+          if (isSuccess) {
+            showToast("success", `Célula Python "${cell.name}" executada com SUCESSO! (${rowsOut} linhas geradas)`);
+          } else {
+            showToast("error", `Célula Python "${cell.name}" falhou: ${data.error || "Verifique os logs"}`);
+          }
+
+          return isSuccess;
+        } catch (err: any) {
+          showToast("error", `Falha ao executar célula Python "${cell.name}": ${err.message}`);
+          if (activeJobId) {
+            jobStore.setCellStatus(activeJobId, cell.id, "failed");
+          }
+          return false;
+        }
+      }
+
+      // 2. Tratamento para células visuais (Canvas)
       if (!cell.nodes || cell.nodes.length === 0) {
         showToast("error", `A célula "${cell.name}" não possui componentes adicionados.`);
         return false;
@@ -1067,6 +1169,9 @@ export const App: React.FC = () => {
                   cfg.database_path = conn.config.database_path || conn.config.database || ":memory:";
                 }
               }
+              if ((conn.type === "scylla" || conn.type === "cassandra") && !cfg.keyspace && conn.config.keyspace) {
+                cfg.keyspace = conn.config.keyspace;
+              }
             }
           }
           if (cfg.database_path && typeof cfg.database_path === "string") {
@@ -1074,6 +1179,11 @@ export const App: React.FC = () => {
           }
           if (cfg.path && typeof cfg.path === "string") {
             cfg.path = cfg.path.trim().replace(/^["']|["']$/g, "");
+          }
+          const tableVal = String(cfg.table || cfg.target || "").trim();
+          if (tableVal) {
+            cfg.table = tableVal;
+            cfg.target = tableVal;
           }
           if (n.data.schema && Array.isArray(n.data.schema) && n.data.schema.length > 0) {
             cfg.schema_columns = n.data.schema.map((c: any) => c.name);

@@ -36,9 +36,13 @@ export interface CellExecutionMetrics {
   tasks?: CellExecutionTaskMetric[];
 }
 
+export type CellType = "CANVAS" | "PYTHON";
+
 export interface CanvasCellData {
   id: string;
   name: string;
+  cellType?: CellType;
+  codeSnippet?: string;
   description?: string;
   order: number;
   preconditions: CellPrecondition[];
@@ -229,8 +233,15 @@ export function inferAndNormalizeNode(rawNode: any): Node<CanvasNodeData> {
       category = "target";
       ports = [{ name: "input", direction: "input", type: "dataset" }];
       if (!config.table) {
-        const parts = id.split("_sink_");
-        config.table = parts.length > 1 ? parts[1] : "output_table";
+        if (config.target) {
+          config.table = config.target;
+        } else {
+          const parts = id.split("_sink_");
+          config.table = parts.length > 1 && parts[1] && isNaN(Number(parts[1])) ? parts[1] : "output_table";
+        }
+      }
+      if (!config.target && config.table) {
+        config.target = config.table;
       }
     } else if (idLower.includes("duckdb")) {
       componentType = "connector.db.duckdb";
@@ -550,8 +561,17 @@ function loadState(): StoreState {
         parsed.jobs = [];
       }
       
-      // Migration: add queryBank if missing
-      if (!Array.isArray(parsed.queryBank)) parsed.queryBank = [];
+      // Migration: add queryBank if missing and normalize existing entries
+      if (!Array.isArray(parsed.queryBank)) {
+        parsed.queryBank = [];
+      } else {
+        parsed.queryBank = parsed.queryBank.map((q: any) => ({
+          ...q,
+          tags: Array.isArray(q?.tags) ? q.tags : [],
+          schema: Array.isArray(q?.schema) ? q.schema : [],
+          usageCount: typeof q?.usageCount === "number" ? q.usageCount : 0,
+        }));
+      }
       
       // Fix undefined properties that crash App
       if (!parsed.openTabIds) parsed.openTabIds = [];
@@ -1028,13 +1048,14 @@ export const jobStore = {
 
   // ─── Multi-Canvas Cell Operations ─────────────────────────
 
-  createCell(jobId: string, customName?: string): CanvasCellData | null {
+  createCell(jobId: string, customName?: string, cellType: CellType = "CANVAS"): CanvasCellData | null {
     const job = state.jobs.find((j) => j.id === jobId);
     if (!job) return null;
 
     const existingCells = job.cells || [];
     const nextIndex = existingCells.length + 1;
-    const defaultId = `canvas-cell-${String(nextIndex).padStart(2, "0")}`;
+    const prefix = cellType === "PYTHON" ? "python-cell" : "canvas-cell";
+    const defaultId = `${prefix}-${String(nextIndex).padStart(2, "0")}`;
     const name = (customName?.trim() || defaultId).slice(0, 50);
 
     const maxOrder = existingCells.reduce((max, c) => Math.max(max, c.order || 0), 0);
@@ -1052,9 +1073,32 @@ export const jobStore = {
         ]
       : [];
 
+    const defaultCodeSnippet = cellType === "PYTHON"
+      ? `# CellFlow Python Cell - Enterprise Notebook Engine
+# Objetos disponíveis: context, pl (polars), duckdb, datetime, math, json
+
+# 1. Lê os dados de uma etapa anterior (State Handoff):
+# df_anterior = context.read_output('${prevCell?.id || "canvas-cell-01"}')
+
+# 2. Processa ou cria dados usando Polars:
+df = pl.DataFrame({
+    "id": [1, 2, 3],
+    "item": ["Produto A", "Produto B", "Produto C"],
+    "valor": [150.0, 320.5, 89.9]
+})
+print(f"Processando {len(df)} registros na célula...")
+
+# 3. Publica a saída desta célula para as próximas etapas:
+context.write_output(df)
+print("Dados publicados com sucesso via context.write_output!")
+`
+      : undefined;
+
     const newCell: CanvasCellData = {
       id: defaultId,
       name,
+      cellType,
+      codeSnippet: defaultCodeSnippet,
       description: "",
       order: newOrder,
       preconditions: defaultPreconditions,
@@ -1218,7 +1262,6 @@ export const jobStore = {
 
     const existingCells = job.cells || [];
     const nextIndex = existingCells.length + 1;
-    const newId = `canvas-cell-${String(nextIndex).padStart(2, "0")}`;
     const newName = `Cópia de ${sourceCell.name}`.slice(0, 50);
     const maxOrder = existingCells.reduce((max, c) => Math.max(max, c.order || 0), 0);
 
@@ -1242,9 +1285,15 @@ export const jobStore = {
       target: idMap[e.target] || e.target,
     }));
 
+    const isPython = sourceCell.cellType === "PYTHON";
+    const prefix = isPython ? "python-cell" : "canvas-cell";
+    const newId = `${prefix}-${String(nextIndex).padStart(2, "0")}`;
+
     const newCell: CanvasCellData = {
       id: newId,
       name: newName,
+      cellType: sourceCell.cellType || "CANVAS",
+      codeSnippet: sourceCell.codeSnippet,
       description: sourceCell.description || "",
       order: maxOrder + 1,
       preconditions: [...(sourceCell.preconditions || [])],
@@ -1838,7 +1887,15 @@ export const jobStore = {
 
   saveQuery(q: Omit<QueryEntry, "id" | "createdAt" | "updatedAt" | "usageCount">): QueryEntry {
     const now = new Date().toISOString();
-    const entry: QueryEntry = { ...q, id: `qry-${Date.now()}`, usageCount: 0, createdAt: now, updatedAt: now };
+    const entry: QueryEntry = {
+      ...q,
+      tags: Array.isArray(q.tags) ? q.tags : [],
+      schema: Array.isArray(q.schema) ? q.schema : [],
+      id: `qry-${Date.now()}`,
+      usageCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
     state = { ...state, queryBank: [...state.queryBank, entry] };
     saveState(state);
     notify();
@@ -1848,9 +1905,13 @@ export const jobStore = {
   updateQuery(qId: string, updates: Partial<Omit<QueryEntry, "id" | "createdAt">>): void {
     state = {
       ...state,
-      queryBank: state.queryBank.map((q) =>
-        q.id === qId ? { ...q, ...updates, updatedAt: new Date().toISOString() } : q
-      ),
+      queryBank: state.queryBank.map((q) => {
+        if (q.id !== qId) return q;
+        const updated = { ...q, ...updates, updatedAt: new Date().toISOString() };
+        if (updates.tags !== undefined) updated.tags = Array.isArray(updates.tags) ? updates.tags : [];
+        if (updates.schema !== undefined) updated.schema = Array.isArray(updates.schema) ? updates.schema : [];
+        return updated;
+      }),
     };
     saveState(state);
     notify();
@@ -1893,8 +1954,24 @@ export const jobStore = {
     return hydrateFromActiveWorkspace();
   },
 
-  async switchWorkspace(path: string, name?: string): Promise<{ success: boolean; workspace?: WorkspaceInfo; error?: string }> {
-    return switchWorkspace(path, name);
+  updateCellCode(jobId: string, cellId: string, codeSnippet: string): void {
+    this.updateCell(jobId, cellId, { codeSnippet });
+  },
+
+  isPythonCellsEnabled(): boolean {
+    try {
+      const val = localStorage.getItem("cellflow_enable_python_cells");
+      return val === null ? true : val === "true";
+    } catch (_) {
+      return true;
+    }
+  },
+
+  setPythonCellsEnabled(enabled: boolean): void {
+    try {
+      localStorage.setItem("cellflow_enable_python_cells", enabled ? "true" : "false");
+    } catch (_) {}
+    notify();
   },
 };
 

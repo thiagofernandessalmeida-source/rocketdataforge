@@ -13,6 +13,15 @@ from src.core.domain.shared.exceptions import DomainValidationError
 from src.core.domain.shared.types import PortId, SemanticVersion
 
 
+from enum import Enum
+
+
+class CellType(str, Enum):
+    """Tipos de células suportadas no modelo Multi-Canvas / Notebook."""
+    CANVAS = "CANVAS"
+    PYTHON = "PYTHON"
+
+
 @dataclass
 class PipelineDraft:
     """Aggregate Root para edição de pipeline funcional."""
@@ -24,6 +33,7 @@ class PipelineDraft:
     nodes: Dict[str, Node] = field(default_factory=dict)
     edges: Dict[str, Edge] = field(default_factory=dict)
     parameters: Dict[str, Any] = field(default_factory=dict)
+    # Lista de células do pipeline: cada célula contém {id, name, order, cell_type, code_snippet, preconditions, ...}
     cells: List[Dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:

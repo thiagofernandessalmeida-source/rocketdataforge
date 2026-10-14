@@ -131,3 +131,93 @@ WHERE code = {{postgres_source_1.person_code}}"""
     assert "WHERE code = 1234" in out
     assert "{" not in out and "}" not in out
 
+
+def test_scylla_iterative_scan_does_not_call_psycopg2():
+    from unittest.mock import MagicMock, patch
+
+    worker = ExecutionWorker()
+    mock_cluster = MagicMock()
+    mock_session = MagicMock()
+    mock_cluster.connect.return_value = mock_session
+
+    class MockRow:
+        def __init__(self, c_code, o_cycle, idx_val):
+            self.consultant_code = c_code
+            self.operational_cycle = o_cycle
+            self.index_value = idx_val
+
+        def _asdict(self):
+            return {
+                "consultant_code": self.consultant_code,
+                "operational_cycle": self.operational_cycle,
+                "index_value": self.index_value,
+            }
+
+    executed_queries = []
+
+    def mock_execute(stmt, timeout=None):
+        query_text = getattr(stmt, "query_string", str(stmt))
+        executed_queries.append(query_text)
+        return [MockRow(1001, 202601, 95.5)]
+
+    mock_session.execute.side_effect = mock_execute
+
+    plan = PhysicalPlan(
+        pipeline_id="pipe-scylla-iter",
+        execution_order=["upstream_pg", "scylla_node"],
+        operators={
+            "upstream_pg": PhysicalOperator(
+                id="upstream_pg",
+                operator_type="scan",
+                engine="duckdb",
+                input_ids=[],
+                config={
+                    "format": "duckdb",
+                    "source": "SELECT 1001 AS person_code, 202601 AS cycle UNION ALL SELECT 1002 AS person_code, 202602 AS cycle",
+                },
+            ),
+            "scylla_node": PhysicalOperator(
+                id="scylla_node",
+                operator_type="scan",
+                engine="duckdb",
+                input_ids=["upstream_pg"],
+                config={
+                    "format": "scylla",
+                    "source": "SELECT consultant_code, operational_cycle, index_value FROM performance.consultant_index WHERE consultant_code = {{upstream_pg.person_code}} AND operational_cycle = {{upstream_pg.cycle}}",
+                    "connection_details": {
+                        "host": "scylla.host",
+                        "port": 9042,
+                        "keyspace": "performance",
+                    },
+                },
+            ),
+        },
+    )
+
+    execution = Execution(
+        id="exec-scylla-test",
+        pipeline_version_id="ver-1.0.0",
+        correlation_id="corr-1",
+    )
+
+    with patch.object(worker.scylla_connector, "_create_cluster", return_value=mock_cluster):
+        with patch.object(
+            worker,
+            "_get_node_chunks",
+            return_value=[
+                pl.DataFrame({
+                    "person_code": [1001, 1002],
+                    "cycle": [202601, 202602],
+                })
+            ],
+        ):
+            with patch("psycopg2.connect") as mock_pg_connect:
+                final_exec = worker.run(execution, plan)
+                assert final_exec.status == ExecutionStatus.SUCCEEDED
+                mock_pg_connect.assert_not_called()
+                assert len(executed_queries) == 2
+                assert "WHERE consultant_code = 1001 AND operational_cycle = 202601" in executed_queries[0]
+                assert "WHERE consultant_code = 1002 AND operational_cycle = 202602" in executed_queries[1]
+                assert mock_cluster.shutdown.called
+
+

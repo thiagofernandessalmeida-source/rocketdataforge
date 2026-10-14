@@ -5,12 +5,15 @@ convertendo os tipos físicos nativos para os tipos canônicos de LogicalDataTyp
 """
 
 from dataclasses import dataclass, field
+import logging
 import os
 from typing import Any, Dict, List, Optional
 
 import polars as pl
 from src.core.domain.shared.exceptions import DomainValidationError
 from src.core.domain.shared.types import LogicalDataType
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -261,6 +264,51 @@ class SchemaInferer:
         # Substitui tokens {node_id.col} por literais dummy para permitir inspeção sem erro de sintaxe
         sanitized_query = re.sub(r"\{[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_]+\}", "1", query)
         sanitized_query = re.sub(r"\{[a-zA-Z0-9_]+\}", "1", sanitized_query)
+
+        # Se for ScyllaDB / Cassandra
+        is_scylla = (
+            connection_details
+            and (
+                str(connection_details.get("type", "")).lower() in ("scylla", "scylladb", "cassandra")
+                or int(connection_details.get("port") or 0) == 9042
+            )
+        )
+        if is_scylla:
+            try:
+                from src.core.infrastructure.connectors.scylla_connector import ScyllaConnector
+                from src.core.domain.metadata.connection import Connection, FORBIDDEN_PLAINTEXT_KEYS
+                from src.core.domain.shared.types import SecretReference
+                from src.core.infrastructure.security.secret_resolver import SecretResolver
+
+                resolver = SecretResolver()
+                raw_pwd = connection_details.get("password") or connection_details.get("pwd") or ""
+                if raw_pwd:
+                    resolver.custom_env["SCYLLA_TEMP_SECRET"] = str(raw_pwd)
+                    s_ref = SecretReference("secret://env/SCYLLA_TEMP_SECRET")
+                else:
+                    s_ref = SecretReference("secret://empty")
+
+                endpoint = connection_details.get("host") or "localhost"
+                safe_options = {
+                    k: v for k, v in connection_details.items()
+                    if k.lower() not in FORBIDDEN_PLAINTEXT_KEYS and k.lower() not in ("secretkey", "accesskey", "secret_key")
+                }
+                conn_obj = Connection(
+                    id="conn_scylla_infer",
+                    project_id="proj_default",
+                    name="Scylla Infer",
+                    connector_type="scylla",
+                    endpoint=str(endpoint),
+                    secret_ref=s_ref,
+                    options=safe_options
+                )
+                scylla = ScyllaConnector(resolver)
+                fields = scylla.infer_schema(conn_obj, sanitized_query)
+                if fields:
+                    return InferredSchema(dataset_name=dataset_name, fields=fields)
+            except Exception as scylla_err:
+                logger.warning(f"Inferência ScyllaDB falhou: {scylla_err}")
+                raise scylla_err
 
         # Se for Oracle
         is_oracle = (

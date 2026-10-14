@@ -77,3 +77,40 @@ def test_aws_messaging_connector_sqs_connection_format():
     # Verifica se o cliente boto3 é instanciado sem erro de sintaxe
     client = connector._get_boto_client(conn, "sqs")
     assert client is not None
+
+
+def test_scylla_connector_consistency_mapping():
+    from cassandra import ConsistencyLevel
+    resolver = SecretResolver()
+    connector = ScyllaConnector(resolver)
+
+    assert connector._map_cql_consistency("LOCAL_QUORUM") == ConsistencyLevel.LOCAL_QUORUM
+    assert connector._map_cql_consistency("one") == ConsistencyLevel.ONE
+    assert connector._map_cql_consistency("QUORUM") == ConsistencyLevel.QUORUM
+    assert connector._map_cql_consistency(None) == ConsistencyLevel.LOCAL_QUORUM
+
+
+def test_scylla_connector_cql_type_mapping():
+    from src.core.domain.shared.types import LogicalDataType
+    resolver = SecretResolver()
+    connector = ScyllaConnector(resolver)
+
+    assert connector._map_cql_type_to_logical("BIGINT") == LogicalDataType.INT64
+    assert connector._map_cql_type_to_logical("INT") == LogicalDataType.INT32
+    assert connector._map_cql_type_to_logical("DOUBLE") == LogicalDataType.FLOAT64
+    assert connector._map_cql_type_to_logical("VARCHAR") == LogicalDataType.STRING
+    assert connector._map_cql_type_to_logical("TIMESTAMP") == LogicalDataType.TIMESTAMP
+    assert connector._map_cql_type_to_logical("BOOLEAN") == LogicalDataType.BOOLEAN
+
+
+def test_scylla_connector_error_diagnostics():
+    from cassandra.cluster import NoHostAvailable
+    resolver = SecretResolver()
+    connector = ScyllaConnector(resolver)
+
+    err = NoHostAvailable("Unable to connect to any servers", errors={"10.0.0.1": "Connection refused"})
+    formatted = connector._format_scylla_error(err, ["10.0.0.1"], 9042, "analytics", "leitura CQL")
+    assert "Cluster ScyllaDB inacessível" in formatted
+    assert "10.0.0.1" in formatted
+    assert "porta 9042" in formatted
+

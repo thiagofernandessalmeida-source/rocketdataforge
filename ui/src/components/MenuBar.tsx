@@ -29,7 +29,9 @@ import {
   Zap,
   HardDrive,
   FolderOpen,
+  Code2,
 } from "lucide-react";
+import { jobStore } from "../store/jobStore";
 
 export interface MenuBarProps {
   activeJobName?: string;
@@ -440,6 +442,44 @@ export const MenuBar: React.FC<MenuBarProps> = ({
                   <span className="entry-label">Documentação Interativa (Auto-Doc & Linhagem)</span>
                 </button>
               )}
+              <div className="dropdown-divider" />
+              <button
+                type="button"
+                className="dropdown-entry"
+                onClick={() => {
+                  const current = jobStore.isPythonCellsEnabled();
+                  jobStore.setPythonCellsEnabled(!current);
+                  setOpenMenu(null);
+                }}
+                title="Habilitar ou desabilitar a criação de Células Python no Job (Recurso Enterprise)"
+              >
+                <Code2 size={14} color="#f59e0b" />
+                <span className="entry-label">
+                  {jobStore.isPythonCellsEnabled()
+                    ? "Desabilitar Células Python"
+                    : "Habilitar Células Python"}
+                </span>
+                <span
+                  className="badge"
+                  style={{
+                    fontSize: "0.62rem",
+                    padding: "1px 5px",
+                    borderRadius: 3,
+                    background: jobStore.isPythonCellsEnabled()
+                      ? "rgba(16, 185, 129, 0.15)"
+                      : "rgba(255, 255, 255, 0.1)",
+                    color: jobStore.isPythonCellsEnabled() ? "#10b981" : "#94a3b8",
+                    border: `1px solid ${
+                      jobStore.isPythonCellsEnabled()
+                        ? "rgba(16, 185, 129, 0.3)"
+                        : "rgba(255, 255, 255, 0.15)"
+                    }`,
+                    fontWeight: 600,
+                  }}
+                >
+                  {jobStore.isPythonCellsEnabled() ? "Enterprise: Ativo" : "Enterprise: Inativo"}
+                </span>
+              </button>
             </div>
           )}
         </div>

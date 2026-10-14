@@ -109,6 +109,8 @@ const CONNECTION_TYPE_TO_DIALECT: Record<string, QueryDialect> = {
   bigquery: "bigquery",
   snowflake: "snowflake",
   databricks: "databricks",
+  scylla: "sql",
+  cassandra: "sql",
 };
 
 // ─── Query select dropdown ────────────────────────────────────
@@ -204,7 +206,7 @@ export const QuerySelect: React.FC<{
                 <span style={{ fontSize: "0.65rem", padding: "1px 5px", borderRadius: 3, background: "var(--bg-card)", border: "1px solid var(--border-subtle)" }}>
                   {q.dialect}
                 </span>
-                {q.schema && q.schema.length > 0 && (
+                {Array.isArray(q.schema) && q.schema.length > 0 && (
                   <span style={{ fontSize: "0.65rem", padding: "1px 5px", borderRadius: 3, background: "rgba(0,229,255,0.08)", border: "1px solid rgba(0,229,255,0.2)", color: "var(--accent-cyan)" }}>
                     {q.schema.length} colunas
                   </span>
@@ -415,6 +417,15 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
     [selectedNode, allNodes, onUpdateConfig]
   );
 
+  const handleMultipleChange = useCallback(
+    (updates: Record<string, any>) => {
+      if (!selectedNode) return;
+      const currentConfig = (allNodes.find((n) => n.id === selectedNode.id) || selectedNode).data.config || {};
+      onUpdateConfig(selectedNode.id, { ...currentConfig, ...updates });
+    },
+    [selectedNode, allNodes, onUpdateConfig]
+  );
+
   const handleSchemaChange = useCallback(
     (newSchema: SchemaColumn[]) => {
       if (!selectedNode) return;
@@ -551,22 +562,32 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
 
   // ─── Inferência Real de Schema (BUG 1 FIX) ────────────────────
   const handleInferSchema = async (): Promise<SchemaColumn[]> => {
-    const pathOrQuery = (config.path || config.query || config.duckdb_query || "").trim();
+    let pathOrQuery = (config.path || config.query || config.duckdb_query || "").trim();
+    if (!pathOrQuery && config.table) {
+      const ks = config.keyspace ? `${config.keyspace}.` : "";
+      pathOrQuery = `SELECT * FROM ${ks}${config.table}`;
+    }
     if (!pathOrQuery) {
-      throw new Error("Informe o caminho do arquivo (ex: 'data/users.csv') ou query SQL antes de inferir.");
+      throw new Error("Informe o caminho do arquivo, query SQL/CQL ou tabela antes de inferir.");
     }
     const connEntry = connections.find(
-      (c) => c.name.toLowerCase().replace(/\s+/g, "_") === config.connection_ref
+      (c) =>
+        c.name.toLowerCase().replace(/\s+/g, "_") === config.connection_ref ||
+        c.id === config.connection_ref ||
+        c.name.toLowerCase().trim() === String(config.connection_ref || "").toLowerCase().trim()
     );
     const connDetails = connEntry?.config
       ? {
           type: connEntry.type,
           host: connEntry.config.host,
           port: connEntry.config.port,
-          database: connEntry.config.database,
+          database: connEntry.config.database || connEntry.config.keyspace,
+          keyspace: config.keyspace || connEntry.config.keyspace,
           username: connEntry.config.username,
           password: connEntry.config.password,
           sslMode: connEntry.config.sslMode,
+          consistencyLevel: config.consistency_level || connEntry.config.consistencyLevel || "LOCAL_QUORUM",
+          ...connEntry.config,
         }
       : undefined;
     const inferred = await api.inferSchema(pathOrQuery, ct, connDetails);
@@ -637,6 +658,8 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
   const isSelect = ct.includes("select");
   const isJoin = ct.includes("join");
   const isFileTarget = ct.includes("file.target");
+  const isScyllaInput = ct === "connector.nosql.scylla" || (ct.includes("scylla") && !ct.includes(".output"));
+  const isScyllaOutput = ct === "connector.nosql.scylla.output" || (ct.includes("scylla") && ct.includes(".output"));
   const isDbConnector =
     ct.includes("connector.db") ||
     ct.includes("core.database") ||
@@ -644,7 +667,7 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
     ct.includes("connector.cloud") ||
     ct.includes("connector.api");
   const isDbTarget =
-    ct.includes(".output") || ct === "core.database.target" || isDuckDbOutput;
+    (ct.includes(".output") && !isScyllaOutput) || ct === "core.database.target" || isDuckDbOutput;
 
   return (
     <>
@@ -1006,8 +1029,8 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                     value={config.table ?? config.target ?? ""}
                     placeholder="nome_da_tabela"
                     onChange={(v) => {
-                      handleChange("table", v);
-                      handleChange("target", v);
+                      const trimmed = (v || "").trim();
+                      handleMultipleChange({ table: trimmed, target: trimmed });
                     }}
                   />
                 </div>
@@ -1112,6 +1135,360 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                       />
                     </div>
                   )}
+                </div>
+              </>
+            )}
+
+            {/* ─── ScyllaDB / Cassandra Input Dedicated ─── */}
+            {isScyllaInput && (
+              <>
+                <div className="form-group">
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <label className="form-label" style={{ margin: 0, display: "flex", alignItems: "center", gap: 6, color: "#00e5ff" }}>
+                      <Layers size={13} color="#00e5ff" />
+                      <span>Conexão ScyllaDB / Cassandra ({activeEnvironment.toUpperCase()})</span>
+                    </label>
+                  </div>
+                  <ConnectionSelect
+                    value={config.connection_ref ?? ""}
+                    connections={connections}
+                    activeEnvironment={activeEnvironment}
+                    allowedTypes={["scylla", "cassandra"]}
+                    onChange={(v) => {
+                      handleChange("connection_ref", v);
+                      const conn = connections.find(
+                        (c) =>
+                          c.name.toLowerCase().replace(/\s+/g, "_") === v ||
+                          c.id === v ||
+                          c.name.toLowerCase().trim() === v.toLowerCase().trim()
+                      );
+                      if (conn?.config?.keyspace && !config.keyspace) {
+                        handleChange("keyspace", conn.config.keyspace);
+                      }
+                    }}
+                  />
+                </div>
+
+                <div className="conn-form-row" style={{ display: "flex", gap: 8 }}>
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label className="form-label">Keyspace (Opcional)</label>
+                    <DebouncedInput
+                      value={config.keyspace ?? ""}
+                      placeholder="analytics"
+                      onChange={(v) => handleChange("keyspace", v)}
+                    />
+                  </div>
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label className="form-label">Tabela (Opcional)</label>
+                    <DebouncedInput
+                      value={config.table ?? ""}
+                      placeholder="usuarios"
+                      onChange={(v) => {
+                        handleChange("table", v);
+                        if (!config.query && v) {
+                          const ksPrefix = config.keyspace ? `${config.keyspace}.` : "";
+                          handleChange("query", `SELECT * FROM ${ksPrefix}${v}`);
+                        }
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                    <label className="form-label" style={{ margin: 0 }}>Consulta CQL</label>
+                    {config.table && (
+                      <button
+                        type="button"
+                        className="badge"
+                        style={{ cursor: "pointer", fontSize: "0.68rem", background: "rgba(0, 229, 255, 0.12)", borderColor: "rgba(0, 229, 255, 0.4)", color: "#00e5ff" }}
+                        onClick={() => {
+                          const ksPrefix = config.keyspace ? `${config.keyspace}.` : "";
+                          handleChange("query", `SELECT * FROM ${ksPrefix}${config.table}`);
+                        }}
+                        title="Gerar SELECT * padrão"
+                      >
+                        Auto SELECT
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Query bank selector */}
+                  {queryBank.length > 0 && (
+                    <QuerySelect
+                      queryBank={queryBank}
+                      connections={connections}
+                      connectionRef={config.connection_ref ?? ""}
+                      onSelect={(q) => {
+                        const currentCfg = (allNodes.find((n) => n.id === id) || liveNode).data.config || {};
+                        onUpdateConfig(id, {
+                          ...currentCfg,
+                          query: q.sql,
+                          ...(q.connectionRef ? { connection_ref: q.connectionRef } : {}),
+                        });
+                        if (q.schema && q.schema.length > 0) {
+                          onUpdateSchema?.(id, q.schema);
+                        }
+                      }}
+                    />
+                  )}
+
+                  <SqlAutocompleteTextarea
+                    value={config.query ?? ""}
+                    placeholder={"SELECT id, nome, email, valor\nFROM analytics.usuarios\nWHERE ativo = true"}
+                    style={{ minHeight: 110 }}
+                    sources={autocompleteSources}
+                    contextVariables={contextVariables}
+                    onChange={(v) => handleChange("query", v)}
+                  />
+
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ marginTop: 6, width: "100%", justifyContent: "center", fontSize: "0.78rem" }}
+                    onClick={handleDirectInfer}
+                    disabled={inferringDirect}
+                  >
+                    {inferringDirect ? <Loader2 size={13} className="spin" /> : <Wand2 size={13} />}
+                    {inferringDirect ? "Inspecionando metadata Scylla..." : "🔍 Inferir Schema da Query CQL"}
+                  </button>
+
+                  {directInferMessage && (
+                    <div
+                      style={{
+                        marginTop: 6,
+                        padding: "6px 8px",
+                        borderRadius: 6,
+                        fontSize: "0.72rem",
+                        background: directInferMessage.type === "success" ? "rgba(34,197,94,0.15)" : "rgba(244,63,94,0.15)",
+                        color: directInferMessage.type === "success" ? "var(--status-success)" : "#fca5a5",
+                        border: `1px solid ${directInferMessage.type === "success" ? "var(--status-success)" : "var(--status-danger)"}`
+                      }}
+                    >
+                      {directInferMessage.text}
+                    </div>
+                  )}
+                </div>
+
+                {/* Bloco de Performance e Paralelismo ScyllaDB */}
+                <div className="form-group" style={{ background: "rgba(0, 229, 255, 0.04)", padding: 12, borderRadius: 8, border: "1px solid rgba(0, 229, 255, 0.2)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, color: "#00e5ff", fontWeight: 600, fontSize: "0.76rem" }}>
+                    <Zap size={14} color="#00e5ff" />
+                    <span>⚡ Performance & Paralelismo Distribuído ScyllaDB</span>
+                  </div>
+
+                  <div className="form-group" style={{ marginBottom: 8 }}>
+                    <label className="form-label" style={{ fontSize: "0.7rem", display: "flex", justifyContent: "space-between" }}>
+                      <span>Tamanho da Página CQL (Fetch Size)</span>
+                      <span style={{ color: "var(--text-muted)" }}>Linhas por Lote</span>
+                    </label>
+                    <input
+                      type="number"
+                      className="form-input"
+                      style={{ fontSize: "0.75rem", fontFamily: "var(--font-mono)" }}
+                      value={config.fetch_size ?? 5000}
+                      placeholder="5000"
+                      onChange={(e) => handleChange("fetch_size", parseInt(e.target.value, 10) || 5000)}
+                    />
+                    <div style={{ fontSize: "0.66rem", color: "var(--text-muted)", marginTop: 2 }}>
+                      Paginação do cursor CQL para prevenir estouro de memória RAM.
+                    </div>
+                  </div>
+
+                  <div className="form-group" style={{ marginBottom: 8 }}>
+                    <label className="form-label" style={{ fontSize: "0.7rem" }}>Nível de Consistência (Consistency Level)</label>
+                    <select
+                      className="form-select"
+                      style={{ fontSize: "0.75rem" }}
+                      value={config.consistency_level ?? "LOCAL_QUORUM"}
+                      onChange={(e) => handleChange("consistency_level", e.target.value)}
+                    >
+                      <option value="LOCAL_QUORUM">LOCAL_QUORUM (Recomendado - Quorum no Datacenter Local)</option>
+                      <option value="QUORUM">QUORUM (Maioria Absoluta de Réplicas)</option>
+                      <option value="ONE">ONE (Máxima Velocidade - 1 Réplica)</option>
+                      <option value="LOCAL_ONE">LOCAL_ONE (1 Réplica no Datacenter Local)</option>
+                      <option value="ALL">ALL (Forte Consistência - Todas as Réplicas)</option>
+                    </select>
+                  </div>
+
+                  <div className="conn-form-row" style={{ display: "flex", gap: 8 }}>
+                    <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
+                      <label className="form-label" style={{ fontSize: "0.7rem" }}>Varredura Paralela (Token Scans)</label>
+                      <input
+                        type="number"
+                        className="form-input"
+                        min="1"
+                        max="16"
+                        style={{ fontSize: "0.75rem", fontFamily: "var(--font-mono)" }}
+                        value={config.parallel_scans ?? 1}
+                        placeholder="1"
+                        onChange={(e) => handleChange("parallel_scans", Math.min(16, Math.max(1, parseInt(e.target.value, 10) || 1)))}
+                      />
+                    </div>
+                    <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
+                      <label className="form-label" style={{ fontSize: "0.7rem" }}>Timeout (Segundos)</label>
+                      <input
+                        type="number"
+                        className="form-input"
+                        min="5"
+                        style={{ fontSize: "0.75rem", fontFamily: "var(--font-mono)" }}
+                        value={config.timeout_seconds ?? 30}
+                        placeholder="30"
+                        onChange={(e) => handleChange("timeout_seconds", parseInt(e.target.value, 10) || 30)}
+                      />
+                    </div>
+                  </div>
+                  <div style={{ fontSize: "0.66rem", color: "var(--text-muted)", marginTop: 4 }}>
+                    💡 Se <code>Token Scans &gt; 1</code>, a tabela é particionada em faixas de token e escaneada em paralelo entre múltiplos shards.
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* ─── ScyllaDB / Cassandra Output Dedicated ─── */}
+            {isScyllaOutput && (
+              <>
+                <div className="form-group">
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <label className="form-label" style={{ margin: 0, display: "flex", alignItems: "center", gap: 6, color: "#00e5ff" }}>
+                      <Layers size={13} color="#00e5ff" />
+                      <span>Conexão ScyllaDB Destino ({activeEnvironment.toUpperCase()})</span>
+                    </label>
+                  </div>
+                  <ConnectionSelect
+                    value={config.connection_ref ?? ""}
+                    connections={connections}
+                    activeEnvironment={activeEnvironment}
+                    allowedTypes={["scylla", "cassandra"]}
+                    onChange={(v) => {
+                      handleChange("connection_ref", v);
+                      const conn = connections.find(
+                        (c) =>
+                          c.name.toLowerCase().replace(/\s+/g, "_") === v ||
+                          c.id === v ||
+                          c.name.toLowerCase().trim() === v.toLowerCase().trim()
+                      );
+                      if (conn?.config?.keyspace && !config.keyspace) {
+                        handleChange("keyspace", conn.config.keyspace);
+                      }
+                    }}
+                  />
+                </div>
+
+                <div className="conn-form-row" style={{ display: "flex", gap: 8 }}>
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label className="form-label">Keyspace</label>
+                    <DebouncedInput
+                      value={config.keyspace ?? ""}
+                      placeholder="analytics"
+                      onChange={(v) => handleChange("keyspace", v)}
+                    />
+                  </div>
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label className="form-label">Tabela de Destino</label>
+                    <DebouncedInput
+                      value={config.table ?? config.target ?? ""}
+                      placeholder="usuarios_gold"
+                      onChange={(v) => {
+                        const trimmed = (v || "").trim();
+                        handleMultipleChange({ table: trimmed, target: trimmed });
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Ação na Tabela (Table Action)</label>
+                  <select
+                    className="form-select"
+                    value={config.table_action ?? "append"}
+                    onChange={(e) => handleChange("table_action", e.target.value)}
+                  >
+                    <option value="append">Nenhuma (Inserir / Preservar registros existentes)</option>
+                    <option value="truncate">TRUNCATE (Limpar tabela antes de gravar)</option>
+                  </select>
+                </div>
+
+                {/* Bloco de Performance e Concorrência de Escrita ScyllaDB */}
+                <div className="form-group" style={{ background: "rgba(0, 229, 255, 0.04)", padding: 12, borderRadius: 8, border: "1px solid rgba(0, 229, 255, 0.2)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, color: "#00e5ff", fontWeight: 600, fontSize: "0.76rem" }}>
+                    <Zap size={14} color="#00e5ff" />
+                    <span>⚡ Motor de Ingestão de Alta Vazão ScyllaDB</span>
+                  </div>
+
+                  <div className="form-group" style={{ marginBottom: 8 }}>
+                    <label className="form-label" style={{ fontSize: "0.7rem" }}>Estratégia de Escrita (Write Strategy)</label>
+                    <select
+                      className="form-select"
+                      style={{ fontSize: "0.75rem" }}
+                      value={config.write_strategy ?? "concurrent"}
+                      onChange={(e) => handleChange("write_strategy", e.target.value)}
+                    >
+                      <option value="concurrent">Prepared Statements Concorrentes (Recomendado Scylla - Shard-Aware)</option>
+                      <option value="unlogged_batch">Unlogged Batch (Alta velocidade em lote atômico)</option>
+                      <option value="logged_batch">Logged Batch (Transacional)</option>
+                    </select>
+                    <div style={{ fontSize: "0.66rem", color: "var(--text-muted)", marginTop: 2 }}>
+                      O modo concorrente utiliza roteamento shard-aware direcionando cada registro direto ao core/CPU responsável no Scylla.
+                    </div>
+                  </div>
+
+                  <div className="conn-form-row" style={{ display: "flex", gap: 8 }}>
+                    <div className="form-group" style={{ flex: 1, marginBottom: 8 }}>
+                      <label className="form-label" style={{ fontSize: "0.7rem" }}>Concorrência (In-Flight Requests)</label>
+                      <input
+                        type="number"
+                        className="form-input"
+                        min="10"
+                        max="250"
+                        style={{ fontSize: "0.75rem", fontFamily: "var(--font-mono)" }}
+                        value={config.concurrency ?? 100}
+                        placeholder="100"
+                        onChange={(e) => handleChange("concurrency", parseInt(e.target.value, 10) || 100)}
+                      />
+                    </div>
+                    <div className="form-group" style={{ flex: 1, marginBottom: 8 }}>
+                      <label className="form-label" style={{ fontSize: "0.7rem" }}>Tamanho do Lote (Batch Size)</label>
+                      <input
+                        type="number"
+                        className="form-input"
+                        style={{ fontSize: "0.75rem", fontFamily: "var(--font-mono)" }}
+                        value={config.batch_size ?? 1000}
+                        placeholder="1000"
+                        onChange={(e) => handleChange("batch_size", parseInt(e.target.value, 10) || 1000)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="conn-form-row" style={{ display: "flex", gap: 8 }}>
+                    <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
+                      <label className="form-label" style={{ fontSize: "0.7rem" }}>Consistência de Escrita</label>
+                      <select
+                        className="form-select"
+                        style={{ fontSize: "0.75rem" }}
+                        value={config.consistency_level ?? "LOCAL_QUORUM"}
+                        onChange={(e) => handleChange("consistency_level", e.target.value)}
+                      >
+                        <option value="LOCAL_QUORUM">LOCAL_QUORUM</option>
+                        <option value="ONE">ONE (Máxima vazão)</option>
+                        <option value="ANY">ANY</option>
+                        <option value="QUORUM">QUORUM</option>
+                        <option value="ALL">ALL</option>
+                      </select>
+                    </div>
+                    <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
+                      <label className="form-label" style={{ fontSize: "0.7rem" }}>Timeout (Segundos)</label>
+                      <input
+                        type="number"
+                        className="form-input"
+                        min="5"
+                        style={{ fontSize: "0.75rem", fontFamily: "var(--font-mono)" }}
+                        value={config.timeout_seconds ?? 30}
+                        placeholder="30"
+                        onChange={(e) => handleChange("timeout_seconds", parseInt(e.target.value, 10) || 30)}
+                      />
+                    </div>
+                  </div>
                 </div>
               </>
             )}
@@ -1224,9 +1601,12 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                 <div className="form-group">
                   <label className="form-label">Tabela de Destino</label>
                   <DebouncedInput
-                    value={config.table ?? ""}
+                    value={config.table ?? config.target ?? ""}
                     placeholder="schema.tabela"
-                    onChange={(v) => handleChange("table", v)}
+                    onChange={(v) => {
+                      const trimmed = (v || "").trim();
+                      handleMultipleChange({ table: trimmed, target: trimmed });
+                    }}
                   />
                 </div>
                 <TableActionsSection config={config} onChange={handleChange} />

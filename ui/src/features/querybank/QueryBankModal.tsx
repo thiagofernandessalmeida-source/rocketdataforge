@@ -83,19 +83,19 @@ export const QueryBankModal: React.FC<QueryBankProps> = ({ onClose, onInsertQuer
 
   // ── Filtered list ─────────────────────────────────────────
   const filtered = useMemo(() => {
-    let list = [...state.queryBank];
+    let list = Array.isArray(state.queryBank) ? [...state.queryBank] : [];
     if (filterDialect !== "all") list = list.filter((q) => q.dialect === filterDialect);
     if (search.trim()) {
       const s = search.toLowerCase();
       list = list.filter(
         (q) =>
-          q.name.toLowerCase().includes(s) ||
-          q.description?.toLowerCase().includes(s) ||
-          q.sql.toLowerCase().includes(s) ||
-          q.tags.some((t) => t.toLowerCase().includes(s))
+          (q.name || "").toLowerCase().includes(s) ||
+          (q.description || "").toLowerCase().includes(s) ||
+          (q.sql || "").toLowerCase().includes(s) ||
+          (Array.isArray(q.tags) && q.tags.some((t) => (t || "").toLowerCase().includes(s)))
       );
     }
-    return list.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    return list.sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
   }, [state.queryBank, search, filterDialect]);
 
   // ── Actions ───────────────────────────────────────────────
@@ -113,9 +113,9 @@ export const QueryBankModal: React.FC<QueryBankProps> = ({ onClose, onInsertQuer
       description: q.description ?? "",
       sql: q.sql,
       dialect: q.dialect,
-      tags: [...q.tags],
+      tags: Array.isArray(q.tags) ? [...q.tags] : [],
       connectionRef: q.connectionRef ?? "",
-      schema: q.schema ? [...q.schema] : [],
+      schema: Array.isArray(q.schema) ? [...q.schema] : [],
     });
     setTagInput("");
     setIsNew(false);
@@ -124,7 +124,7 @@ export const QueryBankModal: React.FC<QueryBankProps> = ({ onClose, onInsertQuer
 
   const handleSave = () => {
     if (!form.name.trim() || !form.sql.trim()) return;
-    const schemaToSave = form.schema.length > 0 ? form.schema : undefined;
+    const schemaToSave = (Array.isArray(form.schema) && form.schema.length > 0) ? form.schema : undefined;
     if (isNew) {
       const entry = jobStore.saveQuery({
         name: form.name.trim(),
@@ -220,7 +220,7 @@ export const QueryBankModal: React.FC<QueryBankProps> = ({ onClose, onInsertQuer
           <div className="modal-title">
             <BookOpen size={18} color="var(--accent-cyan)" />
             <span>Banco de Queries</span>
-            <span className="qbank-count-badge">{state.queryBank.length}</span>
+            <span className="qbank-count-badge">{(state.queryBank || []).length}</span>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <button className="btn btn-secondary" onClick={startNew}>
@@ -273,11 +273,11 @@ export const QueryBankModal: React.FC<QueryBankProps> = ({ onClose, onInsertQuer
                 <div className="conn-list-empty" style={{ marginTop: 24 }}>
                   <BookOpen size={28} opacity={0.15} />
                   <span>
-                    {state.queryBank.length === 0
+                    {(state.queryBank || []).length === 0
                       ? "Nenhuma query salva ainda"
                       : "Nenhuma query encontrada"}
                   </span>
-                  {state.queryBank.length === 0 && (
+                  {(state.queryBank || []).length === 0 && (
                     <button className="btn btn-secondary" onClick={startNew}>
                       <Plus size={12} /> Criar primeira query
                     </button>
@@ -313,7 +313,7 @@ export const QueryBankModal: React.FC<QueryBankProps> = ({ onClose, onInsertQuer
                   )}
                   <div className="qbank-item-meta">
                     <Clock size={10} /> {relativeTime(q.updatedAt)}
-                    {q.tags.length > 0 && (
+                    {Array.isArray(q.tags) && q.tags.length > 0 && (
                       <span className="qbank-item-tags">
                         <Tag size={10} /> {q.tags.slice(0, 2).join(", ")}{q.tags.length > 2 ? `+${q.tags.length - 2}` : ""}
                       </span>
@@ -573,7 +573,7 @@ export const QueryBankModal: React.FC<QueryBankProps> = ({ onClose, onInsertQuer
                 </div>
 
                 {/* Tags */}
-                {selectedQuery.tags.length > 0 && (
+                {Array.isArray(selectedQuery.tags) && selectedQuery.tags.length > 0 && (
                   <div className="qbank-tags" style={{ padding: "0 20px 0" }}>
                     {selectedQuery.tags.map((t) => (
                       <span key={t} className="qbank-tag readonly">#{t}</span>
@@ -602,7 +602,7 @@ export const QueryBankModal: React.FC<QueryBankProps> = ({ onClose, onInsertQuer
                 </div>
 
                 {/* Schema columns */}
-                {selectedQuery.schema && selectedQuery.schema.length > 0 && (
+                {Array.isArray(selectedQuery.schema) && selectedQuery.schema.length > 0 && (
                   <div style={{ padding: "0 20px 16px" }}>
                     <div style={{ fontSize: "0.72rem", color: "var(--text-muted)", marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
                       <Database size={11} /> Schema ({selectedQuery.schema.length} colunas — importado automaticamente)

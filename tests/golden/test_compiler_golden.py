@@ -85,7 +85,8 @@ EXPECTED_PHYSICAL_PLAN_GOLDEN = {
                     "path": "output/users.parquet",
                     "format": "parquet",
                     "write_mode": "replace"
-                }
+                },
+                "database_path": None
             }
         }
     }

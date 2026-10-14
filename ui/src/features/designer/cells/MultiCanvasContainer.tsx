@@ -16,6 +16,7 @@ import {
   ChevronRight,
   RotateCcw,
   RefreshCw,
+  Code2,
 } from "lucide-react";
 
 import { CanvasCellCard } from "./CanvasCellCard";
@@ -85,6 +86,14 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
     if (newCell) {
       setActiveCellId(newCell.id);
       showToast?.("success", `Nova célula "${newCell.name}" adicionada ao Job!`);
+    }
+  };
+
+  const handleAddPythonCell = () => {
+    const newCell = jobStore.createCell(job.id, undefined, "PYTHON");
+    if (newCell) {
+      setActiveCellId(newCell.id);
+      showToast?.("success", `Nova Célula Python "${newCell.name}" adicionada ao Job!`);
     }
   };
 
@@ -425,17 +434,40 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
             </button>
           </div>
 
-          {/* Add Cell Button */}
+          {/* Add Canvas Cell Button */}
           <button
             type="button"
             className="btn btn-secondary"
             style={{ fontSize: "0.76rem", padding: "4px 11px" }}
             onClick={handleAddCell}
-            title="Adicionar nova etapa (canvas-cell) ao Job"
+            title="Adicionar nova etapa visual (canvas-cell) ao Job"
           >
             <Plus size={13} />
             <span>Nova Canvas-Cell</span>
           </button>
+
+          {/* Add Python Cell Button (Enterprise Option) */}
+          {jobStore.isPythonCellsEnabled() && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{
+                fontSize: "0.76rem",
+                padding: "4px 11px",
+                borderColor: "rgba(245, 158, 11, 0.4)",
+                color: "#fbbf24",
+                background: "rgba(245, 158, 11, 0.08)",
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+              }}
+              onClick={handleAddPythonCell}
+              title="Adicionar nova etapa de código Python (python-cell / Jupyter Notebook) ao Job"
+            >
+              <Code2 size={13} />
+              <span>Nova Célula Python</span>
+            </button>
+          )}
 
           {/* Orchestrated Run / Stop Button */}
           {isOrchestrating ? (
@@ -488,6 +520,7 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
             <CanvasCellCard
               key={focusedCell.id}
               cell={focusedCell}
+              jobId={job.id}
               allCells={sortedCells}
               isFocusMode={true}
               isActive={true}
@@ -520,6 +553,7 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
               <CanvasCellCard
                 key={cell.id}
                 cell={cell}
+                jobId={job.id}
                 allCells={sortedCells}
                 isFocusMode={false}
                 isActive={activeCellId === cell.id}
@@ -553,6 +587,8 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
               style={{
                 display: "flex",
                 justifyContent: "center",
+                alignItems: "center",
+                gap: 12,
                 padding: "16px 0 24px",
               }}
             >
@@ -567,8 +603,26 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
                 }}
                 onClick={handleAddCell}
               >
-                <Plus size={14} /> Adicionar Próxima Canvas-Cell
+                <Plus size={14} /> Adicionar Canvas-Cell
               </button>
+
+              {jobStore.isPythonCellsEnabled() && (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{
+                    borderStyle: "dashed",
+                    padding: "8px 20px",
+                    fontSize: "0.8rem",
+                    borderColor: "rgba(245, 158, 11, 0.4)",
+                    color: "#fbbf24",
+                    background: "rgba(245, 158, 11, 0.05)",
+                  }}
+                  onClick={handleAddPythonCell}
+                >
+                  <Code2 size={14} /> Adicionar Célula Python
+                </button>
+              )}
             </div>
           </div>
         )}

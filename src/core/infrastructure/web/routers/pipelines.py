@@ -313,3 +313,36 @@ def export_pipeline(
         pipeline_yaml=bundle.pipeline_yaml,
         layout_json=bundle.layout_json
     )
+
+
+@router.post("/pipelines/cells/python/execute")
+def execute_python_cell(payload: dict):
+    """Executa um script de célula Python isolado com suporte a state handoff."""
+    code = payload.get("code", "")
+    cell_id = payload.get("cell_id", "python-cell-01")
+    cell_name = payload.get("cell_name", "python-cell-01")
+    shared_data = payload.get("shared_outputs", {})
+
+    from src.core.infrastructure.engines.python_cell_runner import PythonCellContext, PythonCellRunner
+    import polars as pl
+
+    # Converte shared_data para polars DataFrames se forem dicts/listas
+    shared_outputs = {}
+    for k, v in (shared_data or {}).items():
+        if isinstance(v, list):
+            try:
+                shared_outputs[k] = pl.DataFrame(v)
+            except Exception:
+                shared_outputs[k] = v
+        else:
+            shared_outputs[k] = v
+
+    context = PythonCellContext(
+        cell_id=cell_id,
+        cell_name=cell_name,
+        shared_outputs=shared_outputs,
+    )
+    runner = PythonCellRunner()
+    result = runner.run(code=code, context=context)
+    return result
+

@@ -221,9 +221,10 @@ class LogicalPlanner:
 
         # DuckDB Target Dedicado
         if component_type in ("connector.db.duckdb.output", "core.duckdb.target"):
+            tbl_name = str(cfg.get("table") or cfg.get("target") or "").strip()
             return LogicalSink(
                 id=node_id,
-                target_ref=cfg.get("table", ""),
+                target_ref=tbl_name,
                 format="duckdb",
                 write_mode=cfg.get("write_mode", "append"),
                 table_action=cfg.get("table_action", "none"),
@@ -240,9 +241,10 @@ class LogicalPlanner:
             or (component_type.startswith("connector.db.") and component_type.endswith(".output"))
         ):
             fmt = "postgres" if "postgres" in component_type else "db"
+            tbl_name = str(cfg.get("table") or cfg.get("target") or "").strip()
             return LogicalSink(
                 id=node_id,
-                target_ref=cfg.get("table", ""),
+                target_ref=tbl_name,
                 format=fmt,
                 write_mode=cfg.get("write_mode", "append"),
                 table_action=cfg.get("table_action", "none"),
@@ -269,7 +271,10 @@ class LogicalPlanner:
 
         # Fontes NoSQL & Streaming / Mensageria (ScyllaDB, Kafka, AWS SQS)
         if "scylla" in component_type and not component_type.endswith(".output"):
-            query = cfg.get("query") or cfg.get("cql") or (f"SELECT * FROM {cfg.get('table')}" if cfg.get("table") else "")
+            tbl = cfg.get("table", "")
+            ks = cfg.get("keyspace", "")
+            tbl_ref = f"{ks}.{tbl}" if (ks and tbl and "." not in tbl) else tbl
+            query = cfg.get("query") or cfg.get("cql") or (f"SELECT * FROM {tbl_ref}" if tbl_ref else "")
             tokens = extract_parameter_tokens(query)
             return LogicalScan(
                 id=node_id,
@@ -310,9 +315,12 @@ class LogicalPlanner:
 
         # Destinos NoSQL & Streaming / Mensageria (ScyllaDB, Kafka, AWS SQS, AWS SNS)
         if "scylla" in component_type and component_type.endswith(".output"):
+            tbl = cfg.get("table", "")
+            ks = cfg.get("keyspace", "")
+            target_ref = f"{ks}.{tbl}" if (ks and tbl and "." not in tbl) else (tbl or cfg.get("target", ""))
             return LogicalSink(
                 id=node_id,
-                target_ref=cfg.get("table", ""),
+                target_ref=target_ref,
                 format="scylla",
                 write_mode=cfg.get("write_mode", "append"),
                 input_ids=input_ids,

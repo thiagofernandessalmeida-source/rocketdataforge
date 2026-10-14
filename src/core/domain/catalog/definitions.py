@@ -297,7 +297,8 @@ SCYLLA_SOURCE = ComponentDefinition(
             "connection_ref": {"type": "string"},
             "query": {"type": "string", "description": "Consulta CQL (SELECT ...)"},
             "table": {"type": "string", "description": "Nome da tabela (caso query não informada)"},
-            "keyspace": {"type": "string"}
+            "keyspace": {"type": "string"},
+            "fetch_size": {"type": "integer", "default": 5000, "description": "Quantidade de registros por página CQL (Fetch Size)"}
         }
     },
     capabilities=ComponentCapability(supports_filter_pushdown=True, supports_chunked_read=True)

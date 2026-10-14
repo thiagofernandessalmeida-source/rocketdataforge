@@ -136,8 +136,9 @@ class LogicalSink(LogicalOperator):
 
     def to_dict(self) -> Dict[str, Any]:
         res = super().to_dict()
+        tbl_ref = self.target_ref or (self.raw_config or {}).get("table") or (self.raw_config or {}).get("target") or ""
         res.update({
-            "target": self.target_ref,
+            "target": tbl_ref,
             "format": self.format,
             "write_mode": self.write_mode,
             "table_action": self.table_action,

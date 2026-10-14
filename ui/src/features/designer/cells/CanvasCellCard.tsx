@@ -29,15 +29,18 @@ import {
   Activity,
   List,
   Terminal,
+  Code2,
 } from "lucide-react";
 
 import { Canvas } from "../Canvas";
+import { PythonCellEditor } from "./PythonCellEditor";
 import { CanvasCellData, CellExecutionStatus, CellPrecondition } from "../../../store/jobStore";
 import { CanvasNodeData } from "../../../types";
 import { CellPreconditionsModal } from "./CellPreconditionsModal";
 
 interface CanvasCellCardProps {
   cell: CanvasCellData;
+  jobId?: string;
   allCells: CanvasCellData[];
   isFocusMode: boolean;
   isActive: boolean;
@@ -60,6 +63,7 @@ interface CanvasCellCardProps {
 
 export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
   cell,
+  jobId,
   allCells,
   isFocusMode,
   isActive,
@@ -414,8 +418,12 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
           )}
 
           {/* Cell Name (Editable, max 50 chars) */}
-          <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, maxWidth: 360 }}>
-            <Layers size={14} color="var(--accent-cyan)" />
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, maxWidth: 380 }}>
+            {cell.cellType === "PYTHON" ? (
+              <Code2 size={14} color="#f59e0b" />
+            ) : (
+              <Layers size={14} color="var(--accent-cyan)" />
+            )}
             <input
               className="form-input"
               style={{
@@ -427,7 +435,7 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
                 padding: "2px 6px",
                 borderRadius: 4,
                 width: "100%",
-                maxWidth: 260,
+                maxWidth: 240,
                 transition: "border-color 0.15s",
               }}
               value={name}
@@ -704,22 +712,31 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
         </div>
       )}
 
-      {/* ─── Cell Canvas (Scoped in its own ReactFlowProvider) ─── */}
+      {/* ─── Cell Body: Canvas (ReactFlow) or Python Editor (Monaco) ─── */}
       <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
-        <ReactFlowProvider>
-          <Canvas
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={handleNodesChange}
-            onEdgesChange={handleEdgesChange}
-            setNodes={handleSetNodes}
-            setEdges={handleSetEdges}
-            onSelectNode={handleSelectNode}
-            onDoubleClickNode={handleDoubleClickNode}
-            allNodes={allJobNodes}
-            cellId={cell.id}
+        {cell.cellType === "PYTHON" ? (
+          <PythonCellEditor
+            cell={cell}
+            jobId={jobId || ""}
+            allCells={allCells}
+            onUpdateCode={(newCode) => onUpdateCellMeta(cell.id, { codeSnippet: newCode })}
           />
-        </ReactFlowProvider>
+        ) : (
+          <ReactFlowProvider>
+            <Canvas
+              nodes={nodes}
+              edges={edges}
+              onNodesChange={handleNodesChange}
+              onEdgesChange={handleEdgesChange}
+              setNodes={handleSetNodes}
+              setEdges={handleSetEdges}
+              onSelectNode={handleSelectNode}
+              onDoubleClickNode={handleDoubleClickNode}
+              allNodes={allJobNodes}
+              cellId={cell.id}
+            />
+          </ReactFlowProvider>
+        )}
       </div>
 
       {/* ─── Cell Metrics & Logs Inspector ─── */}

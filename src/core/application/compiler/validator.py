@@ -155,11 +155,33 @@ class GraphValidator:
         cell_topological_order: List[str] = []
 
         # Validação macro de canvas-cells (se houver especificação de células)
+        has_python_cells = False
         if draft.cells:
             cell_errors, cell_topological_order = self.validate_cell_topology(draft.cells)
             errors.extend(cell_errors)
+            for c in draft.cells:
+                c_type = str(c.get("cell_type") or c.get("cellType") or "CANVAS").upper()
+                if c_type == "PYTHON":
+                    has_python_cells = True
+                    snippet = c.get("code_snippet") or c.get("codeSnippet") or ""
+                    if not snippet.strip():
+                        warnings.append(ValidationWarningItem(
+                            code="WARN_EMPTY_PYTHON_CELL",
+                            node_id=c.get("id"),
+                            message=f"A célula Python '{c.get('name') or c.get('id')}' está sem código definido."
+                        ))
+                    else:
+                        import ast
+                        try:
+                            ast.parse(snippet)
+                        except SyntaxError as syn_err:
+                            errors.append(ValidationErrorItem(
+                                code="ERR_PYTHON_SYNTAX",
+                                node_id=c.get("id"),
+                                message=f"Erro de sintaxe Python na célula '{c.get('name') or c.get('id')}' (linha {syn_err.lineno}): {syn_err.msg}"
+                            ))
 
-        if not draft.nodes:
+        if not draft.nodes and not has_python_cells:
             errors.append(ValidationErrorItem(
                 code="ERR_EMPTY_PIPELINE",
                 message="O pipeline não possui nós cadastrados."

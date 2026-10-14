@@ -229,13 +229,14 @@ function createTestJobStore() {
       return job;
     },
 
-    createCell(jobId, customName) {
+    createCell(jobId, customName, cellType = "CANVAS") {
       const job = state.jobs.find((j) => j.id === jobId);
       if (!job) return null;
 
       const existingCells = job.cells || [];
       const nextIndex = existingCells.length + 1;
-      const defaultId = `canvas-cell-${String(nextIndex).padStart(2, "0")}`;
+      const prefix = cellType === "PYTHON" ? "python-cell" : "canvas-cell";
+      const defaultId = `${prefix}-${String(nextIndex).padStart(2, "0")}`;
       const name = (customName?.trim() || defaultId).slice(0, 50);
 
       const maxOrder = existingCells.reduce((max, c) => Math.max(max, c.order || 0), 0);
@@ -250,9 +251,15 @@ function createTestJobStore() {
           ]
         : [];
 
+      const defaultCodeSnippet = cellType === "PYTHON"
+        ? `# CellFlow Python Cell\ndf = context.read_output('${prevCell?.id || "canvas-cell-01"}')\ncontext.write_output(df)`
+        : undefined;
+
       const newCell = {
         id: defaultId,
         name,
+        cellType,
+        codeSnippet: defaultCodeSnippet,
         description: "",
         order: maxOrder + 1,
         preconditions: defaultPreconditions,
@@ -345,7 +352,9 @@ function createTestJobStore() {
       if (!source) return null;
 
       const nextIndex = job.cells.length + 1;
-      const newId = `canvas-cell-${String(nextIndex).padStart(2, "0")}`;
+      const isPython = source.cellType === "PYTHON";
+      const prefix = isPython ? "python-cell" : "canvas-cell";
+      const newId = `${prefix}-${String(nextIndex).padStart(2, "0")}`;
       const newName = `Cópia de ${source.name}`.slice(0, 50);
       const maxOrder = job.cells.reduce((max, c) => Math.max(max, c.order || 0), 0);
 
@@ -353,6 +362,8 @@ function createTestJobStore() {
         ...source,
         id: newId,
         name: newName,
+        cellType: source.cellType || "CANVAS",
+        codeSnippet: source.codeSnippet,
         order: maxOrder + 1,
         preconditions: [...source.preconditions],
         nodes: source.nodes.map((n) => ({ ...n, id: `${n.id}_copy` })),
@@ -360,6 +371,24 @@ function createTestJobStore() {
 
       job.cells.push(cloned);
       return cloned;
+    },
+
+    updateCell(jobId, cellId, updates) {
+      const job = state.jobs.find((j) => j.id === jobId);
+      if (!job) return;
+      job.cells = (job.cells || []).map((c) => (c.id === cellId ? { ...c, ...updates } : c));
+    },
+
+    updateCellCode(jobId, cellId, codeSnippet) {
+      this.updateCell(jobId, cellId, { codeSnippet });
+    },
+
+    _pythonCellsEnabled: true,
+    isPythonCellsEnabled() {
+      return this._pythonCellsEnabled;
+    },
+    setPythonCellsEnabled(enabled) {
+      this._pythonCellsEnabled = Boolean(enabled);
     },
 
     reorderCells(jobId, orderedCellIds) {
@@ -1006,5 +1035,57 @@ describe("Multi-Canvas: Unicidade Global de IDs de Componentes entre Células", 
   });
 });
 
+describe("Multi-Canvas: Suporte a Python-Cells e Recurso Enterprise", () => {
+  it("deve permitir criar uma python-cell com tipo PYTHON e snippet padrão", () => {
+    const store = createTestJobStore();
+    const job = store.createJob("Job Misto Visual e Codigo");
+    assert.equal(job.cells.length, 1);
+    assert.equal(job.cells[0].cellType || "CANVAS", "CANVAS");
 
+    // Adiciona célula do tipo PYTHON
+    const pyCell = store.createCell(job.id, "Etapa Python Notebook", "PYTHON");
+    assert.ok(pyCell);
+    assert.equal(pyCell.cellType, "PYTHON");
+    assert.ok(pyCell.id.startsWith("python-cell-"));
+    assert.ok(pyCell.codeSnippet.includes("context.write_output"));
+    assert.ok(pyCell.codeSnippet.includes("context.read_output"));
 
+    const updatedJob = store.getJob(job.id);
+    assert.equal(updatedJob.cells.length, 2);
+    assert.equal(updatedJob.cells[1].cellType, "PYTHON");
+  });
+
+  it("deve duplicar uma python-cell preservando cellType e codeSnippet", () => {
+    const store = createTestJobStore();
+    const job = store.createJob("Job com Python");
+    const pyCell = store.createCell(job.id, "Filtro Polars", "PYTHON");
+    store.updateCell(job.id, pyCell.id, { codeSnippet: "df_filtrado = df.filter(pl.col('v') > 0)" });
+
+    const duplicated = store.duplicateCell(job.id, pyCell.id);
+    assert.ok(duplicated);
+    assert.equal(duplicated.cellType, "PYTHON");
+    assert.equal(duplicated.codeSnippet, "df_filtrado = df.filter(pl.col('v') > 0)");
+    assert.ok(duplicated.id.startsWith("python-cell-"));
+  });
+
+  it("deve atualizar o snippet da célula via updateCellCode", () => {
+    const store = createTestJobStore();
+    const job = store.createJob("Job Script");
+    const pyCell = store.createCell(job.id, "Script ETL", "PYTHON");
+    store.updateCellCode(job.id, pyCell.id, "print('novo script')");
+
+    const updated = store.getJob(job.id).cells.find((c) => c.id === pyCell.id);
+    assert.equal(updated.codeSnippet, "print('novo script')");
+  });
+
+  it("deve alternar a feature flag de células python (Enterprise)", () => {
+    const store = createTestJobStore();
+    assert.equal(store.isPythonCellsEnabled(), true);
+
+    store.setPythonCellsEnabled(false);
+    assert.equal(store.isPythonCellsEnabled(), false);
+
+    store.setPythonCellsEnabled(true);
+    assert.equal(store.isPythonCellsEnabled(), true);
+  });
+});

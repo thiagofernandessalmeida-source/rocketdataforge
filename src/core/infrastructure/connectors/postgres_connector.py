@@ -5,7 +5,7 @@ e sanitização automática de mensagens de erro.
 """
 
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import quote_plus
 
 import psycopg2
@@ -161,6 +161,15 @@ class PostgresConnector:
             if not conn.closed:
                 conn.close()
             raise
+
+    def stream_extract(
+        self,
+        connection: Connection,
+        query: str,
+        fetch_size: int = 10000
+    ) -> Iterator[Any]:
+        """Método gerador base de extração com Server-Side Cursors para controle de memória (Multi-Tiered Fetch)."""
+        yield from self.execute_query_chunks(connection, query, fetch_size=fetch_size)
 
     def execute_write(
         self,
