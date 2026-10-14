@@ -262,6 +262,48 @@ class SchemaInferer:
         sanitized_query = re.sub(r"\{[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_]+\}", "1", query)
         sanitized_query = re.sub(r"\{[a-zA-Z0-9_]+\}", "1", sanitized_query)
 
+        # Se for Oracle
+        is_oracle = (
+            connection_details
+            and (
+                str(connection_details.get("type", "")).lower() == "oracle"
+                or bool(connection_details.get("serviceName"))
+                or bool(connection_details.get("sid"))
+                or int(connection_details.get("port") or 0) in (1521, 15030)
+            )
+        )
+        if is_oracle:
+            try:
+                from src.core.infrastructure.connectors.oracle_connector import OracleConnector
+                ora_conn = OracleConnector()
+                conn = ora_conn.connect(connection_details)
+                cur = conn.cursor()
+                cur.execute(f"SELECT * FROM ({sanitized_query}) WHERE 1=0")
+                fields: List[InferredField] = []
+                if cur.description:
+                    for desc in cur.description:
+                        col_name = desc[0]
+                        type_code = str(desc[1]).upper()
+                        logical = LogicalDataType.STRING
+                        if "NUMBER" in type_code or "INT" in type_code:
+                            logical = LogicalDataType.INT64 if (desc[5] == 0) else LogicalDataType.FLOAT64
+                        elif "DATE" in type_code:
+                            logical = LogicalDataType.DATE
+                        elif "TIMESTAMP" in type_code:
+                            logical = LogicalDataType.TIMESTAMP
+                        fields.append(InferredField(
+                            name=col_name,
+                            logical_type=logical,
+                            physical_type=type_code,
+                            nullable=True
+                        ))
+                cur.close()
+                conn.close()
+                if fields:
+                    return InferredSchema(dataset_name=dataset_name, fields=fields)
+            except Exception:
+                pass
+
         # Se houver dados de conexão PostgreSQL
         if connection_details and (connection_details.get("host") or connection_details.get("database")):
             try:

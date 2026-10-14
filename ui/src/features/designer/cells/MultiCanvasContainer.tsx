@@ -28,6 +28,7 @@ import {
   detectCellCycles,
   validateParallelCellConsistency,
 } from "../../../store/jobStore";
+import { telemetryStore } from "../../../store/telemetryStore";
 import { CanvasNodeData } from "../../../types";
 
 interface MultiCanvasContainerProps {
@@ -387,8 +388,12 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
               className="btn btn-secondary"
               style={{ fontSize: "0.74rem", padding: "4px 9px", color: "#fbbf24", borderColor: "rgba(245, 158, 11, 0.3)" }}
               onClick={() => {
+                const activeCell = sortedCells.find((c) => c.id === activeCellId);
+                if (activeCell && activeCell.status === "running") {
+                  handleStopSingleCell(activeCell);
+                }
                 jobStore.resetCellStatus(job.id, activeCellId);
-                showToast?.("info", `Status da célula "${sortedCells.find((c) => c.id === activeCellId)?.name || activeCellId}" resetado.`);
+                showToast?.("info", `Status da célula "${activeCell?.name || activeCellId}" resetado.`);
               }}
               title="Resetar status da célula ativa para idle"
             >
@@ -400,7 +405,17 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
               className="btn btn-secondary"
               style={{ fontSize: "0.74rem", padding: "4px 9px", color: "#fbbf24", borderColor: "rgba(245, 158, 11, 0.3)" }}
               onClick={() => {
+                if (isOrchestrating) {
+                  handleStopOrchestrated();
+                } else {
+                  sortedCells.forEach((c) => {
+                    if (c.status === "running") {
+                      handleStopSingleCell(c);
+                    }
+                  });
+                }
                 jobStore.resetAllCellsStatus(job.id);
+                telemetryStore.reset();
                 showToast?.("info", "Status de todas as células resetado.");
               }}
               title="Resetar status de todas as células do Job para idle"
@@ -446,7 +461,7 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
               type="button"
               className="btn btn-success"
               style={{ fontSize: "0.76rem", padding: "4px 12px", gap: 6 }}
-              onClick={handleRunOrchestrated}
+              onClick={onRunEntireJob || handleRunOrchestrated}
               title="Executa todas as células respeitando ordens, pré-condições e isolamento de escrita DuckDB"
             >
               <Play size={12} fill="currentColor" />
@@ -487,6 +502,10 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
               onRunSingleCell={handleRunSingleCell}
               onStopSingleCell={handleStopSingleCell}
               onResetStatus={(cellId) => {
+                const target = sortedCells.find((c) => c.id === cellId);
+                if (target && target.status === "running") {
+                  handleStopSingleCell(target);
+                }
                 jobStore.resetCellStatus(job.id, cellId);
                 showToast?.("info", "Status da célula resetado.");
               }}
@@ -517,6 +536,10 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
                 onRunSingleCell={handleRunSingleCell}
                 onStopSingleCell={handleStopSingleCell}
                 onResetStatus={(cellId) => {
+                  const target = sortedCells.find((c) => c.id === cellId);
+                  if (target && target.status === "running") {
+                    handleStopSingleCell(target);
+                  }
                   jobStore.resetCellStatus(job.id, cellId);
                   showToast?.("info", "Status da célula resetado.");
                 }}

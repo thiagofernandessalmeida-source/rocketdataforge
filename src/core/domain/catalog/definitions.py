@@ -60,7 +60,7 @@ DATABASE_SOURCE = ComponentDefinition(
         "properties": {
             "connection_ref": {"type": "string", "description": "Nome da conexão registrada"},
             "query": {"type": "string", "description": "Consulta SQL de leitura"},
-            "fetch_size": {"type": "integer", "default": 10000}
+            "fetch_size": {"type": "integer", "default": 10000, "description": "Quantidade de registros recuperados por fetch de cursor (Fetch Size)"}
         }
     },
     capabilities=ComponentCapability(
@@ -113,7 +113,8 @@ DUCKDB_SOURCE = ComponentDefinition(
         "properties": {
             "database_path": {"type": "string", "default": ":memory:", "description": "Caminho do banco DuckDB ou :memory:"},
             "query": {"type": "string", "description": "Consulta SQL analítica"},
-            "read_only": {"type": "boolean", "default": True}
+            "read_only": {"type": "boolean", "default": True},
+            "fetch_size": {"type": "integer", "default": 10000, "description": "Quantidade de registros recuperados por fetch de cursor (Fetch Size)"}
         }
     },
     capabilities=ComponentCapability(
@@ -139,7 +140,9 @@ DUCKDB_TARGET = ComponentDefinition(
             "database_path": {"type": "string", "default": "data/output.duckdb"},
             "table": {"type": "string"},
             "table_action": {"type": "string", "enum": ["none", "drop_create", "create_if_not_exists", "drop_if_exists_create", "truncate", "delete_all"], "default": "none"},
-            "data_action": {"type": "string", "enum": ["insert", "update", "upsert", "update_or_insert", "delete"], "default": "insert"}
+            "data_action": {"type": "string", "enum": ["insert", "update", "upsert", "update_or_insert", "delete"], "default": "insert"},
+            "use_batch_mode": {"type": "boolean", "default": True, "description": "Ativar escrita em lotes particionados (Batch Mode)"},
+            "batch_size": {"type": "integer", "default": 10000, "description": "Tamanho do lote para escrita particionada (Batch Size)"}
         }
     },
     capabilities=ComponentCapability(supports_bulk_write=True)
@@ -237,7 +240,7 @@ DATABASE_TARGET = ComponentDefinition(
     version=SemanticVersion(1, 0, 0),
     name="Database Target",
     category="target",
-    description="Grava dados em banco relacional (PostgreSQL, MySQL, Oracle, etc.) com ações de tabela e dados no padrão Talend.",
+    description="Grava dados em banco relacional (PostgreSQL, MySQL, Oracle, etc.) com ações avançadas de tabela e dados.",
     ports=[
         PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET)
     ],
@@ -249,7 +252,8 @@ DATABASE_TARGET = ComponentDefinition(
             "table": {"type": "string"},
             "table_action": {"type": "string", "enum": ["none", "drop_create", "create_if_not_exists", "drop_if_exists_create", "truncate", "delete_all"], "default": "none"},
             "data_action": {"type": "string", "enum": ["insert", "update", "upsert", "update_or_insert", "delete"], "default": "insert"},
-            "batch_size": {"type": "integer", "default": 10000}
+            "use_batch_mode": {"type": "boolean", "default": True, "description": "Ativar inserção/atualização agrupada em lote (Batch Mode)"},
+            "batch_size": {"type": "integer", "default": 10000, "description": "Quantidade de registros por transação/lote de escrita com commit (Batch Size)"}
         }
     },
     capabilities=ComponentCapability(supports_bulk_write=True)

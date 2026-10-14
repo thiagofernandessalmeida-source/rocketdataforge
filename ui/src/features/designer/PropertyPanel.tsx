@@ -24,13 +24,14 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { ConnectionEntry, ContextVariable, SchemaColumn, Environment, QueryEntry, QueryDialect, ConnectionType } from "../../store/jobStore";
+import { SqlAutocompleteTextarea, AutocompleteSource } from "../../components/common/SqlAutocompleteTextarea";
 
 export interface PropertyPanelProps {
   selectedNode: Node<CanvasNodeData> | null;
   onUpdateConfig: (nodeId: string, newConfig: Record<string, any>) => void;
   onUpdateLabel?: (nodeId: string, newLabel: string) => void;
   onUpdateSchema?: (nodeId: string, schema: SchemaColumn[]) => void;
-  onUpdateNodeId?: (oldId: string, newId: string) => void;
+  onUpdateNodeId?: (oldId: string, newId: string, cellId?: string) => void;
   onDeleteNode: (nodeId: string) => void;
   connections?: ConnectionEntry[];
   queryBank?: QueryEntry[];
@@ -299,7 +300,7 @@ export const DebouncedInput: React.FC<{
   );
 };
 
-// ─── Seção de Ações de Tabela e Dados (Padrão Talend) ────────
+// ─── Seção de Ações de Tabela e Dados (Padrão Studio) ────────
 export const TableActionsSection: React.FC<{
   config: Record<string, any>;
   onChange: (key: string, val: any) => void;
@@ -335,6 +336,39 @@ export const TableActionsSection: React.FC<{
           <option value="update_or_insert">Atualizar ou Inserir (Update or Insert)</option>
           <option value="delete">Deletar registros por Chave Primária (Delete)</option>
         </select>
+      </div>
+
+      {/* Advanced Settings: Batch Mode & Batch Size */}
+      <div className="form-group" style={{ background: "var(--bg-card)", padding: 10, borderRadius: 6, border: "1px solid var(--border-subtle)" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "0.75rem", fontWeight: 600 }}>
+            <input
+              type="checkbox"
+              checked={config.use_batch_mode !== false}
+              onChange={(e) => onChange("use_batch_mode", e.target.checked)}
+            />
+            <span>📦 Ativar Modo em Lote (Use Batch Mode)</span>
+          </label>
+        </div>
+        {config.use_batch_mode !== false && (
+          <div>
+            <label className="form-label" style={{ fontSize: "0.7rem", display: "flex", justifyContent: "space-between" }}>
+              <span>Tamanho do Lote de Escrita (Batch Size)</span>
+              <span style={{ color: "var(--text-muted)" }}>Registros por Commit</span>
+            </label>
+            <input
+              type="number"
+              className="form-input"
+              style={{ fontSize: "0.75rem", fontFamily: "var(--font-mono)" }}
+              value={config.batch_size ?? 10000}
+              placeholder="10000"
+              onChange={(e) => onChange("batch_size", parseInt(e.target.value, 10) || 10000)}
+            />
+            <div style={{ fontSize: "0.66rem", color: "var(--text-muted)", marginTop: 4 }}>
+              Agrupa instruções INSERT/UPDATE em lotes de N registros antes do commit no banco para alta performance de rede.
+            </div>
+          </div>
+        )}
       </div>
     </>
   );
@@ -393,14 +427,106 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
     if (!selectedNode || !editingNodeId.trim()) return;
     const trimmed = editingNodeId.trim();
     if (trimmed !== selectedNode.id) {
-      onUpdateNodeId?.(selectedNode.id, trimmed);
+      onUpdateNodeId?.(selectedNode.id, trimmed, (selectedNode.data as any)?.cellId);
     }
     setIsRenamingId(false);
   };
 
+  const onStartSidebarResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const computedW = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--props-w")) || 380;
+    const onMove = (ev: MouseEvent) => {
+      const delta = startX - ev.clientX;
+      const newW = Math.max(280, Math.min(850, computedW + delta));
+      document.documentElement.style.setProperty("--props-w", `${newW}px`);
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+    };
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "ew-resize";
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  // ─── Busca Colunas a Montante (Upstream) e Fontes para Autocomplete ───
+  const selectedNodeId = selectedNode?.id;
+
+  const incomingEdges = React.useMemo(() => {
+    if (!selectedNodeId) return [];
+    return edges.filter((e) => e.target === selectedNodeId);
+  }, [edges, selectedNodeId]);
+
+  const upstreamNodes = React.useMemo(() => {
+    return incomingEdges
+      .map((e) => allNodes.find((n) => n.id === e.source))
+      .filter((n): n is Node<CanvasNodeData> => Boolean(n));
+  }, [incomingEdges, allNodes]);
+
+  // ─── Prepara Fontes para Autocomplete (rowX.coluna / {{node.coluna}}) ───
+  const autocompleteSources: AutocompleteSource[] = React.useMemo(() => {
+    if (!selectedNodeId) return [];
+    const list: AutocompleteSource[] = [];
+    const addedIds = new Set<string>();
+
+    // 1. Nós upstream diretos (conectados por edge de entrada)
+    upstreamNodes.forEach((un) => {
+      addedIds.add(un.id);
+      const flows = incomingEdges
+        .filter((e) => e.source === un.id)
+        .map((e) => e.data?.flowName || (typeof e.label === "string" ? e.label : "") || e.id)
+        .filter(Boolean);
+
+      const unSchema = ((un.data as any).schema || []) as SchemaColumn[];
+      list.push({
+        id: un.id,
+        label: un.data.label || un.id,
+        flowNames: flows,
+        isUpstream: true,
+        columns: unSchema.map((c) => ({
+          name: c.name,
+          type: c.type,
+          nullable: c.nullable,
+        })),
+      });
+    });
+
+    // 2. Todos os demais nós do Job / Célula que possuam schema
+    allNodes.forEach((n) => {
+      if (n.id === selectedNodeId || addedIds.has(n.id)) return;
+      const nSchema = ((n.data as any).schema || []) as SchemaColumn[];
+      if (nSchema.length > 0) {
+        list.push({
+          id: n.id,
+          label: n.data.label || n.id,
+          flowNames: [],
+          isUpstream: false,
+          columns: nSchema.map((c) => ({
+            name: c.name,
+            type: c.type,
+            nullable: c.nullable,
+          })),
+        });
+      }
+    });
+
+    return list;
+  }, [allNodes, incomingEdges, upstreamNodes, selectedNodeId]);
+
   if (!selectedNode) {
     return (
       <div className="sidebar-properties" id="property-panel">
+        {onPopOut && (
+          <div
+            className="sidebar-drag-resizer"
+            onMouseDown={onStartSidebarResize}
+            title="Clique e arraste para redimensionar largura do painel"
+          />
+        )}
         <div className="prop-header">
           <span>Propriedades do Nó</span>
         </div>
@@ -477,12 +603,7 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
     }
   };
 
-  // ─── Busca Colunas a Montante (Upstream) e Nós a Jusante (Downstream) ───
-  const incomingEdges = edges.filter((e) => e.target === id);
-  const upstreamNodes = incomingEdges
-    .map((e) => allNodes.find((n) => n.id === e.source))
-    .filter((n): n is Node<CanvasNodeData> => Boolean(n));
-
+  // ─── Nós a Jusante (Downstream) e Metadados Upstream ───
   const outgoingEdges = edges.filter((e) => e.source === id);
   const downstreamNodes = outgoingEdges
     .map((e) => {
@@ -528,6 +649,13 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
   return (
     <>
       <div className="sidebar-properties" id="property-panel">
+        {onPopOut && (
+          <div
+            className="sidebar-drag-resizer"
+            onMouseDown={onStartSidebarResize}
+            title="Clique e arraste para redimensionar largura do painel"
+          />
+        )}
         {/* Header */}
         <div
           className="prop-header"
@@ -677,13 +805,13 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                               key={c.id}
                               type="button"
                               className="token-chip"
-                              title={`Clique para inserir {${un.id}.${c.name}} na query`}
+                              title={`Clique para inserir {{${un.id}.${c.name}}} na query`}
                               onClick={() => {
-                                const token = `{${un.id}.${c.name}}`;
+                                const token = `{{${un.id}.${c.name}}}`;
                                 handleChange("query", (config.query ?? "") + " " + token);
                               }}
                             >
-                              <code>{`{${un.id}.${c.name}}`}</code>
+                              <code>{`{{${un.id}.${c.name}}}`}</code>
                             </button>
                           ))}
                         </div>
@@ -769,12 +897,31 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                 </div>
                 <div className="form-group">
                   <label className="form-label">Query SQL DuckDB</label>
-                  <DebouncedTextarea
+                  <SqlAutocompleteTextarea
                     value={config.query ?? ""}
                     placeholder={"SELECT * FROM read_parquet('data/sales.parquet')\nWHERE valor > 100"}
-                    style={{ minHeight: 90, fontFamily: "var(--font-mono)", fontSize: "0.78rem" }}
+                    style={{ minHeight: 90 }}
+                    sources={autocompleteSources}
+                    contextVariables={contextVariables}
                     onChange={(v) => handleChange("query", v)}
                   />
+                </div>
+                <div className="form-group" style={{ background: "var(--bg-card)", padding: 10, borderRadius: 6, border: "1px solid var(--border-subtle)" }}>
+                  <label className="form-label" style={{ fontSize: "0.7rem", display: "flex", justifyContent: "space-between" }}>
+                    <span>⚡ Tamanho do Lote de Leitura (Fetch Size)</span>
+                    <span style={{ color: "var(--text-muted)" }}>Linhas por Lote</span>
+                  </label>
+                  <input
+                    type="number"
+                    className="form-input"
+                    style={{ fontSize: "0.75rem", fontFamily: "var(--font-mono)" }}
+                    value={config.fetch_size ?? 10000}
+                    placeholder="10000"
+                    onChange={(e) => handleChange("fetch_size", parseInt(e.target.value, 10) || 10000)}
+                  />
+                  <div style={{ fontSize: "0.66rem", color: "var(--text-muted)", marginTop: 4 }}>
+                    Recupera dados em blocos paginados de N linhas para prevenir estouro de memória RAM.
+                  </div>
                 </div>
               </>
             )}
@@ -813,14 +960,17 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                 )}
                 <div className="form-group">
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                    <label className="form-label" style={{ margin: 0 }}>Arquivo de Banco DuckDB Destino</label>
+                    <label className="form-label" style={{ margin: 0 }}>Caminho / Nome do Banco (.duckdb)</label>
                     <div style={{ display: "flex", gap: 4 }}>
                       <button
                         type="button"
                         className="badge"
                         style={{ cursor: "pointer", fontSize: "0.68rem", background: "rgba(234, 179, 8, 0.12)", borderColor: "rgba(234, 179, 8, 0.4)", color: "#facc15" }}
-                        onClick={() => handleChange("database_path", ":memory:")}
-                        title="Gravar em memória RAM"
+                        onClick={() => {
+                          handleChange("database_path", ":memory:");
+                          handleChange("database", ":memory:");
+                        }}
+                        title="Gravar puramente em memória RAM"
                       >
                         :memory:
                       </button>
@@ -828,7 +978,10 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                         type="button"
                         className="badge"
                         style={{ cursor: "pointer", fontSize: "0.68rem", background: "rgba(234, 179, 8, 0.12)", borderColor: "rgba(234, 179, 8, 0.4)", color: "#facc15" }}
-                        onClick={() => handleChange("database_path", "data/output.duckdb")}
+                        onClick={() => {
+                          handleChange("database_path", "data/output.duckdb");
+                          handleChange("database", "data/output.duckdb");
+                        }}
                         title="Usar data/output.duckdb"
                       >
                         output.duckdb
@@ -836,17 +989,26 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                     </div>
                   </div>
                   <DebouncedInput
-                    value={config.database_path ?? "data/output.duckdb"}
-                    placeholder="data/output.duckdb ou :memory:"
-                    onChange={(v) => handleChange("database_path", v)}
+                    value={config.database_path ?? config.database ?? "data/output.duckdb"}
+                    placeholder="data/vendas.duckdb ou vendas.duckdb"
+                    onChange={(v) => {
+                      handleChange("database_path", v);
+                      handleChange("database", v);
+                    }}
                   />
+                  <div style={{ fontSize: "0.68rem", color: "var(--text-muted)", marginTop: 4 }}>
+                    📁 Salvo na pasta <code>data/</code> do workspace ativo. Você pode alterar o nome do arquivo livremente (ex: <code>vendas.duckdb</code> ou <code>data/faturamento.duckdb</code>).
+                  </div>
                 </div>
                 <div className="form-group">
                   <label className="form-label">Tabela de Destino</label>
                   <DebouncedInput
-                    value={config.table ?? ""}
+                    value={config.table ?? config.target ?? ""}
                     placeholder="nome_da_tabela"
-                    onChange={(v) => handleChange("table", v)}
+                    onChange={(v) => {
+                      handleChange("table", v);
+                      handleChange("target", v);
+                    }}
                   />
                 </div>
                 <TableActionsSection config={config} onChange={handleChange} />
@@ -940,10 +1102,12 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                       <label className="form-label" style={{ fontSize: "0.7rem" }}>
                         Query SQL de Leitura (Tabela: <code>source_data</code>)
                       </label>
-                      <DebouncedTextarea
+                      <SqlAutocompleteTextarea
                         value={config.duckdb_query ?? ""}
                         placeholder="SELECT * FROM source_data WHERE total > 0"
-                        style={{ minHeight: 70, fontFamily: "var(--font-mono)", fontSize: "0.75rem" }}
+                        style={{ minHeight: 70 }}
+                        sources={autocompleteSources}
+                        contextVariables={contextVariables}
                         onChange={(v) => handleChange("duckdb_query", v)}
                       />
                     </div>
@@ -989,10 +1153,12 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                       }}
                     />
                   )}
-                  <DebouncedTextarea
+                  <SqlAutocompleteTextarea
                     value={config.query ?? ""}
                     placeholder={"SELECT *\nFROM tabela\nWHERE ativo = 1"}
-                    style={{ minHeight: 90, fontFamily: "var(--font-mono)", fontSize: "0.78rem" }}
+                    style={{ minHeight: 110 }}
+                    sources={autocompleteSources}
+                    contextVariables={contextVariables}
                     onChange={(v) => handleChange("query", v)}
                   />
                   <button
@@ -1020,6 +1186,23 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                       {directInferMessage.text}
                     </div>
                   )}
+                </div>
+                <div className="form-group" style={{ background: "var(--bg-card)", padding: 10, borderRadius: 6, border: "1px solid var(--border-subtle)" }}>
+                  <label className="form-label" style={{ fontSize: "0.7rem", display: "flex", justifyContent: "space-between" }}>
+                    <span>⚡ Tamanho do Lote de Leitura (Fetch Size)</span>
+                    <span style={{ color: "var(--text-muted)" }}>Cursor do Banco</span>
+                  </label>
+                  <input
+                    type="number"
+                    className="form-input"
+                    style={{ fontSize: "0.75rem", fontFamily: "var(--font-mono)" }}
+                    value={config.fetch_size ?? 10000}
+                    placeholder="10000"
+                    onChange={(e) => handleChange("fetch_size", parseInt(e.target.value, 10) || 10000)}
+                  />
+                  <div style={{ fontSize: "0.66rem", color: "var(--text-muted)", marginTop: 4 }}>
+                    Define quantas linhas o cursor do banco recupera por vez para a memória (padrão: 10.000).
+                  </div>
                 </div>
               </>
             )}

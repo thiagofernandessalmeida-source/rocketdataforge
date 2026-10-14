@@ -90,6 +90,7 @@ def test_connection(
         from src.core.infrastructure.security.secret_resolver import SecretResolver
         from src.core.infrastructure.connectors import (
             PostgresConnector,
+            OracleConnector,
             ScyllaConnector,
             KafkaConnector,
             AwsMessagingConnector,
@@ -112,6 +113,18 @@ def test_connection(
                     success=False,
                     message=f"Caminho local '{conn.endpoint}' não encontrado no sistema.",
                     latency_ms=latency
+                )
+
+        if ctype in {"oracle"}:
+            try:
+                connector = OracleConnector(resolver)
+                ok, msg, lat = connector.test_connection(conn)
+                return TestConnectionResult(success=ok, message=msg, latency_ms=lat or int((time.time() - start_time) * 1000))
+            except Exception as e:
+                return TestConnectionResult(
+                    success=False,
+                    message=f"Erro ao testar Oracle: {str(e)}",
+                    latency_ms=int((time.time() - start_time) * 1000)
                 )
 
         if ctype in {"postgres", "postgresql"}:

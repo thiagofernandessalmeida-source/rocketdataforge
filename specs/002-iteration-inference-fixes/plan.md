@@ -57,7 +57,7 @@
 
 ---
 
-## 3. Subsistema de Ações de Tabela e Dados (Padrão Talend)
+## 3. Subsistema de Ações de Tabela e Dados (Padrão Studio)
 
 ### 3.1 Contrato de Configuração de Saída
 ```json

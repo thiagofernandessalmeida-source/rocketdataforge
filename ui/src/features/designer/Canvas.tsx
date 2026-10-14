@@ -34,7 +34,7 @@ const edgeTypes: EdgeTypes = {
   default: FlowEdge,
 };
 
-interface CanvasProps {
+export interface CanvasProps {
   nodes: Node<CanvasNodeData>[];
   edges: Edge[];
   onNodesChange: any;
@@ -43,9 +43,11 @@ interface CanvasProps {
   setEdges: React.Dispatch<React.SetStateAction<Edge[]>>;
   onSelectNode: (node: Node<CanvasNodeData> | null) => void;
   onDoubleClickNode?: (node: Node<CanvasNodeData>) => void;
+  allNodes?: Node<CanvasNodeData>[];
+  cellId?: string;
 }
 
-function generateRocketNodeId(typeId: string, existingNodes: Node<CanvasNodeData>[]): string {
+export function generateRocketNodeId(typeId: string, existingNodes: Node<CanvasNodeData>[]): string {
   let prefix = "node";
   if (typeId.includes("postgresql.output") || typeId.includes("postgres.output")) prefix = "postgres_sink";
   else if (typeId.includes("postgresql") || typeId.includes("postgres") || typeId.includes("database.source")) prefix = "postgres_source";
@@ -95,6 +97,8 @@ export const Canvas: React.FC<CanvasProps> = ({
   setEdges,
   onSelectNode,
   onDoubleClickNode,
+  allNodes,
+  cellId,
 }) => {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition } = useReactFlow();
@@ -171,7 +175,15 @@ export const Canvas: React.FC<CanvasProps> = ({
         y: event.clientY,
       });
 
-      const newNodeId = generateRocketNodeId(comp.type_id, nodes);
+      // Garantir que a geração do ID verifica todos os nós existentes no Job (todas as células)
+      const pool = new Map<string, Node<CanvasNodeData>>();
+      if (allNodes && allNodes.length > 0) {
+        allNodes.forEach((n) => pool.set(n.id.toLowerCase(), n));
+      }
+      nodes.forEach((n) => pool.set(n.id.toLowerCase(), n));
+      const combinedNodes = Array.from(pool.values());
+
+      const newNodeId = generateRocketNodeId(comp.type_id, combinedNodes);
 
       const newNode: Node<CanvasNodeData> = {
         id: newNodeId,
@@ -184,13 +196,14 @@ export const Canvas: React.FC<CanvasProps> = ({
           category: comp.category,
           config: {},
           ports: comp.ports,
+          cellId,
         },
       };
 
       setNodes((nds) => nds.concat(newNode));
       onSelectNode(newNode);
     },
-    [setNodes, onSelectNode, screenToFlowPosition, nodes]
+    [setNodes, onSelectNode, screenToFlowPosition, nodes, allNodes, cellId]
   );
 
   const onNodeClick = useCallback(

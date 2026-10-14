@@ -15,18 +15,41 @@ from src.core.application.compiler.validator import ValidationReport
 from src.core.domain.pipeline.draft import PipelineDraft
 from src.core.domain.shared.exceptions import DomainValidationError
 
-TOKEN_REGEX = re.compile(r"\{([a-zA-Z0-9_\-]+)\.([a-zA-Z0-9_]+)\}")
+TEMPLATE_TOKEN_REGEX = re.compile(
+    r"\{\{\s*([a-zA-Z0-9_\-]+)\.([a-zA-Z0-9_]+)\s*\}\}"
+    r"|\{\s*([a-zA-Z0-9_\-]+)\.([a-zA-Z0-9_]+)\s*\}"
+    r"|\{\{\s*([a-zA-Z0-9_]+)\s*\}\}"
+    r"|\{\s*([a-zA-Z0-9_]+)\s*\}"
+)
 
 
 def extract_parameter_tokens(text: str) -> List[Dict[str, str]]:
-    """Extrai referências a variáveis {node_id.column_name} ou {label.column_name}."""
+    """Extrai referências a variáveis {{node.col}}, {{row.col}}, {{col}}, {node.col}, {row.col}, {col}."""
     if not text or not isinstance(text, str):
         return []
-    matches = TOKEN_REGEX.findall(text)
-    return [
-        {"node_ref": m[0], "column_name": m[1], "raw_token": f"{{{m[0]}.{m[1]}}}"}
-        for m in matches
-    ]
+    tokens = []
+    seen = set()
+    for match in TEMPLATE_TOKEN_REGEX.finditer(text):
+        raw_token = match.group(0)
+        if raw_token in seen:
+            continue
+        seen.add(raw_token)
+        if match.group(1) and match.group(2):
+            node_ref, col_name = match.group(1), match.group(2)
+        elif match.group(3) and match.group(4):
+            node_ref, col_name = match.group(3), match.group(4)
+        elif match.group(5):
+            node_ref, col_name = "row", match.group(5)
+        elif match.group(6):
+            node_ref, col_name = "row", match.group(6)
+        else:
+            continue
+        tokens.append({
+            "node_ref": node_ref,
+            "column_name": col_name,
+            "raw_token": raw_token
+        })
+    return tokens
 
 
 @dataclass
@@ -35,12 +58,14 @@ class LogicalPlan:
     pipeline_id: str
     operators: Dict[str, LogicalOperator] = field(default_factory=dict)
     execution_order: List[str] = field(default_factory=list)
+    iterator_edges: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serializa o plano lógico em formato canônico estruturado."""
         return {
             "pipeline_id": self.pipeline_id,
             "execution_order": self.execution_order,
+            "iterator_edges": self.iterator_edges,
             "operators": {
                 op_id: op.to_dict()
                 for op_id, op in sorted(self.operators.items())
@@ -66,7 +91,7 @@ class LogicalPlanner:
             # Descobre quais nós e portas alimentam as portas deste nó
             input_operator_ids = [
                 f"{edge.from_port.node_id}:{edge.from_port.port_name}"
-                if (edge.from_port.port_name and edge.from_port.port_name not in ("main", "main_out", "dataset", "output"))
+                if (edge.from_port.port_name and edge.from_port.port_name not in ("main", "main_out", "dataset", "output", "out"))
                 else edge.from_port.node_id
                 for edge in draft.edges.values()
                 if edge.to_port.node_id == node_id
@@ -78,7 +103,8 @@ class LogicalPlanner:
         return LogicalPlan(
             pipeline_id=draft.id,
             operators=operators,
-            execution_order=list(validation_report.topological_order)
+            execution_order=list(validation_report.topological_order),
+            iterator_edges=list(getattr(validation_report, "iterator_edges", []))
         )
 
     def _map_node_to_operator(
@@ -95,9 +121,11 @@ class LogicalPlanner:
         if component_type in ("connector.db.duckdb", "core.duckdb.source"):
             query = cfg.get("query") or ""
             tokens = extract_parameter_tokens(query)
+            conn_details = cfg.get("connection_details") or {}
+            db_path = conn_details.get("database_path") or conn_details.get("database") or cfg.get("database_path") or cfg.get("connection_ref") or ":memory:"
             return LogicalScan(
                 id=node_id,
-                connection_ref=cfg.get("database_path", ":memory:"),
+                connection_ref=db_path,
                 source_path_or_query=query,
                 format="duckdb",
                 input_ids=input_ids,

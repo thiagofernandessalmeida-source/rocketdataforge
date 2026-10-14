@@ -152,3 +152,68 @@ def test_worker_scan_with_schema_definitions(tmp_path):
     out_df = pl.read_parquet(output_parquet)
     assert out_df.height == 3
     assert out_df["vote_count"][2] == "en"
+
+
+def test_worker_db_scan_named_cursor_success(monkeypatch, tmp_path):
+    from unittest.mock import MagicMock
+    import psycopg2
+
+    mock_conn = MagicMock()
+    mock_setup_cur = MagicMock()
+    mock_named_cur = MagicMock()
+
+    named_execute_calls = []
+    def named_execute(q):
+        named_execute_calls.append(q)
+        if len(named_execute_calls) > 1:
+            raise psycopg2.ProgrammingError("can't call .execute() on named cursors more than once")
+
+    mock_named_cur.execute.side_effect = named_execute
+    mock_named_cur.description = [("id", 23), ("val", 1043)]
+    mock_named_cur.fetchmany.side_effect = [[(1, "A"), (2, "B")], []]
+
+    def fake_cursor(name=None):
+        if name:
+            return mock_named_cur
+        mock_ctx = MagicMock()
+        mock_ctx.__enter__.return_value = mock_setup_cur
+        return mock_ctx
+
+    mock_conn.cursor.side_effect = fake_cursor
+    mock_conn.closed = False
+
+    monkeypatch.setattr(psycopg2, "connect", MagicMock(return_value=mock_conn))
+
+    plan = PhysicalPlan(
+        pipeline_id="pipe-db-test",
+        default_chunk_size=10,
+        execution_order=["pg_node"],
+        operators={
+            "pg_node": PhysicalOperator(
+                id="postgres_source_1",
+                operator_type="scan",
+                engine="polars",
+                input_ids=[],
+                config={
+                    "source": "SELECT id, val FROM my_table",
+                    "format": "postgres",
+                    "connection_details": {
+                        "host": "localhost",
+                        "database": "testdb",
+                        "username": "usr",
+                        "password": "pwd"
+                    }
+                }
+            )
+        }
+    )
+
+    execution = Execution(id="exec-db-1", pipeline_version_id="ver-1.0.0", correlation_id="corr-1")
+    file_connector = LocalFileConnector(base_directory=str(tmp_path))
+    worker = ExecutionWorker(file_connector=file_connector)
+
+    res = worker.run(execution, plan)
+    assert res.status == ExecutionStatus.SUCCEEDED
+    assert len(named_execute_calls) == 1
+    assert "SELECT id, val FROM my_table" in named_execute_calls[0]
+    mock_setup_cur.execute.assert_called_once_with("SET statement_timeout = 0;")

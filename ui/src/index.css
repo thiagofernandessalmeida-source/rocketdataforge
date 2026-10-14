@@ -1,6 +1,6 @@
 /* ==========================================================================
    ROCKETDATAFORGE v2.0 — DESIGN SYSTEM (Vanilla CSS)
-   Evolução do Talend Open Studio
+   CellFlow Data Studio
    ========================================================================== */
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -775,6 +775,114 @@ html, body {
 .rdf-node-ports { display: flex; justify-content: space-between; padding: 4px 0; }
 .port-label { font-size: 0.64rem; font-weight: 500; color: var(--text-secondary); }
 
+/* ─────────────────────────────────────────────────────────────────
+   IN-NODE REAL-TIME TELEMETRY FOOTER
+───────────────────────────────────────────────────────────────── */
+@keyframes rdf-telemetry-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes rdf-telemetry-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(0.92); }
+}
+
+.rdf-telemetry-spin {
+  animation: rdf-telemetry-spin 1s linear infinite;
+}
+
+.rdf-telemetry-pulse {
+  animation: rdf-telemetry-pulse 1.4s ease-in-out infinite;
+}
+
+.rdf-node-telemetry-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 10px;
+  background: rgba(15, 23, 42, 0.7);
+  backdrop-filter: blur(6px);
+  border-top: 1px solid var(--border-subtle);
+  border-bottom-left-radius: 9px;
+  border-bottom-right-radius: 9px;
+  font-family: var(--font-mono, "SF Mono", monospace);
+  font-size: 0.68rem;
+  gap: 8px;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  min-height: 27px;
+  box-sizing: border-box;
+}
+
+.rdf-node-telemetry-footer.status-queued {
+  background: rgba(234, 179, 8, 0.08);
+  border-top: 1px solid rgba(234, 179, 8, 0.3);
+}
+
+.rdf-node-telemetry-footer.status-starting {
+  background: rgba(56, 189, 248, 0.09);
+  border-top: 1px solid rgba(56, 189, 248, 0.35);
+}
+
+.rdf-node-telemetry-footer.status-running {
+  background: rgba(16, 185, 129, 0.09);
+  border-top: 1px solid rgba(16, 185, 129, 0.35);
+}
+
+.rdf-node-telemetry-footer.status-succeeded {
+  background: rgba(34, 197, 94, 0.07);
+  border-top: 1px solid rgba(34, 197, 94, 0.25);
+}
+
+.rdf-node-telemetry-footer.status-failed {
+  background: rgba(239, 68, 68, 0.09);
+  border-top: 1px solid rgba(239, 68, 68, 0.35);
+}
+
+.rdf-telemetry-status-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  font-size: 0.67rem;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.rdf-telemetry-metrics {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.rdf-telemetry-rows {
+  font-weight: 500;
+  color: var(--text-primary, #f1f5f9);
+  font-size: 0.67rem;
+}
+
+.rdf-telemetry-throughput {
+  display: inline-flex;
+  align-items: center;
+  color: #38bdf8;
+  font-weight: 600;
+  background: rgba(56, 189, 248, 0.14);
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  font-size: 0.65rem;
+}
+
+.rdf-telemetry-starting-hint {
+  font-size: 0.64rem;
+  color: #94a3b8;
+  font-style: italic;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
 /* Handles */
 .custom-handle {
   width: 10px !important;
@@ -798,7 +906,12 @@ html, body {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
+  height: 100%;
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
   z-index: 10;
+  position: relative;
 }
 
 .prop-header {
@@ -813,12 +926,52 @@ html, body {
 }
 
 .prop-content {
-  flex: 1;
-  overflow-y: auto;
+  flex: 1 1 0% !important;
+  min-height: 0 !important;
+  height: auto;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
   padding: 14px;
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.prop-content::-webkit-scrollbar {
+  width: 8px;
+}
+.prop-content::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.45);
+  border-radius: 4px;
+}
+.prop-content::-webkit-scrollbar-thumb {
+  background: rgba(0, 229, 255, 0.35);
+  border-radius: 4px;
+  border: 1px solid rgba(0, 229, 255, 0.15);
+}
+.prop-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 229, 255, 0.7);
+}
+.prop-content {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 229, 255, 0.35) rgba(15, 23, 42, 0.45);
+}
+
+.sidebar-drag-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  width: 8px;
+  cursor: ew-resize;
+  z-index: 25;
+  background: transparent;
+  transition: background 0.15s, box-shadow 0.15s;
+}
+.sidebar-drag-resizer:hover,
+.sidebar-drag-resizer:active {
+  background: var(--accent-cyan);
+  box-shadow: 0 0 10px rgba(0, 229, 255, 0.6);
 }
 
 .prop-empty {
@@ -1819,7 +1972,7 @@ html, body {
 }
 
 /* ─────────────────────────────────────────────────────────────────
-   TWO-CONTAINER TALEND SCHEMA PROPAGATION
+   TWO-CONTAINER SCHEMA PROPAGATION
 ───────────────────────────────────────────────────────────────── */
 .schema-two-container {
   display: flex;
@@ -2370,12 +2523,17 @@ html, body {
   background: var(--bg-surface);
   border: 1px solid var(--border-medium);
   border-radius: 10px;
-  box-shadow: var(--shadow-xl), 0 0 0 1px rgba(0,229,255,0.06);
+  box-shadow: var(--shadow-xl), 0 0 28px rgba(0,0,0,0.5), 0 0 0 1px rgba(0,229,255,0.12);
   display: flex;
   flex-direction: column;
   overflow: hidden;
   animation: slideInRight 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
-  resize: none; /* custom resize via drag handle */
+  resize: none;
+}
+
+.floating-node-config.is-maximized {
+  border-radius: 8px;
+  box-shadow: 0 0 40px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(0, 229, 255, 0.2);
 }
 
 .floating-node-header {
@@ -2417,7 +2575,9 @@ html, body {
 .floating-node-actions { display: flex; gap: 4px; flex-shrink: 0; }
 
 .floating-node-body {
-  flex: 1;
+  flex: 1 1 0%;
+  min-height: 0;
+  height: 100%;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -2425,25 +2585,87 @@ html, body {
 /* Override sidebar-properties inside floating window */
 .floating-node-body .sidebar-properties {
   width: 100% !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  flex: 1 1 0% !important;
+  min-height: 0 !important;
   border: none !important;
   background: transparent !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
 }
-.floating-node-body .prop-header { display: none; } /* header already shown above */
+.floating-node-body .prop-header { display: none !important; }
 
-/* Resize handle */
-.floating-resize-handle {
+/* Multi-direction Resize Handles */
+.floating-resize-corner {
   position: absolute;
+  z-index: 25;
+  user-select: none;
+}
+
+.floating-resize-se {
   bottom: 0;
   right: 0;
-  width: 16px;
-  height: 16px;
+  width: 24px;
+  height: 24px;
   cursor: nwse-resize;
-  background: linear-gradient(135deg, transparent 50%, var(--border-medium) 50%);
-  border-bottom-right-radius: 10px;
-  opacity: 0.5;
-  transition: opacity 0.15s;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 4px;
+  color: var(--text-dim);
+  border-bottom-right-radius: 9px;
+  transition: color 0.15s, background-color 0.15s;
 }
-.floating-resize-handle:hover { opacity: 1; }
+
+.floating-resize-se:hover {
+  color: var(--accent-cyan);
+  background: rgba(0, 229, 255, 0.12);
+}
+
+.floating-resize-sw {
+  bottom: 0;
+  left: 0;
+  width: 20px;
+  height: 20px;
+  cursor: nesw-resize;
+}
+
+.floating-resize-edge {
+  position: absolute;
+  z-index: 20;
+  user-select: none;
+}
+
+.floating-resize-e {
+  top: 40px;
+  bottom: 24px;
+  right: 0;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.floating-resize-w {
+  top: 40px;
+  bottom: 24px;
+  left: 0;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.floating-resize-s {
+  bottom: 0;
+  left: 20px;
+  right: 24px;
+  height: 8px;
+  cursor: ns-resize;
+}
+
+.floating-resize-edge:hover,
+.floating-resize-corner:hover {
+  background: rgba(0, 229, 255, 0.12);
+}
 
 /* ─────────────────────────────────────────────────────────────────
    PALETTE — DRAG FIX
@@ -2936,7 +3158,7 @@ html, body {
 }
 
 /* ==========================================================================
-   DATA MAPPER STUDIO (Talend tMap Style Layout + RocketDataForge Visuals)
+   DATA MAPPER STUDIO (tMap Layout & Visuals)
    ========================================================================== */
 
 .data-mapper-modal {
@@ -3644,13 +3866,13 @@ html, body {
   overflow-y: auto;
 }
 
-.schema-talend-table {
+.schema-studio-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.7rem;
 }
 
-.schema-talend-table th {
+.schema-studio-table th {
   padding: 4px 6px;
   background: #111428;
   color: var(--text-muted);
@@ -3662,7 +3884,7 @@ html, body {
   z-index: 1;
 }
 
-.schema-talend-table td {
+.schema-studio-table td {
   padding: 2px 4px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.03);
 }
@@ -3822,11 +4044,33 @@ html, body {
 }
 
 /* ─────────────────────────────────────────────────────────────────
-   FLOW EDGES & FLOW BADGES (main1..N, lkp1..N, out1..N, reject1..N)
+   FLOW EDGES & FLOW BADGES (main1..N, iterate1..N, lkp1..N, out1..N, reject1..N)
 ───────────────────────────────────────────────────────────────── */
 .flow-edge-renderer {
   cursor: pointer;
   user-select: none;
+}
+
+/* Animated dashed line for Iteration Edge (Loop/Map) */
+@keyframes flow-iterate-dash {
+  from {
+    stroke-dashoffset: 20;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.flow-edge-path-iterate {
+  stroke-dasharray: 6 4 !important;
+  animation: flow-iterate-dash 1s linear infinite !important;
+}
+
+.flow-edge-badge.iterate {
+  background: rgba(6, 78, 59, 0.95);
+  border-color: #059669;
+  color: #34d399;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.25);
 }
 
 .flow-edge-badge {
@@ -4087,7 +4331,7 @@ html, body {
 }
 
 /* ─────────────────────────────────────────────────────────────────
-   SCHEMA EDITOR (SIDEBAR & FULLSCREEN MODAL - TALEND STYLE)
+   SCHEMA EDITOR (SIDEBAR & FULLSCREEN MODAL)
 ───────────────────────────────────────────────────────────────── */
 .schema-two-container {
   display: flex;
@@ -5028,6 +5272,39 @@ html, body {
 .cell-log-row .log-level-error {
   color: var(--status-danger);
   font-weight: 600;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   SQL AUTOCOMPLETE DROPDOWN
+───────────────────────────────────────────────────────────────── */
+.rdf-sql-autocomplete-container {
+  position: relative;
+  width: 100%;
+}
+
+.rdf-autocomplete-dropdown {
+  animation: rdfFadeInDown 0.12s ease-out;
+  scrollbar-width: thin;
+}
+
+.rdf-autocomplete-dropdown::-webkit-scrollbar {
+  width: 4px;
+}
+
+.rdf-autocomplete-dropdown::-webkit-scrollbar-thumb {
+  background: rgba(0, 229, 255, 0.3);
+  border-radius: 4px;
+}
+
+@keyframes rdfFadeInDown {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 

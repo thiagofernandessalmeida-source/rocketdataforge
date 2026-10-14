@@ -9,7 +9,7 @@
 
 O **RocketDataForge** é um **Studio Moderno de Engenharia e Integração de Dados (ETL/ELT)** projetado para construir, compilar, validar, debugar e executar pipelines analíticos de alta performance e baixa latência.
 
-Inspirado nas capacidades analíticas de ferramentas legadas de integração (como Talend Open Studio / Data Integration), o RocketDataForge moderniza totalmente o paradigma através de:
+Projetado para engenharia e integração de dados de alto padrão, o RocketDataForge moderniza o ecossistema através de:
 - **Canvas Visual Reativo**: Construção visual de DAGs (Directed Acyclic Graphs) em tempo real via React Flow.
 - **Motor de Execução Híbrido Vetorizado**: DuckDB (para processamento relacional SQL OLAP, joins complexos e tMap) e Polars (para streaming colunar, leitura e escrita rápida de arquivos).
 - **Mapeador Visual Avançado (`Data Mapper` / `tMap`)**: Múltiplos lookups, controle de match models (*all*, *first*, *unique*), variáveis intermediárias sequenciais, roteamento multi-saída e captura automática de rejeições (*inner join rejects* e *output filter rejects*).
@@ -100,7 +100,7 @@ O RocketDataForge possui um catálogo completo de componentes com portas tipadas
 6. **`connector.cloud.aws_sqs`**: Consumidor de filas AWS SQS (Standard e FIFO) com extração de payload JSON.
 
 ### 4.2 Transformações (Transforms)
-7. **`core.tmap` (Data Mapper)**: Transformador visual avançado estilo Talend. Suporta:
+7. **`core.tmap` (Data Mapper)**: Transformador visual avançado e de alta performance. Suporta:
    - Múltiplos fluxos de entrada (1 *Main* + *N* *Lookups*).
    - *Match Models*: `All matches`, `First match`, `Unique match` (último).
    - Tipos de junção: `Left Outer Join` e `Inner Join`.

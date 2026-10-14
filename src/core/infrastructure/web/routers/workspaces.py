@@ -135,3 +135,77 @@ def create_project(
         description=project.description,
         created_at=project.created_at
     )
+
+
+# ─── Endpoints de Gestão de Workspace Local (Filesystem) ────────
+
+@router.get("/workspaces/local/current")
+def get_current_local_workspace():
+    """Retorna o workspace local ativo e suas informações do filesystem."""
+    from src.core.application.workspace.workspace_manager import workspace_manager
+    return workspace_manager.get_workspace_info()
+
+
+@router.post("/workspaces/local/select")
+def select_local_workspace(payload: dict):
+    """Seleciona ou cria um workspace no caminho especificado."""
+    path = payload.get("path")
+    if not path or not str(path).strip():
+        raise HTTPException(status_code=400, detail="Caminho do workspace é obrigatório.")
+    clean_path = str(path).strip().strip('"\'')
+    name = payload.get("name")
+    if name:
+        name = str(name).strip().strip('"\'')
+    from src.core.application.workspace.workspace_manager import workspace_manager
+    try:
+        return workspace_manager.set_active_workspace(path=clean_path, name=name)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao selecionar workspace: {str(e)}")
+
+
+@router.get("/workspaces/local/sync")
+def sync_load_workspace():
+    """Carrega todo o estado salvo no workspace ativo (jobs, conexões, queries)."""
+    from src.core.application.workspace.workspace_manager import workspace_manager
+    return workspace_manager.load_workspace_state()
+
+
+@router.post("/workspaces/local/sync")
+def sync_save_workspace(payload: dict):
+    """Salva todo o estado (jobs, conexões, queries) no workspace ativo em disco."""
+    from src.core.application.workspace.workspace_manager import workspace_manager
+    success = workspace_manager.save_workspace_state(payload)
+    return {"status": "ok", "saved": success}
+
+
+@router.post("/workspaces/local/open-folder")
+def open_workspace_folder(payload: dict = None):
+    """Abre a pasta do workspace ativo no gerenciador de arquivos do SO."""
+    import os
+    import subprocess
+    from src.core.application.workspace.workspace_manager import workspace_manager
+    ws_path = (payload or {}).get("path") or workspace_manager.get_active_workspace_path()
+    ws_path = os.path.abspath(ws_path)
+    os.makedirs(ws_path, exist_ok=True)
+    try:
+        if os.name == "nt":
+            os.startfile(ws_path)
+        else:
+            subprocess.Popen(["xdg-open", ws_path])
+        return {"status": "opened", "path": ws_path}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "path": ws_path}
+
+
+@router.post("/workspaces/local/browse-folder")
+async def browse_workspace_folder(payload: dict = None):
+    """Abre a janela nativa de seleção de pastas do SO (Windows / macOS / Linux) e retorna o caminho selecionado."""
+    import asyncio
+    from src.core.application.workspace.workspace_manager import workspace_manager
+
+    initial_dir = (payload or {}).get("initial_dir") or workspace_manager.get_active_workspace_path()
+    loop = asyncio.get_event_loop()
+    selected_path = await loop.run_in_executor(None, workspace_manager.browse_native_folder, initial_dir)
+    return {"status": "ok", "path": selected_path}
+
+

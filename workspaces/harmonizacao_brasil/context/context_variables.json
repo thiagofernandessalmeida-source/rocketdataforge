@@ -1,0 +1,26 @@
+[
+  {
+    "id": "cv-oracle-host",
+    "key": "ORACLE_HOST",
+    "type": "string",
+    "scope": "global",
+    "values": {
+      "dev": "aslx370br.natura.com.br",
+      "hml": "aslx370br.natura.com.br",
+      "prd": "aslx370br.natura.com.br"
+    },
+    "description": "Host Oracle Natura"
+  },
+  {
+    "id": "cv-oracle-service",
+    "key": "ORACLE_SERVICE",
+    "type": "string",
+    "scope": "global",
+    "values": {
+      "dev": "o02hm",
+      "hml": "o02hm",
+      "prd": "o02hm"
+    },
+    "description": "Service Name Oracle o02hm"
+  }
+]

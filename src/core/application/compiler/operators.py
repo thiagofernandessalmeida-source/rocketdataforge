@@ -144,7 +144,8 @@ class LogicalSink(LogicalOperator):
             "data_action": self.data_action,
             "keys": self.keys,
             "connection_details": self.connection_details,
-            "raw_config": self.raw_config
+            "raw_config": self.raw_config,
+            "database_path": (self.raw_config or {}).get("database_path") or (self.raw_config or {}).get("database")
         })
         return res
 

@@ -2,6 +2,7 @@ import React, { memo, useState, useCallback, useRef } from "react";
 import { Handle, Position, NodeProps, useReactFlow } from "reactflow";
 import { CanvasNodeData, PortDefinition } from "../../../types";
 import { EXPANDED_CATALOG } from "../../../catalog/components";
+import { useNodeTelemetry } from "../../../store/telemetryStore";
 import {
   Database,
   FileText,
@@ -14,7 +15,113 @@ import {
   Loader2,
   Edit2,
   Info,
+  Clock,
+  Activity,
+  Zap,
 } from "lucide-react";
+
+function formatSpeed(rowsPerSec: number): string {
+  if (rowsPerSec >= 1_000_000) return `${(rowsPerSec / 1_000_000).toFixed(1)}M/s`;
+  if (rowsPerSec >= 1_000) return `${(rowsPerSec / 1_000).toFixed(1)}k/s`;
+  return `${rowsPerSec}/s`;
+}
+
+interface NodeTelemetryFooterProps {
+  nodeId: string;
+  fallbackStatus?: string;
+  fallbackMetrics?: { rowsIn?: number; rowsOut?: number; durationMs?: number };
+}
+
+const NodeTelemetryFooter: React.FC<NodeTelemetryFooterProps> = memo(({
+  nodeId,
+  fallbackStatus,
+  fallbackMetrics,
+}) => {
+  const telemetry = useNodeTelemetry(nodeId);
+
+  // Determina status ativo: da store reativa ou fallback legado
+  let status = telemetry?.status;
+  if (!status || status === "idle") {
+    if (fallbackStatus === "running") status = "running";
+    else if (fallbackStatus === "succeeded") status = "succeeded";
+    else if (fallbackStatus === "failed") status = "failed";
+    else return null; // Quando não há execução ativa ou métricas, oculta para manter o card limpo
+  }
+
+  const rowCount = telemetry
+    ? telemetry.rowCount
+    : Math.max(fallbackMetrics?.rowsIn || 0, fallbackMetrics?.rowsOut || 0);
+  const throughput = telemetry?.throughput || 0;
+
+  return (
+    <div className={`rdf-node-telemetry-footer status-${status}`}>
+      {/* 1. Status em tempo real */}
+      <div className="rdf-telemetry-status-badge">
+        {status === "queued" && (
+          <>
+            <Clock size={11} color="#f59e0b" />
+            <span style={{ color: "#f59e0b" }}>Queued</span>
+          </>
+        )}
+        {status === "starting" && (
+          <>
+            <Loader2 size={11} className="rdf-telemetry-spin" color="#38bdf8" />
+            <span style={{ color: "#38bdf8" }}>Starting</span>
+          </>
+        )}
+        {status === "running" && (
+          <>
+            <Activity size={11} className="rdf-telemetry-pulse" color="#10b981" />
+            <span style={{ color: "#10b981" }}>Running</span>
+          </>
+        )}
+        {status === "succeeded" && (
+          <>
+            <CheckCircle2 size={11} color="#22c55e" />
+            <span style={{ color: "#22c55e" }}>Success</span>
+          </>
+        )}
+        {status === "failed" && (
+          <>
+            <AlertCircle size={11} color="#ef4444" />
+            <span style={{ color: "#ef4444" }}>Failed</span>
+          </>
+        )}
+        {status === "cancelled" && (
+          <>
+            <AlertCircle size={11} color="#94a3b8" />
+            <span style={{ color: "#94a3b8" }}>Cancelled</span>
+          </>
+        )}
+      </div>
+
+      {/* 2. Feedback quando status é Starting (esperando retorno do banco) */}
+      {status === "starting" && (
+        <div className="rdf-telemetry-starting-hint" title="Aguardando retorno da query no banco de dados">
+          <span>Consultando DB...</span>
+        </div>
+      )}
+
+      {/* 3. Métricas de Linhas e Throughput */}
+      {(status === "running" || status === "succeeded") && (
+        <div className="rdf-telemetry-metrics">
+          <span className="rdf-telemetry-rows" title={`Total de linhas: ${rowCount.toLocaleString()}`}>
+            {rowCount.toLocaleString()} rows
+          </span>
+
+          {throughput > 0 && (
+            <span className="rdf-telemetry-throughput" title={`Taxa de transferência: ${throughput.toLocaleString()} rows/sec`}>
+              <Zap size={10} style={{ display: "inline", verticalAlign: "middle", marginRight: 1 }} />
+              {formatSpeed(throughput)}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+});
+
+NodeTelemetryFooter.displayName = "NodeTelemetryFooter";
 
 function getCategoryIcon(typeId?: string) {
   const safeId = typeId || "";
@@ -52,8 +159,20 @@ export const GenericNode: React.FC<NodeProps<CanvasNodeData>> = memo(({ id, data
   const catalogComp = EXPANDED_CATALOG.find((c) => c.type_id === data.componentType);
   const compDescription = catalogComp?.description || "Operador de processamento de dados";
 
-  const inputPorts = data.ports?.filter((p) => p.direction === "input") || [];
-  const outputPorts = data.ports?.filter((p) => p.direction === "output") || [];
+  // Componentes de Origem (Source) sempre expõem a porta 'input' para receber
+  // arestas de iteração e repetição em loop (tFlowToIterate direto entre inputs)
+  const hasDeclaredInput = data.ports?.some((p) => p.direction === "input");
+  const inputPorts: PortDefinition[] = hasDeclaredInput
+    ? (data.ports?.filter((p) => p.direction === "input") || [])
+    : data.category === "source"
+    ? [{ name: "input", direction: "input", type: "dataset" }]
+    : (data.ports?.filter((p) => p.direction === "input") || []);
+
+  const outputPorts: PortDefinition[] = (data.ports && data.ports.some((p) => p.direction === "output"))
+    ? data.ports.filter((p) => p.direction === "output")
+    : data.category === "target"
+    ? []
+    : [{ name: "main", direction: "output", type: "dataset" }];
 
   // ─── Salvar renomeação ──────────────────────────────────────
   const handleSaveTitle = useCallback(() => {
@@ -208,25 +327,14 @@ export const GenericNode: React.FC<NodeProps<CanvasNodeData>> = memo(({ id, data
           </div>
         )}
 
-        {/* Runtime Metrics Display */}
-        {data.metrics && (
-          <div
-            style={{
-              marginTop: 4,
-              paddingTop: 4,
-              borderTop: "1px solid var(--border-subtle)",
-              display: "flex",
-              justifyContent: "space-between",
-              fontSize: "0.68rem",
-              color: "var(--accent-cyan)",
-              fontFamily: "var(--font-mono)",
-            }}
-          >
-            <span>In: {data.metrics.rowsIn ?? 0}</span>
-            <span>Out: {data.metrics.rowsOut ?? 0}</span>
-          </div>
-        )}
       </div>
+
+      {/* ─── Real-time Telemetry Footer ─────────── */}
+      <NodeTelemetryFooter
+        nodeId={id}
+        fallbackStatus={data.status}
+        fallbackMetrics={data.metrics}
+      />
 
       {/* Output Handles */}
       {outputPorts.map((port: PortDefinition, idx: number) => {

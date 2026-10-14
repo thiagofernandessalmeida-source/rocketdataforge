@@ -1,4 +1,4 @@
-"""Testes Unitários para o Motor de Execução tMap (Talend Standard).
+"""Testes Unitários para o Motor de Execução tMap.
 
 Valida Match Models, Inner Join Rejects, Output Rejects, Variáveis Intermediárias e Múltiplas Saídas.
 """
@@ -84,13 +84,13 @@ def test_tmap_match_models_all_first_unique(runner):
         "join_model": "left_outer"
     }]
     res_unique = runner.execute_tmap_transform(main_df, lookups_unique, {"cars": lookup_df}, [], [{"name": "out"}])
-    # Unique match no Talend pega o último registro (Black)
+    # Unique match pega o último registro (Black)
     assert res_unique["out"].height == 2
     assert res_unique["out"].filter(pl.col("cust_id") == 1)["car_color"][0] == "Black"
 
 
 def test_tmap_inner_join_and_rejections(runner):
-    # Cenário dos PDFs do Talend (Owners, Cars, Resellers)
+    # Cenário de referência (Owners, Cars, Resellers)
     owners_df = pl.DataFrame({
         "ID_Owner": [1, 2, 3, 4, 5],
         "Name": ["Alice", "Bob", "Charlie", "David", "Eve"],

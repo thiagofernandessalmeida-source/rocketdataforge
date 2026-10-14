@@ -9,7 +9,7 @@ import {
   ValidationReport,
 } from "../types";
 
-const getBaseApiUrl = () => {
+export const getBaseApiUrl = () => {
   if (
     typeof window !== "undefined" &&
     window.location &&

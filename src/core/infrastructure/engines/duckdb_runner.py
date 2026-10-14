@@ -1,3 +1,4 @@
+import logging
 import os
 import threading
 from typing import Any, Dict, List, Optional
@@ -5,6 +6,8 @@ from typing import Any, Dict, List, Optional
 import duckdb
 import polars as pl
 from src.core.domain.shared.exceptions import DomainError
+
+logger = logging.getLogger(__name__)
 
 
 class DuckDBRunner:
@@ -79,7 +82,7 @@ class DuckDBRunner:
         else:
             return self.execute_query_to_polars(f"SELECT * FROM {read_fn}", conn=conn)
 
-    def execute_query_on_database(self, database_path: str, query: str, read_only: bool = True) -> pl.DataFrame:
+    def execute_query_on_database(self, database_path: str, query: str, read_only: bool = True, fetch_size: Optional[int] = None) -> pl.DataFrame:
         """Executa consulta em um banco de dados DuckDB (.duckdb ou :memory:)."""
         db_path = database_path or self.database_path or ":memory:"
         if db_path != ":memory:" and not os.path.exists(db_path) and not read_only:
@@ -88,6 +91,41 @@ class DuckDBRunner:
         try:
             conn = duckdb.connect(db_path, read_only=read_only and os.path.exists(db_path) and db_path != ":memory:")
             return self.execute_query_to_polars(query, conn=conn)
+        except Exception as e:
+            raise DomainError(f"Falha ao executar query no banco DuckDB '{db_path}': {str(e)}", code="ERR_DUCKDB_DATABASE")
+
+    def execute_query_chunks_on_database(
+        self,
+        database_path: str,
+        query: str,
+        fetch_size: int = 10000,
+        read_only: bool = True
+    ) -> List[pl.DataFrame]:
+        """Executa consulta em DuckDB retornando lista de chunks paginados (Fetch Size) sem carregar toda a tabela de uma vez."""
+        db_path = database_path or self.database_path or ":memory:"
+        if db_path != ":memory:" and not os.path.exists(db_path) and not read_only:
+            os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+
+        try:
+            conn = duckdb.connect(db_path, read_only=read_only and os.path.exists(db_path) and db_path != ":memory:")
+            cur = conn.cursor()
+            cur.execute(query)
+            col_names = [d[0] for d in cur.description] if cur.description else ["result"]
+            chunks: List[pl.DataFrame] = []
+
+            while True:
+                batch = cur.fetchmany(fetch_size)
+                if not batch:
+                    break
+                from src.core.infrastructure.engines.polars_runner import batch_to_polars_df
+                chunk_df = batch_to_polars_df(batch, col_names)
+                chunks.append(chunk_df)
+
+            if not chunks:
+                chunks.append(pl.DataFrame({c: [] for c in col_names}))
+
+            conn.close()
+            return chunks
         except Exception as e:
             raise DomainError(f"Falha ao executar query no banco DuckDB '{db_path}': {str(e)}", code="ERR_DUCKDB_DATABASE")
 
@@ -120,10 +158,17 @@ class DuckDBRunner:
         table_action: str = "none",
         data_action: str = "insert",
         keys: Optional[List[str]] = None,
-        is_first_chunk: bool = True
+        is_first_chunk: bool = True,
+        schema_definitions: Optional[List[Dict[str, Any]]] = None,
+        use_batch_mode: bool = True,
+        batch_size: int = 10000
     ) -> int:
-        """Grava dados no banco DuckDB com suporte a ações de tabela e dados no padrão Talend (Thread-Safe)."""
+        """Grava dados no banco DuckDB com suporte a ações de tabela, dados e escrita em lotes particionados (Batch Mode)."""
         with self._write_lock:
+            if len(df.columns) == 0:
+                logger.warning(f"write_to_duckdb: DataFrame fornecido para a tabela '{table_name}' não possui colunas. Nenhuma operação executada.")
+                return 0
+
             db_path = database_path or self.database_path or ":memory:"
             if db_path != ":memory:":
                 os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
@@ -132,40 +177,109 @@ class DuckDBRunner:
             arrow_table = df.to_arrow()
             conn.register("_chunk_batch", arrow_table)
 
+            # Inspeciona tabela existente
+            existing_col_info = {}
+            try:
+                col_rows = conn.execute(f"PRAGMA table_info('{table_name}');").fetchall()
+                existing_col_info = {r[1]: str(r[2]).upper() for r in col_rows}
+            except Exception:
+                existing_col_info = {}
+
+            # Se a tabela já existir no primeiro chunk, verifica se está vazia com tipos obsoletos/incompatíveis
+            if is_first_chunk and existing_col_info:
+                try:
+                    row_cnt = conn.execute(f"SELECT COUNT(*) FROM {table_name};").fetchone()[0]
+                    if row_cnt == 0:
+                        type_mismatch = False
+                        for col_name, dtype in df.schema.items():
+                            if col_name in existing_col_info:
+                                db_type = existing_col_info[col_name]
+                                # Se o dado atual for String/Utf8 mas a tabela DuckDB vazia tiver guardado como número
+                                if dtype in (pl.Utf8, pl.Categorical) and any(n in db_type for n in ("INT", "FLOAT", "DOUBLE", "NUMERIC")):
+                                    type_mismatch = True
+                                    break
+                        if type_mismatch or table_action in ("drop_create", "drop_if_exists_create"):
+                            logger.info(f"Tabela '{table_name}' vazia com tipos incompatíveis detectada. Recriando estrutura com schema correto...")
+                            conn.execute(f"DROP TABLE IF EXISTS {table_name};")
+                            existing_col_info = {}
+                except Exception:
+                    pass
+
             # 1. Executa Ação na Tabela apenas no primeiro chunk
             if is_first_chunk:
                 if table_action in ("drop_create", "drop_if_exists_create"):
                     conn.execute(f"DROP TABLE IF EXISTS {table_name};")
                     conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM _chunk_batch WHERE 1=0;")
-                elif table_action == "create_if_not_exists":
+                    existing_col_info = {c: True for c in df.columns}
+                elif table_action == "create_if_not_exists" and not existing_col_info:
                     conn.execute(f"CREATE TABLE IF NOT EXISTS {table_name} AS SELECT * FROM _chunk_batch WHERE 1=0;")
+                    existing_col_info = {c: True for c in df.columns}
                 elif table_action in ("truncate", "delete_all"):
                     try:
                         conn.execute(f"DELETE FROM {table_name};")
                     except Exception:
                         conn.execute(f"CREATE TABLE IF NOT EXISTS {table_name} AS SELECT * FROM _chunk_batch WHERE 1=0;")
+                        existing_col_info = {c: True for c in df.columns}
 
             # Garante que a tabela existe antes de inserir
             try:
                 conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1;")
             except Exception:
                 conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM _chunk_batch WHERE 1=0;")
+                existing_col_info = {c: True for c in df.columns}
 
-            # 2. Executa Ação nos Dados
-            if data_action == "insert":
-                conn.execute(f"INSERT INTO {table_name} SELECT * FROM _chunk_batch;")
-            elif data_action in ("upsert", "update_or_insert", "insert_or_update") and keys:
-                join_cond = " AND ".join([f"{table_name}.{k} = _chunk_batch.{k}" for k in keys])
-                conn.execute(f"DELETE FROM {table_name} WHERE EXISTS (SELECT 1 FROM _chunk_batch WHERE {join_cond});")
-                conn.execute(f"INSERT INTO {table_name} SELECT * FROM _chunk_batch;")
-            elif data_action == "delete" and keys:
-                join_cond = " AND ".join([f"{table_name}.{k} = _chunk_batch.{k}" for k in keys])
-                conn.execute(f"DELETE FROM {table_name} WHERE EXISTS (SELECT 1 FROM _chunk_batch WHERE {join_cond});")
+            # Monta SQL de inserção com colunas explícitas para garantir mapeamento nominal
+            try:
+                table_cols = [r[1] for r in conn.execute(f"PRAGMA table_info('{table_name}');").fetchall()]
+            except Exception:
+                table_cols = list(df.columns)
+
+            matching_cols = [c for c in df.columns if c in table_cols]
+            if matching_cols:
+                cols_str = ", ".join([f'"{c}"' for c in matching_cols])
+                insert_clause = f"({cols_str}) SELECT {cols_str} FROM _chunk_batch"
             else:
-                conn.execute(f"INSERT INTO {table_name} SELECT * FROM _chunk_batch;")
+                insert_clause = "SELECT * FROM _chunk_batch"
 
-            conn.close()
-            return df.height
+            # 2. Executa Ação nos Dados com Suporte a Batch Mode
+            if use_batch_mode and batch_size > 0 and df.height > batch_size:
+                total_written = 0
+                for start_idx in range(0, df.height, batch_size):
+                    slice_df = df.slice(start_idx, batch_size)
+                    conn.register("_chunk_batch", slice_df.to_arrow())
+                    if data_action == "insert":
+                        conn.execute(f"INSERT INTO {table_name} {insert_clause};")
+                    elif data_action in ("upsert", "update_or_insert", "insert_or_update") and keys:
+                        join_cond = " AND ".join([f"{table_name}.\"{k}\" = _chunk_batch.\"{k}\"" for k in keys if k in df.columns])
+                        if join_cond:
+                            conn.execute(f"DELETE FROM {table_name} WHERE EXISTS (SELECT 1 FROM _chunk_batch WHERE {join_cond});")
+                        conn.execute(f"INSERT INTO {table_name} {insert_clause};")
+                    elif data_action == "delete" and keys:
+                        join_cond = " AND ".join([f"{table_name}.\"{k}\" = _chunk_batch.\"{k}\"" for k in keys if k in df.columns])
+                        if join_cond:
+                            conn.execute(f"DELETE FROM {table_name} WHERE EXISTS (SELECT 1 FROM _chunk_batch WHERE {join_cond});")
+                    else:
+                        conn.execute(f"INSERT INTO {table_name} {insert_clause};")
+                    total_written += slice_df.height
+                conn.close()
+                return total_written
+            else:
+                if data_action == "insert":
+                    conn.execute(f"INSERT INTO {table_name} {insert_clause};")
+                elif data_action in ("upsert", "update_or_insert", "insert_or_update") and keys:
+                    join_cond = " AND ".join([f"{table_name}.\"{k}\" = _chunk_batch.\"{k}\"" for k in keys if k in df.columns])
+                    if join_cond:
+                        conn.execute(f"DELETE FROM {table_name} WHERE EXISTS (SELECT 1 FROM _chunk_batch WHERE {join_cond});")
+                    conn.execute(f"INSERT INTO {table_name} {insert_clause};")
+                elif data_action == "delete" and keys:
+                    join_cond = " AND ".join([f"{table_name}.\"{k}\" = _chunk_batch.\"{k}\"" for k in keys if k in df.columns])
+                    if join_cond:
+                        conn.execute(f"DELETE FROM {table_name} WHERE EXISTS (SELECT 1 FROM _chunk_batch WHERE {join_cond});")
+                else:
+                    conn.execute(f"INSERT INTO {table_name} {insert_clause};")
+
+                conn.close()
+                return df.height
 
     def execute_join(
         self,
@@ -202,7 +316,7 @@ class DuckDBRunner:
 
     @staticmethod
     def transpile_expression(expr: str, known_columns: Optional[List[str]] = None) -> str:
-        """Converte expressões com sintaxe mista (Java/Talend/Python/SQL) para DuckDB SQL válido."""
+        """Converte expressões com sintaxe mista (Java/Python/SQL) para DuckDB SQL válido."""
         if not expr or not expr.strip():
             return "NULL"
 
@@ -262,9 +376,31 @@ class DuckDBRunner:
         variables: List[Dict[str, Any]],
         outputs: List[Dict[str, Any]]
     ) -> Dict[str, pl.DataFrame]:
-        """Executa a transformação completa do tMap padrão Talend usando DuckDB."""
+        """Executa a transformação completa do tMap usando DuckDB."""
+        # Se outputs não estiver configurado explicitamente, preserva o esquema da entrada
+        if not outputs:
+            clean_cols = [c for c in main_df.columns if not c.startswith("_tmap")]
+            empty_df = pl.DataFrame({c: [] for c in clean_cols}) if clean_cols else pl.DataFrame()
+            fallback_df = main_df if main_df.height > 0 else empty_df
+            return {"main": fallback_df, "out1": fallback_df, "output": fallback_df}
+
         if main_df.height == 0:
-            return {out.get("name", f"out_{i+1}"): pl.DataFrame() for i, out in enumerate(outputs)}
+            empty_results = {}
+            for i, out in enumerate(outputs):
+                out_name = out.get("name") or f"out_{i+1}"
+                cols = out.get("columns", [])
+                if cols:
+                    col_names = [c.get("name") or c.get("target") or f"col_{j}" for j, c in enumerate(cols)]
+                elif len(main_df.columns) > 0:
+                    col_names = [c for c in main_df.columns if not c.startswith("_tmap")]
+                else:
+                    col_names = []
+                
+                if col_names:
+                    empty_results[out_name] = pl.DataFrame({c: [] for c in col_names})
+                else:
+                    empty_results[out_name] = pl.DataFrame()
+            return empty_results
 
         # Coleta todas as colunas conhecidas para transpilação precisa de expressões com espaços
         known_cols = list(main_df.columns)

@@ -1,7 +1,7 @@
 import { Node, Edge } from "reactflow";
 import { CanvasNodeData } from "../../../types";
 
-export type FlowType = "main" | "lkp" | "out" | "reject";
+export type FlowType = "main" | "lkp" | "out" | "reject" | "iterate";
 
 export interface FlowMeta {
   type: FlowType;
@@ -22,6 +22,15 @@ export const FLOW_CONFIG: Record<FlowType, FlowMeta> = {
     badgeBg: "rgba(12, 31, 56, 0.95)",
     badgeBorder: "#0284c7",
     badgeColor: "#38bdf8",
+  },
+  iterate: {
+    type: "iterate",
+    labelPrefix: "iterate",
+    displayTitle: "Fluxo de Iteração (Loop/Map)",
+    strokeColor: "#10b981",
+    badgeBg: "rgba(6, 78, 59, 0.95)",
+    badgeBorder: "#059669",
+    badgeColor: "#34d399",
   },
   lkp: {
     type: "lkp",
@@ -52,6 +61,19 @@ export const FLOW_CONFIG: Record<FlowType, FlowMeta> = {
   },
 };
 
+function isSourceComponent(node?: Node<CanvasNodeData> | null): boolean {
+  if (!node?.data) return false;
+  if (node.data.category === "source") return true;
+  const compType = (node.data.componentType || "").toLowerCase();
+  const label = (node.data.label || "").toLowerCase();
+  return (
+    compType.includes("source") ||
+    compType.includes("input") ||
+    label.includes("input") ||
+    (compType.startsWith("connector.db.") && !compType.includes("output"))
+  );
+}
+
 /**
  * Determina o tipo de fluxo baseado no componente de origem, destino e conexões existentes.
  */
@@ -65,6 +87,11 @@ export function getFlowType(
   // Se a porta de origem for explicitamente reject
   if (sourceHandle === "reject" || sourceHandle === "reject_out") {
     return "reject";
+  }
+
+  // Se o nó destino for um componente de Origem/Input (Loop/Map Iteration tipo tFlowToIterate)
+  if (isSourceComponent(targetNode)) {
+    return "iterate";
   }
 
   const srcType = (sourceNode?.data?.componentType || "").toLowerCase();

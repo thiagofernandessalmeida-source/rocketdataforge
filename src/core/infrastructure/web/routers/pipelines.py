@@ -11,6 +11,7 @@ from src.core.domain.pipeline.edge import Edge
 from src.core.domain.pipeline.hasher import compute_canonical_hash
 from src.core.domain.pipeline.node import Node
 from src.core.domain.pipeline.version import PipelineVersion as DomainVersion
+from src.core.domain.shared.exceptions import DomainValidationError
 from src.core.domain.shared.identifiers import generate_ulid
 from src.core.domain.shared.types import PortId, SemanticVersion
 from src.core.infrastructure.persistence.models import PipelineDraftModel, ProjectModel

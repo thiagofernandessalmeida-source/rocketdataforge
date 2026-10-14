@@ -1,7 +1,7 @@
-const { app, BrowserWindow, shell, Menu } = require("electron");
+const { app, BrowserWindow, shell, Menu, ipcMain, dialog } = require("electron");
 const path = require("path");
 const http = require("http");
-const { spawn, exec } = require("child_process");
+const { spawn, exec, execSync } = require("child_process");
 const fs = require("fs");
 
 let mainWindow = null;
@@ -13,6 +13,20 @@ const VENV_PYTHON = path.join(ROOT_DIR, ".venv", "Scripts", "python.exe");
 const BACKEND_PORT = 8000;
 const HEALTH_URL = `http://127.0.0.1:${BACKEND_PORT}/api/v1/health`;
 const DEV_URL = "http://localhost:5173";
+
+function killProcessOnPort(port) {
+  if (process.platform === "win32") {
+    try {
+      execSync(`for /f "tokens=5" %a in ('netstat -aon ^| findstr ":${port}" ^| findstr "LISTENING"') do taskkill /f /t /pid %a`, { stdio: "ignore" });
+      execSync(`taskkill /f /im python3.12.exe`, { stdio: "ignore" });
+      execSync(`taskkill /f /im python.exe`, { stdio: "ignore" });
+    } catch (_) {}
+  } else {
+    try {
+      execSync(`lsof -ti:${port} | xargs kill -9`, { stdio: "ignore" });
+    } catch (_) {}
+  }
+}
 
 function checkBackendHealth() {
   return new Promise((resolve) => {
@@ -91,11 +105,11 @@ async function startBackend() {
 }
 
 function killPythonProcess() {
-  if (spawnedBackend && pythonProcess && pythonProcess.pid) {
+  if (pythonProcess && pythonProcess.pid) {
     console.log(`[Electron] Encerrando backend Python (PID: ${pythonProcess.pid})...`);
     if (process.platform === "win32") {
       try {
-        exec(`taskkill /pid ${pythonProcess.pid} /T /F`);
+        execSync(`taskkill /pid ${pythonProcess.pid} /T /F`, { stdio: "ignore" });
       } catch (_) {}
     } else {
       try {
@@ -104,6 +118,7 @@ function killPythonProcess() {
     }
     pythonProcess = null;
   }
+  killProcessOnPort(BACKEND_PORT);
 }
 
 async function createMainWindow() {
@@ -121,7 +136,23 @@ async function createMainWindow() {
       nodeIntegration: false,
       contextIsolation: true,
       webSecurity: false,
+      preload: path.join(__dirname, "preload.cjs"),
     },
+  });
+
+  // Handler para seletor nativo de pastas via Electron
+  ipcMain.handle("dialog:openDirectory", async (event, defaultPath) => {
+    const win = BrowserWindow.getFocusedWindow() || mainWindow;
+    const cleanPath = defaultPath ? String(defaultPath).replace(/^["']|["']$/g, "").trim() : undefined;
+    const res = await dialog.showOpenDialog(win, {
+      title: "Selecione a Pasta Raiz do Workspace",
+      defaultPath: cleanPath && fs.existsSync(cleanPath) ? cleanPath : undefined,
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (!res.canceled && res.filePaths && res.filePaths.length > 0) {
+      return res.filePaths[0];
+    }
+    return null;
   });
 
   mainWindow.maximize();

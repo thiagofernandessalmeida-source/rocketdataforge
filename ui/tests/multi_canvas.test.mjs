@@ -93,6 +93,109 @@ function validateParallelCellConsistency(cells) {
   return errors.length > 0 ? errors : null;
 }
 
+function generateRocketNodeId(typeId, existingNodes = []) {
+  let prefix = "node";
+  if (typeId.includes("postgresql.output") || typeId.includes("postgres.output")) prefix = "postgres_sink";
+  else if (typeId.includes("postgresql") || typeId.includes("postgres") || typeId.includes("database.source")) prefix = "postgres_source";
+  else if (typeId.includes("duckdb.output")) prefix = "duckdb_sink";
+  else if (typeId.includes("duckdb")) prefix = "duckdb_source";
+  else if (typeId.includes("oracle.output")) prefix = "oracle_sink";
+  else if (typeId.includes("oracle")) prefix = "oracle_source";
+  else if (typeId.includes("sqlserver.output")) prefix = "sqlserver_sink";
+  else if (typeId.includes("sqlserver")) prefix = "sqlserver_source";
+  else if (typeId.includes("mysql.output")) prefix = "mysql_sink";
+  else if (typeId.includes("mysql")) prefix = "mysql_source";
+  else if (typeId.includes("file.source.csv") || typeId.includes(".csv")) prefix = "csv_source";
+  else if (typeId.includes("file.source.parquet") || typeId.includes(".parquet")) prefix = "parquet_source";
+  else if (typeId.includes("file.source.json") || typeId.includes(".json")) prefix = "json_source";
+  else if (typeId.includes("file.source.excel") || typeId.includes(".excel")) prefix = "excel_source";
+  else if (typeId.includes("file.target")) prefix = "file_sink";
+  else if (typeId.includes("file.source")) prefix = "file_source";
+  else if (typeId.includes("tmap") || typeId.includes("mapper")) prefix = "data_mapper";
+  else if (typeId.includes("filter")) prefix = "filter";
+  else if (typeId.includes("select")) prefix = "project";
+  else if (typeId.includes("join")) prefix = "join";
+  else if (typeId.includes("aggregate")) prefix = "aggregate";
+  else if (typeId.includes("sort")) prefix = "sort";
+  else if (typeId.includes("deduplicate")) prefix = "dedup";
+  else if (typeId.includes("lookup")) prefix = "lookup";
+  else if (typeId.includes("union")) prefix = "union";
+  else if (typeId.includes("pivot")) prefix = "pivot";
+  else {
+    const last = typeId.split(".").pop() || "node";
+    prefix = last.replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase();
+  }
+
+  let count = 1;
+  const existingIds = new Set(existingNodes.map((n) => n.id.toLowerCase()));
+  while (existingIds.has(`${prefix}_${count}`.toLowerCase())) {
+    count++;
+  }
+  return `${prefix}_${count}`;
+}
+
+function healDuplicateNodeIdsAcrossCells(cells) {
+  const seenIds = new Set();
+  let repairedCount = 0;
+
+  const repairedCells = cells.map((cell) => {
+    const idMap = {};
+    const newNodes = (cell.nodes || []).map((node) => {
+      const lower = node.id.toLowerCase();
+      if (!seenIds.has(lower)) {
+        seenIds.add(lower);
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            cellId: cell.id,
+          },
+        };
+      }
+
+      repairedCount++;
+      let count = 2;
+      let candidate = `${node.id}_${count}`;
+      while (seenIds.has(candidate.toLowerCase())) {
+        count++;
+        candidate = `${node.id}_${count}`;
+      }
+      seenIds.add(candidate.toLowerCase());
+      idMap[node.id] = candidate;
+
+      return {
+        ...node,
+        id: candidate,
+        data: {
+          ...node.data,
+          cellId: cell.id,
+        },
+      };
+    });
+
+    const newEdges = (cell.edges || []).map((edge) => {
+      const newSource = idMap[edge.source] || edge.source;
+      const newTarget = idMap[edge.target] || edge.target;
+      if (newSource !== edge.source || newTarget !== edge.target) {
+        return {
+          ...edge,
+          source: newSource,
+          target: newTarget,
+        };
+      }
+      return edge;
+    });
+
+    return {
+      ...cell,
+      nodes: newNodes,
+      edges: newEdges,
+    };
+  });
+
+  return { cells: repairedCells, repairedCount };
+}
+
 // ─── Simulation of jobStore methods for testing ───────────────
 function createTestJobStore() {
   let state = {
@@ -831,6 +934,75 @@ describe("Gerenciador de Conexões: Suporte a DuckDB e Escopo Global vs Local", 
     assert.equal(connsGeneral.some((c) => c.name === "PostgreSQL Corporativo"), true);
     assert.equal(connsGeneral.some((c) => c.name === "DuckDB Local Staging A"), false);
     assert.equal(connsGeneral.some((c) => c.name === "DuckDB Local Staging B"), false);
+  });
+});
+
+describe("Multi-Canvas: Unicidade Global de IDs de Componentes entre Células", () => {
+  it("deve gerar IDs únicos para componentes do mesmo tipo adicionados em células distintas", () => {
+    // Célula 1 já possui um DuckDB Output
+    const cell1Nodes = [
+      { id: "duckdb_sink_1", data: { componentType: "connector.db.duckdb.output" } },
+    ];
+    // Célula 2 está vazia
+    const cell2Nodes = [];
+
+    // Todos os nós existentes no Job
+    const allJobNodes = [...cell1Nodes, ...cell2Nodes];
+
+    // Ao adicionar DuckDB Output na Célula 2, deve checar allJobNodes e gerar duckdb_sink_2
+    const newIdCell2 = generateRocketNodeId("connector.db.duckdb.output", allJobNodes);
+    assert.equal(newIdCell2, "duckdb_sink_2");
+
+    // Ao adicionar outro DuckDB Output na Célula 1 considerando o nó da Célula 2, gera duckdb_sink_3
+    const updatedJobNodes = [...allJobNodes, { id: newIdCell2, data: { componentType: "connector.db.duckdb.output" } }];
+    const newIdCell1Again = generateRocketNodeId("connector.db.duckdb.output", updatedJobNodes);
+    assert.equal(newIdCell1Again, "duckdb_sink_3");
+  });
+
+  it("deve detectar e desambiguar componentes com o mesmo ID em células distintas (Auto-Heal) e ajustar arestas", () => {
+    // Simula o cenário relatado pelo usuário no print:
+    // Célula 1 e Célula 2 ambas possuem duckdb_sink_22
+    const corruptedCells = [
+      {
+        id: "canvas-cell-01",
+        name: "canvas-cell-01",
+        nodes: [
+          { id: "postgres_source_1", data: { label: "PostgreSQL" } },
+          { id: "duckdb_sink_22", data: { label: "DuckDB Output" } },
+        ],
+        edges: [
+          { id: "e1", source: "postgres_source_1", target: "duckdb_sink_22" },
+        ],
+      },
+      {
+        id: "canvas-cell-02",
+        name: "canvas-cell-02",
+        nodes: [
+          { id: "duckdb_source_1", data: { label: "DuckDB Input" } },
+          { id: "duckdb_sink_22", data: { label: "DuckDB Output 2" } }, // DUPLICADO!
+        ],
+        edges: [
+          { id: "e2", source: "duckdb_source_1", target: "duckdb_sink_22" },
+        ],
+      },
+    ];
+
+    const { cells: repairedCells, repairedCount } = healDuplicateNodeIdsAcrossCells(corruptedCells);
+
+    assert.equal(repairedCount, 1);
+    // Célula 1 manteve seu ID duckdb_sink_22
+    assert.equal(repairedCells[0].nodes[1].id, "duckdb_sink_22");
+    assert.equal(repairedCells[0].edges[0].target, "duckdb_sink_22");
+
+    // Célula 2 teve o nó desambiguado para duckdb_sink_22_2
+    assert.equal(repairedCells[1].nodes[1].id, "duckdb_sink_22_2");
+    // A aresta da Célula 2 foi atualizada para apontar para o novo ID único
+    assert.equal(repairedCells[1].edges[0].target, "duckdb_sink_22_2");
+
+    // Todos os IDs no Job agora são estritamente únicos
+    const allIds = repairedCells.flatMap((c) => c.nodes.map((n) => n.id));
+    const uniqueIds = new Set(allIds);
+    assert.equal(allIds.length, uniqueIds.size);
   });
 });
 

@@ -40,6 +40,7 @@ export interface CanvasNodeData {
     rowsOut?: number;
     durationMs?: number;
   };
+  cellId?: string;
 }
 
 export interface PipelineSummary {

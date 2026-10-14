@@ -39,6 +39,7 @@ class ValidationReport:
     warnings: List[ValidationWarningItem] = field(default_factory=list)
     topological_order: List[str] = field(default_factory=list)
     cell_topological_order: List[str] = field(default_factory=list)
+    iterator_edges: List[str] = field(default_factory=list)
 
 
 class GraphValidator:
@@ -226,8 +227,30 @@ class GraphValidator:
             ))
             return ValidationReport(is_valid=False, errors=errors, warnings=warnings)
 
-        # 3. Validações de integridade semântica (Sources e Sinks)
-        sources = [node_id for node_id in draft.nodes if not any(edge.to_port.node_id == node_id for edge in draft.edges.values())]
+        # 3. Identificação e Validação de Arestas de Iteração (ITERATOR_EDGE)
+        # Permite conectar a saída de um nó (Origem A) diretamente na entrada de outro nó (Origem B) para iteração linha a linha.
+        iterator_edges: List[str] = []
+        for edge_id, edge in draft.edges.items():
+            to_node = draft.nodes.get(edge.to_port.node_id)
+            from_node = draft.nodes.get(edge.from_port.node_id)
+            if to_node and from_node:
+                to_type = (to_node.component_type or "").lower()
+                from_type = (from_node.component_type or "").lower()
+                is_to_source = (
+                    "source" in to_type
+                    or (to_type.startswith("connector.db.") and not to_type.endswith(".output"))
+                    or to_type.startswith("core.file.source")
+                )
+                if is_to_source:
+                    iterator_edges.append(edge_id)
+
+        # 4. Validações de integridade semântica (Sources e Sinks)
+        sources = [
+            node_id for node_id in draft.nodes
+            if not any(edge.to_port.node_id == node_id for edge in draft.edges.values())
+            or (draft.nodes[node_id].component_type or "").lower().startswith("connector.db.")
+            or "source" in (draft.nodes[node_id].component_type or "").lower()
+        ]
         sinks = [node_id for node_id in draft.nodes if not any(edge.from_port.node_id == node_id for edge in draft.edges.values())]
 
         if not sources:
@@ -320,5 +343,10 @@ class GraphValidator:
             errors=errors,
             warnings=warnings,
             topological_order=topological_order,
-            cell_topological_order=cell_topological_order
+            cell_topological_order=cell_topological_order,
+            iterator_edges=iterator_edges
         )
+
+
+DAGValidator = GraphValidator
+

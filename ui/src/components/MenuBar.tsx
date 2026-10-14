@@ -27,6 +27,8 @@ import {
   Layers,
   Sparkles,
   Zap,
+  HardDrive,
+  FolderOpen,
 } from "lucide-react";
 
 export interface MenuBarProps {
@@ -69,6 +71,8 @@ export interface MenuBarProps {
   onOpenPolicySimulator?: () => void;
   onOpenAutoDoc?: () => void;
   onOpenAbout: () => void;
+  onOpenWorkspace?: () => void;
+  onOpenWorkspaceFolder?: () => void;
 }
 
 type MenuKey = "arquivo" | "execucao" | "celulas" | "ferramentas" | "exibir" | "ajuda" | null;
@@ -111,6 +115,8 @@ export const MenuBar: React.FC<MenuBarProps> = ({
   onOpenPolicySimulator,
   onOpenAutoDoc,
   onOpenAbout,
+  onOpenWorkspace,
+  onOpenWorkspaceFolder,
 }) => {
   const [openMenu, setOpenMenu] = useState<MenuKey>(null);
   const barRef = useRef<HTMLDivElement>(null);
@@ -211,6 +217,27 @@ export const MenuBar: React.FC<MenuBarProps> = ({
                 <UploadCloud size={14} />
                 <span className="entry-label">Publicar Versão</span>
               </button>
+              {(onOpenWorkspace || onOpenWorkspaceFolder) && <div className="dropdown-divider" />}
+              {onOpenWorkspace && (
+                <button
+                  type="button"
+                  className="dropdown-entry"
+                  onClick={() => closeAndRun(onOpenWorkspace)}
+                >
+                  <HardDrive size={14} />
+                  <span className="entry-label">Alternar Espaço de Trabalho (Workspace)...</span>
+                </button>
+              )}
+              {onOpenWorkspaceFolder && (
+                <button
+                  type="button"
+                  className="dropdown-entry"
+                  onClick={() => closeAndRun(onOpenWorkspaceFolder)}
+                >
+                  <FolderOpen size={14} />
+                  <span className="entry-label">Abrir Pasta do Workspace no Explorer</span>
+                </button>
+              )}
             </div>
           )}
         </div>

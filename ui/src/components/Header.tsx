@@ -24,6 +24,7 @@ import {
   SlidersHorizontal,
   Terminal,
   Info,
+  HardDrive,
 } from "lucide-react";
 import { Environment } from "../store/jobStore";
 
@@ -68,6 +69,9 @@ interface HeaderProps {
   onOpenConnections: () => void;
   onOpenContextVars: () => void;
   onOpenQueryBank: () => void;
+  workspaceName?: string;
+  workspacePath?: string;
+  onOpenWorkspace?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -105,6 +109,9 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenConnections,
   onOpenContextVars,
   onOpenQueryBank,
+  workspaceName,
+  workspacePath,
+  onOpenWorkspace,
 }) => {
   const env = ENV_LABELS[activeEnvironment];
 
@@ -260,6 +267,37 @@ export const Header: React.FC<HeaderProps> = ({
           </span>
           <Globe size={12} opacity={0.7} />
         </button>
+
+        {/* Workspace Indicator & Selector */}
+        {onOpenWorkspace && (
+          <button
+            type="button"
+            className="workspace-badge-btn"
+            onClick={onOpenWorkspace}
+            title={`Espaço de Trabalho Ativo: ${workspaceName || "Padrão"}\nCaminho: ${workspacePath || "Carregando..."}\nClique para alternar ou gerenciar workspaces`}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              background: "rgba(168, 85, 247, 0.12)",
+              border: "1px solid rgba(168, 85, 247, 0.3)",
+              padding: "4px 10px",
+              borderRadius: 6,
+              fontSize: "0.75rem",
+              color: "#c084fc",
+              cursor: "pointer",
+              fontWeight: 500,
+              transition: "all 0.15s ease",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(168, 85, 247, 0.22)")}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(168, 85, 247, 0.12)")}
+          >
+            <HardDrive size={13} color="#c084fc" />
+            <span style={{ maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {workspaceName || "Workspace"}
+            </span>
+          </button>
+        )}
 
         {/* Sidebar & Panel Visibility Toggles */}
         <div style={{ display: "flex", alignItems: "center", gap: 3, marginLeft: 6, background: "rgba(0,0,0,0.25)", padding: "2px 4px", borderRadius: 6, border: "1px solid var(--border-subtle)" }}>

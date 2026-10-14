@@ -502,7 +502,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
             <span className="node-badge">{nodeLabel || nodeId}</span>
           </div>
 
-          {/* Quick Search / Find bar (Talend style) */}
+          {/* Quick Search / Find bar */}
           <div className="data-mapper-search-bar">
             <Search size={13} className="search-icon" />
             <input
@@ -647,7 +647,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                       </div>
                     </div>
 
-                    {/* Talend Lookup Model & Match Properties */}
+                    {/* Lookup Model & Match Properties */}
                     {isSettingsOpen && (
                       <div className="lookup-properties-grid">
                         <div className="prop-row">
@@ -973,7 +973,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                       </div>
                     </div>
 
-                    {/* Output Filter & Rejects Box (Talend style) */}
+                    {/* Output Filter & Rejects Box */}
                     {isSettingsOpen && (
                       <div className="output-properties-box">
                         <div className="prop-row">
@@ -1120,7 +1120,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
           </div>
         </div>
 
-        {/* ─── BOTTOM PANEL: Schema Editor & Expression Helper (Talend Style) ─── */}
+        {/* ─── BOTTOM PANEL: Schema Editor & Expression Helper ─── */}
         <div className={`data-mapper-bottom-panel ${bottomExpanded ? "expanded" : "collapsed"}`}>
           {/* Bottom Tabs Bar */}
           <div className="bottom-tabs-bar">
@@ -1177,7 +1177,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                 </div>
 
                 <div className="schema-grid-wrapper">
-                  <table className="schema-talend-table">
+                  <table className="schema-studio-table">
                     <thead>
                       <tr>
                         <th>Column</th>
@@ -1283,7 +1283,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                 </div>
 
                 <div className="schema-grid-wrapper">
-                  <table className="schema-talend-table">
+                  <table className="schema-studio-table">
                     <thead>
                       <tr>
                         <th>Column</th>

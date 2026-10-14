@@ -172,7 +172,7 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
     setSelectedComponentKeys(new Set());
   };
 
-  // ─── Two-Container Transfer Operations (Talend Style) ───────
+  // ─── Two-Container Transfer Operations ───────
 
   // >> Import all columns from upstream (replace or sync)
   const handleImportAll = () => {

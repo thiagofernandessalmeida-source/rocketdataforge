@@ -6,26 +6,84 @@ coleta métricas atômicas e verifica periodicamente o token de cancelamento coo
 
 from datetime import datetime, timezone
 import logging
+import re
+import time
 from typing import Any, Dict, List, Optional
 
 import polars as pl
 from src.core.application.compiler.physical_planner import PhysicalPlan
 from src.core.domain.execution.execution import Execution
 from src.core.domain.execution.status import ExecutionStatus
-from src.core.domain.shared.exceptions import DomainError
+from src.core.domain.shared.exceptions import DomainError, DomainValidationError
 from src.core.domain.metadata.connection import Connection
 from src.core.domain.shared.types import SecretReference
 from src.core.infrastructure.connectors.file_connector import LocalFileConnector
+from src.core.infrastructure.connectors.oracle_connector import OracleConnector
 from src.core.infrastructure.connectors.scylla_connector import ScyllaConnector
 from src.core.infrastructure.connectors.kafka_connector import KafkaConnector
 from src.core.infrastructure.connectors.aws_messaging_connector import AwsMessagingConnector
 from src.core.infrastructure.engines.duckdb_runner import DuckDBRunner
-from src.core.infrastructure.engines.polars_runner import PolarsRunner
+from src.core.infrastructure.engines.polars_runner import PolarsRunner, batch_to_polars_df
 from src.core.infrastructure.execution.cancellation import CancellationToken
 from src.core.infrastructure.security.redaction import sanitize_message
 from src.core.infrastructure.security.secret_resolver import SecretResolver
 
 logger = logging.getLogger(__name__)
+
+
+def map_schema_type_to_polars(col_type: str) -> pl.DataType:
+    t = (col_type or "").lower().strip()
+    if t in ("integer", "int", "int32"):
+        return pl.Int32
+    elif t in ("long", "int64", "bigint"):
+        return pl.Int64
+    elif t in ("float", "float32"):
+        return pl.Float32
+    elif t in ("double", "float64", "decimal", "numeric", "number"):
+        return pl.Float64
+    elif t in ("boolean", "bool"):
+        return pl.Boolean
+    elif t in ("date",):
+        return pl.Date
+    elif t in ("timestamp", "datetime"):
+        return pl.Datetime
+    else:
+        return pl.Utf8
+
+
+def cast_df_to_schema(df: pl.DataFrame, schema_defs: List[Dict[str, Any]]) -> pl.DataFrame:
+    if not schema_defs or not isinstance(schema_defs, list) or len(df.columns) == 0:
+        return df
+    exprs = []
+    for col_def in schema_defs:
+        if not isinstance(col_def, dict):
+            continue
+        c_name = col_def.get("name")
+        c_type = col_def.get("type")
+        if c_name and c_name in df.columns:
+            target_type = map_schema_type_to_polars(c_type)
+            try:
+                exprs.append(pl.col(c_name).cast(target_type, strict=False))
+            except Exception:
+                pass
+    if exprs:
+        try:
+            return df.with_columns(exprs)
+        except Exception:
+            return df
+    return df
+
+
+def create_empty_df_from_schema(schema_defs: List[Dict[str, Any]], schema_cols: List[str]) -> pl.DataFrame:
+    schema = {}
+    if schema_defs and isinstance(schema_defs, list):
+        for col_def in schema_defs:
+            if isinstance(col_def, dict) and col_def.get("name"):
+                schema[col_def["name"]] = map_schema_type_to_polars(col_def.get("type"))
+    if not schema and schema_cols:
+        for c in schema_cols:
+            schema[c] = pl.Utf8
+    return pl.DataFrame(schema=schema) if schema else pl.DataFrame()
 
 
 class ExecutionWorker:
@@ -42,6 +100,7 @@ class ExecutionWorker:
         self.duckdb_runner = duckdb_runner or DuckDBRunner()
         self.polars_runner = polars_runner or PolarsRunner()
         self.secret_resolver = secret_resolver or SecretResolver()
+        self.oracle_connector = OracleConnector(self.secret_resolver)
         self.scylla_connector = ScyllaConnector(self.secret_resolver)
         self.kafka_connector = KafkaConnector(self.secret_resolver)
         self.aws_messaging_connector = AwsMessagingConnector(self.secret_resolver)
@@ -67,14 +126,18 @@ class ExecutionWorker:
             execution.start_running()
 
         node_buffers: Dict[str, List[pl.DataFrame]] = {}
+        current_node_id: Optional[str] = None
+        current_task: Optional[Any] = None
 
         try:
             for node_id in plan.execution_order:
+                current_node_id = node_id
                 # Verifica cancelamento antes de iniciar cada nó
                 token.check_cancelled()
 
                 phys_op = plan.operators[node_id]
                 task = execution.tasks.get(node_id) or execution.add_task(node_id)
+                current_task = task
                 task.status = ExecutionStatus.RUNNING
                 task.started_at = datetime.now(timezone.utc)
 
@@ -100,21 +163,50 @@ class ExecutionWorker:
                     self._execute_sink_node(phys_op, cfg, token, task, node_buffers)
 
                 task.complete(datetime.now(timezone.utc))
+                current_task = None
 
             execution.succeed()
 
         except DomainError as de:
+            now_utc = datetime.now(timezone.utc)
             if de.code == "ERR_EXECUTION_CANCELLED" or token.is_cancelled():
                 logger.info(f"Execução '{execution.id}' cancelada com sucesso.")
+                if current_task and current_task.status == ExecutionStatus.RUNNING:
+                    current_task.status = ExecutionStatus.CANCELLED
+                    current_task.finished_at = now_utc
+                for remaining_id in plan.execution_order:
+                    rem_task = execution.tasks.get(remaining_id)
+                    if rem_task and rem_task.status in (ExecutionStatus.CREATED, ExecutionStatus.QUEUED, ExecutionStatus.RUNNING):
+                        rem_task.status = ExecutionStatus.CANCELLED
+                        rem_task.finished_at = now_utc
                 execution.request_cancellation()
                 execution.complete_cancellation()
             else:
+                sanitized = sanitize_message(de.message)
                 logger.error(f"Falha na execução '{execution.id}': {de.message}")
-                execution.fail(de.code, sanitize_message(de.message))
+                if current_task and current_task.status == ExecutionStatus.RUNNING:
+                    current_task.fail(now_utc, de.code, sanitized)
+                for remaining_id in plan.execution_order:
+                    if remaining_id != current_node_id:
+                        rem_task = execution.tasks.get(remaining_id)
+                        if rem_task and rem_task.status in (ExecutionStatus.CREATED, ExecutionStatus.QUEUED):
+                            rem_task.status = ExecutionStatus.SKIPPED
+                            rem_task.finished_at = now_utc
+                execution.fail(de.code, sanitized)
         except Exception as e:
+            now_utc = datetime.now(timezone.utc)
             raw_msg = str(e)
+            sanitized = sanitize_message(raw_msg)
             logger.exception(f"Erro inesperado na execução '{execution.id}': {raw_msg}")
-            execution.fail("ERR_EXECUTION_INTERNAL", sanitize_message(raw_msg))
+            if current_task and current_task.status == ExecutionStatus.RUNNING:
+                current_task.fail(now_utc, "ERR_EXECUTION_INTERNAL", sanitized)
+            for remaining_id in plan.execution_order:
+                if remaining_id != current_node_id:
+                    rem_task = execution.tasks.get(remaining_id)
+                    if rem_task and rem_task.status in (ExecutionStatus.CREATED, ExecutionStatus.QUEUED):
+                        rem_task.status = ExecutionStatus.SKIPPED
+                        rem_task.finished_at = now_utc
+            execution.fail("ERR_EXECUTION_INTERNAL", sanitized)
 
         return execution
 
@@ -153,13 +245,110 @@ class ExecutionWorker:
             options={**conn_details, **raw_cfg}
         )
 
-    def _interpolate_tokens(self, text: str, row_dict: Dict[str, Any], upstream_id: str) -> str:
-        """Substitui referências a {upstream_id.col} e {col} pelos valores da linha atual."""
-        res = text
+    def _interpolate_tokens(self, text: str, row_dict: Dict[str, Any], upstream_id: str, is_sql: bool = True) -> str:
+        """Substitui referências {{upstream_id.col}}, {{row.col}}, {{col}}, {upstream_id.col}, {row.col}, {col} pelos valores da linha."""
+        if not text:
+            return ""
+
+        clean_upstream = upstream_id.split(":")[0].split(".")[0].lower() if upstream_id else ""
+
+        # Mapeamentos para resolução insensível a maiúsculas/minúsculas e prefixos de tabela
+        exact_map = {k: k for k in row_dict.keys()}
+        lower_map = {k.lower(): k for k in row_dict.keys()}
+        short_map = {k.split(".")[-1].lower(): k for k in row_dict.keys()}
+
+        def resolve_val(inner_str: str):
+            parts = inner_str.split(".", 1)
+            if len(parts) == 2:
+                prefix, col = parts[0].strip().lower(), parts[1].strip()
+                col_lookup = col
+            else:
+                prefix, col = "", parts[0].strip()
+                col_lookup = col
+
+            if col_lookup in exact_map:
+                return True, row_dict[exact_map[col_lookup]]
+            if col_lookup.lower() in lower_map:
+                return True, row_dict[lower_map[col_lookup.lower()]]
+            if col_lookup.lower() in short_map:
+                return True, row_dict[short_map[col_lookup.lower()]]
+            if inner_str.lower() in lower_map:
+                return True, row_dict[lower_map[inner_str.lower()]]
+            if inner_str.lower() in short_map:
+                return True, row_dict[short_map[inner_str.lower()]]
+
+            return False, None
+
+        # Regex flexível que aceita {{...}} ou {...} com ou sem aspas simples circundantes e com espaços opcionais
+        token_re = re.compile(
+            r"('?)\{\{\s*([a-zA-Z0-9_\-\.]+)\s*\}\}('?)|('?)\{\s*([a-zA-Z0-9_\-\.]+)\s*\}('?)"
+        )
+
+        def replace_match(m):
+            q1 = m.group(1) or m.group(4) or ""
+            inner = m.group(2) or m.group(5) or ""
+            q2 = m.group(3) or m.group(6) or ""
+
+            found, val = resolve_val(inner)
+            if not found:
+                # Mantém o token se não encontrado
+                return m.group(0)
+
+            has_quotes = (q1 == "'" and q2 == "'")
+
+            if not is_sql:
+                return str(val) if val is not None else ""
+
+            # Formatação SQL de tipos
+            if val is None:
+                return "NULL"
+            elif isinstance(val, bool):
+                return "'TRUE'" if val else "'FALSE'"
+            elif isinstance(val, (int, float)):
+                return str(val) if not has_quotes else f"'{val}'"
+            else:
+                escaped = str(val).replace("'", "''")
+                return f"'{escaped}'"
+
+        res = token_re.sub(replace_match, text)
+
+        # Fallback complementar para tokens legados
         for col, val in row_dict.items():
-            formatted_val = f"'{val}'" if isinstance(val, str) else str(val) if val is not None else "NULL"
-            res = res.replace(f"{{{upstream_id}.{col}}}", formatted_val)
-            res = res.replace(f"{{{col}}}", formatted_val)
+            if not is_sql:
+                quoted_val = str(val) if val is not None else ""
+                unquoted_val = str(val) if val is not None else ""
+            else:
+                if val is None:
+                    quoted_val = "NULL"
+                    unquoted_val = "NULL"
+                elif isinstance(val, bool):
+                    quoted_val = "'TRUE'" if val else "'FALSE'"
+                    unquoted_val = "TRUE" if val else "FALSE"
+                elif isinstance(val, (int, float)):
+                    quoted_val = f"'{val}'"
+                    unquoted_val = str(val)
+                else:
+                    escaped = str(val).replace("'", "''")
+                    quoted_val = f"'{escaped}'"
+                    unquoted_val = f"'{escaped}'"
+
+            patterns = [
+                f"{{{{{upstream_id}.{col}}}}}",
+                f"{{{{{clean_upstream}.{col}}}}}",
+                f"{{{{row.{col}}}}}",
+                f"{{{{{col}}}}}",
+                f"{{{upstream_id}.{col}}}",
+                f"{{{clean_upstream}.{col}}}",
+                f"{{row.{col}}}",
+                f"{{{col}}}",
+            ]
+
+            for pat in patterns:
+                if f"'{pat}'" in res:
+                    res = res.replace(f"'{pat}'", quoted_val)
+                if pat in res:
+                    res = res.replace(pat, unquoted_val)
+
         return res
 
     def _execute_scan_node(
@@ -167,17 +356,21 @@ class ExecutionWorker:
     ) -> None:
         fmt = str(cfg.get("format", "csv")).lower()
 
-        # Verifica se é um Scan Iterativo com nós a montante
+        # Verifica se é um Scan Iterativo com nós a montante (tFlowToIterate direto)
         if phys_op.input_ids:
             self._execute_iterative_scan(phys_op, cfg, plan, token, task, node_buffers)
             return
 
         if fmt == "duckdb":
-            db_path = cfg.get("connection_ref") or cfg.get("database_path") or ":memory:"
+            conn_details = cfg.get("connection_details") or {}
+            ref_path = cfg.get("connection_ref") if (cfg.get("connection_ref") and (cfg.get("connection_ref") == ":memory:" or str(cfg.get("connection_ref")).endswith(".duckdb") or str(cfg.get("connection_ref")).endswith(".db"))) else None
+            db_path = conn_details.get("database_path") or conn_details.get("database") or cfg.get("database_path") or ref_path or ":memory:"
             query = cfg.get("source") or cfg.get("query") or ""
-            df = self.duckdb_runner.execute_query_on_database(db_path, query)
-            task.record_progress(rows_in_increment=df.height, rows_out_increment=df.height)
-            node_buffers[phys_op.id] = [df]
+            fetch_size = int(cfg.get("fetch_size") or plan.default_chunk_size or 10000)
+            chunks = self.duckdb_runner.execute_query_chunks_on_database(db_path, query, fetch_size=fetch_size)
+            for ch in chunks:
+                task.record_progress(rows_in_increment=ch.height, rows_out_increment=ch.height)
+            node_buffers[phys_op.id] = chunks
             return
 
         if fmt == "scylla":
@@ -219,9 +412,9 @@ class ExecutionWorker:
     def _execute_iterative_scan(
         self, phys_op, cfg, plan, token, task, node_buffers
     ) -> None:
-        """Executa leitura parametrizada linha a linha sobre o fluxo do nó a montante (Sem tFlowToIterate)."""
+        """Executa leitura parametrizada linha a linha sobre o fluxo do nó a montante (Nested Loop tFlowToIterate)."""
         upstream_id = phys_op.input_ids[0]
-        upstream_chunks = node_buffers.get(upstream_id, [])
+        upstream_chunks = self._get_node_chunks(upstream_id, node_buffers)
         if not upstream_chunks:
             node_buffers[phys_op.id] = []
             return
@@ -233,18 +426,91 @@ class ExecutionWorker:
         all_results: List[pl.DataFrame] = []
         total_rows = 0
 
-        # Para DuckDB
+        # Para DuckDB com conexão persistida de alta performance
         if fmt == "duckdb":
-            db_path = cfg.get("connection_ref") or cfg.get("database_path") or ":memory:"
+            import duckdb
+            conn_details = cfg.get("connection_details") or {}
+            ref_path = cfg.get("connection_ref") if (cfg.get("connection_ref") and (cfg.get("connection_ref") == ":memory:" or str(cfg.get("connection_ref")).endswith(".duckdb") or str(cfg.get("connection_ref")).endswith(".db"))) else None
+            db_path = conn_details.get("database_path") or conn_details.get("database") or cfg.get("database_path") or ref_path or ":memory:"
+            duck_conn = duckdb.connect(db_path)
+            try:
+                for row in upstream_df.iter_rows(named=True):
+                    token.check_cancelled()
+                    query = self._interpolate_tokens(base_query, row, upstream_id)
+                    cur = duck_conn.cursor()
+                    cur.execute(query)
+                    col_names = [d[0] for d in cur.description] if cur.description else ["result"]
+                    batch = cur.fetchall()
+                    res_df = batch_to_polars_df(batch, col_names)
+                    all_results.append(res_df)
+                    total_rows += res_df.height
+                    task.record_progress(rows_in_increment=1, rows_out_increment=res_df.height)
+            finally:
+                duck_conn.close()
+
+        # Para Fontes de Arquivo Parametrizadas (CSV, Parquet, JSON)
+        elif fmt in ("csv", "parquet", "json", "excel") and cfg.get("path"):
+            base_path = cfg.get("path", "")
             for row in upstream_df.iter_rows(named=True):
                 token.check_cancelled()
-                query = self._interpolate_tokens(base_query, row, upstream_id)
-                res_df = self.duckdb_runner.execute_query_on_database(db_path, query)
+                # Interpola o caminho do arquivo por linha
+                interpolated_path = self._interpolate_tokens(base_path, row, upstream_id, is_sql=False).strip("'")
+                try:
+                    if fmt == "csv":
+                        res_df = pl.read_csv(interpolated_path)
+                    elif fmt == "parquet":
+                        res_df = pl.read_parquet(interpolated_path)
+                    elif fmt == "json":
+                        res_df = pl.read_ndjson(interpolated_path)
+                    else:
+                        res_df = pl.read_excel(interpolated_path)
+                except Exception as file_err:
+                    logger.warning(f"Iterative file scan: pulando '{interpolated_path}' ({file_err})")
+                    res_df = pl.DataFrame()
+
                 all_results.append(res_df)
                 total_rows += res_df.height
                 task.record_progress(rows_in_increment=1, rows_out_increment=res_df.height)
 
-        # Para Banco de Dados (PostgreSQL / Relacional)
+        # Para Oracle Database
+        elif fmt == "oracle":
+            try:
+                conn = self.oracle_connector.connect(cfg)
+            except Exception as e:
+                raise DomainError(f"Falha ao conectar no Oracle para iteração: {sanitize_message(str(e))}", code="ERR_DB_CONNECTION")
+
+            try:
+                cur = conn.cursor()
+                for row in upstream_df.iter_rows(named=True):
+                    token.check_cancelled()
+                    query = self._interpolate_tokens(base_query, row, upstream_id)
+                    unresolved = re.findall(r"\{\{\s*([a-zA-Z0-9_\-\.]+)\s*\}\}|\{\s*([a-zA-Z0-9_\-\.]+)\s*\}", query)
+                    if unresolved:
+                        first_missing = unresolved[0][0] or unresolved[0][1]
+                        cols_available = list(row.keys())
+                        raise DomainError(
+                            f"Parâmetro não encontrado no nó a montante: '{{{first_missing}}}'. "
+                            f"Colunas disponíveis em '{upstream_id}': {cols_available}",
+                            code="ERR_UNRESOLVED_TOKEN"
+                        )
+                    cur.execute(query)
+                    col_names = [desc[0] for desc in cur.description] if cur.description else ["result"]
+                    batch = cur.fetchall()
+                    res_df = batch_to_polars_df(batch, col_names)
+                    all_results.append(res_df)
+                    total_rows += res_df.height
+                    task.record_progress(rows_in_increment=1, rows_out_increment=res_df.height)
+
+                cur.close()
+                conn.close()
+            except Exception as e:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                raise DomainError(f"Erro durante a iteração de query SQL no Oracle: {sanitize_message(str(e))}", code="ERR_DB_QUERY")
+
+        # Para Banco de Dados Relacional (PostgreSQL / Relacional)
         else:
             conn_details = cfg.get("connection_details") or {}
             host = conn_details.get("host") or "localhost"
@@ -265,21 +531,26 @@ class ExecutionWorker:
 
             try:
                 cur = conn.cursor()
+                try:
+                    cur.execute("SET statement_timeout = 0;")
+                except Exception:
+                    pass
                 for row in upstream_df.iter_rows(named=True):
                     token.check_cancelled()
                     query = self._interpolate_tokens(base_query, row, upstream_id)
+                    unresolved = re.findall(r"\{\{\s*([a-zA-Z0-9_\-\.]+)\s*\}\}|\{\s*([a-zA-Z0-9_\-\.]+)\s*\}", query)
+                    if unresolved:
+                        first_missing = unresolved[0][0] or unresolved[0][1]
+                        cols_available = list(row.keys())
+                        raise DomainError(
+                            f"Parâmetro não encontrado no nó a montante: '{{{first_missing}}}'. "
+                            f"Colunas disponíveis em '{upstream_id}': {cols_available}",
+                            code="ERR_UNRESOLVED_TOKEN"
+                        )
                     cur.execute(query)
                     col_names = [desc[0] for desc in cur.description] if cur.description else ["result"]
                     batch = cur.fetchall()
-                    if batch:
-                        try:
-                            res_df = pl.DataFrame(batch, schema=col_names, orient="row")
-                        except Exception:
-                            import pandas as pd
-                            res_df = pl.from_pandas(pd.DataFrame(batch, columns=col_names))
-                    else:
-                        res_df = pl.DataFrame({c: [] for c in col_names})
-
+                    res_df = batch_to_polars_df(batch, col_names)
                     all_results.append(res_df)
                     total_rows += res_df.height
                     task.record_progress(rows_in_increment=1, rows_out_increment=res_df.height)
@@ -291,9 +562,17 @@ class ExecutionWorker:
                     conn.close()
                 raise DomainError(f"Erro durante a iteração de query SQL: {sanitize_message(str(e))}", code="ERR_DB_QUERY")
 
-        combined = pl.concat(all_results) if all_results else pl.DataFrame()
+        if all_results:
+            non_empty = [df for df in all_results if df.height > 0]
+            if non_empty:
+                combined = pl.concat(non_empty, how="diagonal_relaxed")
+            else:
+                combined = all_results[0]
+        else:
+            combined = pl.DataFrame()
+
         node_buffers[phys_op.id] = [combined]
-        logger.info(f"Nó Iterativo '{phys_op.id}': {upstream_df.height} iterações concluídas ({combined.height} registros gerados).")
+        logger.info(f"Nó Iterativo '{phys_op.id}': {upstream_df.height} iterações executadas com sucesso ({combined.height} registros combinados via Union).")
 
     def _execute_file_scan(
         self, phys_op, cfg, plan, token, task, node_buffers
@@ -347,13 +626,66 @@ class ExecutionWorker:
         if not query:
             raise DomainError(f"Nó '{phys_op.id}': Nenhuma consulta SQL configurada.", code="ERR_EMPTY_QUERY")
 
+        fmt = str(cfg.get("format", "postgres")).lower()
+
+        # Oracle Database Scan
+        if fmt == "oracle":
+            fetch_size = int(cfg.get("fetch_size") or plan.default_chunk_size or 10000)
+            pushed_filter = cfg.get("pushed_filter")
+            chunks: List[pl.DataFrame] = []
+
+            for chunk_df in self.oracle_connector.execute_query_chunks(cfg, query, fetch_size=fetch_size):
+                token.check_cancelled()
+                if pushed_filter:
+                    chunk_df, _ = self.polars_runner.execute_filter(chunk_df, pushed_filter)
+                task.record_progress(
+                    rows_in_increment=chunk_df.height,
+                    rows_out_increment=chunk_df.height
+                )
+                chunks.append(chunk_df)
+
+            node_buffers[phys_op.id] = chunks
+            return
+
+        # DuckDB Scan
+        if fmt == "duckdb":
+            raw_cfg = cfg.get("raw_config") or {}
+            conn_details = cfg.get("connection_details") or {}
+            ref_path = cfg.get("connection_ref") if (cfg.get("connection_ref") and (cfg.get("connection_ref") == ":memory:" or str(cfg.get("connection_ref")).endswith(".duckdb") or str(cfg.get("connection_ref")).endswith(".db"))) else None
+            raw_db_path = (
+                raw_cfg.get("database_path")
+                or raw_cfg.get("database")
+                or raw_cfg.get("path")
+                or cfg.get("database_path")
+                or cfg.get("database")
+                or conn_details.get("database_path")
+                or conn_details.get("database")
+                or ref_path
+                or "data/output.duckdb"
+            )
+            from src.core.application.workspace.workspace_manager import workspace_manager
+            db_path = workspace_manager.resolve_duckdb_path(raw_db_path)
+            pushed_filter = cfg.get("pushed_filter")
+
+            import duckdb
+            duck_conn = duckdb.connect(db_path)
+            try:
+                res_df = duck_conn.execute(query).pl()
+                if pushed_filter:
+                    res_df, _ = self.polars_runner.execute_filter(res_df, pushed_filter)
+                task.record_progress(rows_in_increment=res_df.height, rows_out_increment=res_df.height)
+                node_buffers[phys_op.id] = [res_df]
+            finally:
+                duck_conn.close()
+            return
+
         conn_details = cfg.get("connection_details") or {}
         host = conn_details.get("host") or "localhost"
         port = int(conn_details.get("port") or 5432)
         database = conn_details.get("database") or "postgres"
         username = conn_details.get("username") or "postgres"
         password = conn_details.get("password") or ""
-        sslmode = conn_details.get("sslMode") or "prefer"
+        sslmode = conn_details.get("sslMode") or conn_details.get("sslmode") or "prefer"
 
         import psycopg2
 
@@ -377,25 +709,33 @@ class ExecutionWorker:
             )
 
         try:
-            cur = conn.cursor()
+            try:
+                with conn.cursor() as setup_cur:
+                    setup_cur.execute("SET statement_timeout = 0;")
+            except Exception:
+                pass
+
+            fetch_size = int(cfg.get("fetch_size") or plan.default_chunk_size or 10000)
+            clean_id = "".join(c if c.isalnum() or c == "_" else "_" for c in str(phys_op.id))
+            cursor_name = f"cur_fetch_{clean_id}_{int(time.time() * 1000)}"
+            cur = conn.cursor(name=cursor_name)
+            cur.itersize = fetch_size
             cur.execute(query)
-            col_names = [desc[0] for desc in cur.description] if cur.description else ["result"]
+            col_names = [desc[0] for desc in cur.description] if cur.description else None
             pushed_filter = cfg.get("pushed_filter")
-            chunk_size = plan.default_chunk_size or 10000
             chunks: List[pl.DataFrame] = []
 
             while True:
                 token.check_cancelled()
-                batch = cur.fetchmany(chunk_size)
+                batch = cur.fetchmany(fetch_size)
                 if not batch:
                     break
 
-                try:
-                    chunk_df = pl.DataFrame(batch, schema=col_names, orient="row")
-                except Exception:
-                    import pandas as pd
-                    pdf = pd.DataFrame(batch, columns=col_names)
-                    chunk_df = pl.from_pandas(pdf)
+                if not col_names and cur.description:
+                    col_names = [desc[0] for desc in cur.description]
+                actual_cols = col_names or (["result"] if not batch else [f"col_{i}" for i in range(len(batch[0]))])
+
+                chunk_df = batch_to_polars_df(batch, actual_cols)
 
                 if pushed_filter:
                     chunk_df, _ = self.polars_runner.execute_filter(chunk_df, pushed_filter)
@@ -407,7 +747,10 @@ class ExecutionWorker:
                 chunks.append(chunk_df)
 
             if not chunks:
-                empty_df = pl.DataFrame({c: [] for c in col_names})
+                if not col_names and cur.description:
+                    col_names = [desc[0] for desc in cur.description]
+                actual_cols = col_names or ["result"]
+                empty_df = pl.DataFrame({c: [] for c in actual_cols})
                 chunks.append(empty_df)
                 task.record_progress(rows_in_increment=0, rows_out_increment=0)
 
@@ -570,27 +913,68 @@ class ExecutionWorker:
         input_id = phys_op.input_ids[0]
         input_chunks = self._get_node_chunks(input_id, node_buffers)
 
-        # Filtra apenas as colunas definidas no schema do componente (projeção explícita)
+        # Filtra e projeta as colunas definidas no schema do componente (projeção e tipagem explícitas)
         schema_cols = cfg.get("schema_columns") or []
-        if schema_cols and input_chunks:
-            filtered_chunks = []
-            for chunk in input_chunks:
-                available_cols = [c for c in schema_cols if c in chunk.columns]
-                if available_cols:
-                    filtered_chunks.append(chunk.select(available_cols))
-                else:
-                    filtered_chunks.append(chunk)
-            input_chunks = filtered_chunks
+        schema_defs = cfg.get("schema_definitions") or []
+        if not schema_cols and schema_defs:
+            schema_cols = [c.get("name") for c in schema_defs if isinstance(c, dict) and c.get("name")]
+
+        if schema_cols or schema_defs:
+            if not input_chunks:
+                input_chunks = [create_empty_df_from_schema(schema_defs, schema_cols)]
+            else:
+                filtered_chunks = []
+                for chunk in input_chunks:
+                    if len(chunk.columns) == 0:
+                        filtered_chunks.append(create_empty_df_from_schema(schema_defs, schema_cols))
+                    else:
+                        available_cols = [c for c in schema_cols if c in chunk.columns]
+                        if available_cols:
+                            proj_chunk = chunk.select(available_cols)
+                        else:
+                            proj_chunk = chunk
+                        if schema_defs:
+                            proj_chunk = cast_df_to_schema(proj_chunk, schema_defs)
+                        filtered_chunks.append(proj_chunk)
+                input_chunks = filtered_chunks
+
+        # Remove chunks vazios sem colunas para não disparar erro no driver DuckDB
+        input_chunks = [ch for ch in input_chunks if len(ch.columns) > 0]
+        if not input_chunks:
+            logger.info(f"Nó sink '{phys_op.id}': Nenhum registro ou coluna produzido pelos nós upstream.")
+            task.record_progress(rows_in_increment=0, rows_out_increment=0)
+            return
 
         fmt = str(cfg.get("format") or "csv").lower()
 
         # Destino DuckDB
         if fmt == "duckdb":
-            db_path = cfg.get("database_path") or "data/output.duckdb"
-            table = cfg.get("table") or cfg.get("target") or "output_table"
-            table_act = cfg.get("table_action", "none")
-            data_act = cfg.get("data_action", "insert")
-            keys = cfg.get("keys", [])
+            raw_cfg = cfg.get("raw_config") or {}
+            conn_details = cfg.get("connection_details") or {}
+            ref_path = cfg.get("connection_ref") if (cfg.get("connection_ref") and (cfg.get("connection_ref") == ":memory:" or str(cfg.get("connection_ref")).endswith(".duckdb") or str(cfg.get("connection_ref")).endswith(".db"))) else None
+            
+            # Prioridade explícita para o caminho/nome de arquivo digitado pelo usuário no componente:
+            raw_db_path = (
+                raw_cfg.get("database_path")
+                or raw_cfg.get("database")
+                or raw_cfg.get("path")
+                or cfg.get("database_path")
+                or cfg.get("database")
+                or conn_details.get("database_path")
+                or conn_details.get("database")
+                or ref_path
+                or "data/output.duckdb"
+            )
+
+            from src.core.application.workspace.workspace_manager import workspace_manager
+            db_path = workspace_manager.resolve_duckdb_path(raw_db_path)
+
+            table = raw_cfg.get("table") or cfg.get("table") or cfg.get("target") or "output_table"
+            table_act = raw_cfg.get("table_action") or cfg.get("table_action", "none")
+            data_act = raw_cfg.get("data_action") or cfg.get("data_action", "insert")
+            keys = raw_cfg.get("keys") or cfg.get("keys", [])
+            use_batch = bool(raw_cfg.get("use_batch_mode", cfg.get("use_batch_mode", True)))
+            batch_sz = int(raw_cfg.get("batch_size") or cfg.get("batch_size") or 10000)
 
             total = 0
             for idx, chunk in enumerate(input_chunks):
@@ -602,11 +986,14 @@ class ExecutionWorker:
                     table_action=table_act,
                     data_action=data_act,
                     keys=keys,
-                    is_first_chunk=(idx == 0)
+                    is_first_chunk=(idx == 0),
+                    schema_definitions=schema_defs,
+                    use_batch_mode=use_batch,
+                    batch_size=batch_sz
                 )
                 total += written
                 task.record_progress(rows_in_increment=chunk.height, rows_out_increment=written)
-            logger.info(f"Nó DuckDB sink '{phys_op.id}': {total} linhas gravadas na tabela '{table}'.")
+            logger.info(f"Nó DuckDB sink '{phys_op.id}': {total} linhas gravadas na tabela '{table}' em '{db_path}' (Batch Mode: {use_batch}, Lote: {batch_sz}).")
             return
 
         # Destino PostgreSQL com Ação de Tabela e Dados
@@ -617,6 +1004,8 @@ class ExecutionWorker:
                 table_act = cfg.get("table_action", "none")
                 data_act = cfg.get("data_action", "insert")
                 keys = cfg.get("keys", [])
+                use_batch = bool(cfg.get("use_batch_mode", True))
+                batch_sz = int(cfg.get("batch_size") or 10000)
 
                 conn = self._build_connection_from_cfg(cfg, "postgres")
                 from src.core.infrastructure.connectors.postgres_connector import PostgresConnector
@@ -632,11 +1021,43 @@ class ExecutionWorker:
                         table_action=table_act,
                         data_action=data_act,
                         keys=keys,
-                        is_first_chunk=(idx == 0)
+                        is_first_chunk=(idx == 0),
+                        use_batch_mode=use_batch,
+                        batch_size=batch_sz
                     )
                     total += written
                     task.record_progress(rows_in_increment=chunk.height, rows_out_increment=written)
-                logger.info(f"Nó PostgreSQL sink '{phys_op.id}': {total} linhas gravadas na tabela '{table}'.")
+                logger.info(f"Nó PostgreSQL sink '{phys_op.id}': {total} linhas gravadas na tabela '{table}' (Batch Mode: {use_batch}, Lote: {batch_sz}).")
+                return
+
+        # Destino Oracle Database
+        if fmt == "oracle":
+            conn_details = cfg.get("connection_details") or {}
+            if conn_details or cfg.get("connection_ref"):
+                table = cfg.get("table") or cfg.get("target") or "output_table"
+                table_act = cfg.get("table_action", "none")
+                data_act = cfg.get("data_action", "insert")
+                keys = cfg.get("keys", [])
+                use_batch = bool(cfg.get("use_batch_mode", True))
+                batch_sz = int(cfg.get("batch_size") or 10000)
+
+                total = 0
+                for idx, chunk in enumerate(input_chunks):
+                    token.check_cancelled()
+                    written = self.oracle_connector.execute_write(
+                        connection=cfg,
+                        table_name=table,
+                        df=chunk,
+                        table_action=table_act,
+                        data_action=data_act,
+                        keys=keys,
+                        is_first_chunk=(idx == 0),
+                        use_batch_mode=use_batch,
+                        batch_size=batch_sz
+                    )
+                    total += written
+                    task.record_progress(rows_in_increment=chunk.height, rows_out_increment=written)
+                logger.info(f"Nó Oracle sink '{phys_op.id}': {total} linhas gravadas na tabela '{table}' (Batch Mode: {use_batch}, Lote: {batch_sz}).")
                 return
 
         if fmt == "scylla":

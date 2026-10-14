@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
   ReactFlowProvider,
   Node,
@@ -112,6 +112,14 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
     setOrderInput(String(cell.order));
   }, [cell.order]);
 
+  // Todos os nós existentes no Job inteiro (unindo as outras células com esta)
+  const allJobNodes = useMemo(() => {
+    const otherNodes = (allCells || [])
+      .filter((c) => c.id !== cell.id)
+      .flatMap((c) => c.nodes || []);
+    return [...otherNodes, ...nodes];
+  }, [allCells, cell.id, nodes]);
+
   // Propagate graph changes to parent container
   const handleNodesChange = useCallback(
     (changes: any) => {
@@ -138,6 +146,63 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
       }, 0);
     },
     [onEdgesChange, onUpdateGraph, cell.id, nodes, setEdges]
+  );
+
+  // Wrapper para setNodes que propaga adições e mudanças imediatas ao jobStore
+  const handleSetNodes = useCallback(
+    (updater: React.SetStateAction<Node<CanvasNodeData>[]>) => {
+      setNodes((currentNodes) => {
+        const nextNodes = typeof updater === "function" ? updater(currentNodes) : updater;
+        onUpdateGraph(cell.id, nextNodes, edges);
+        return nextNodes;
+      });
+    },
+    [cell.id, edges, onUpdateGraph, setNodes]
+  );
+
+  // Wrapper para setEdges que propaga adições de arestas ao jobStore
+  const handleSetEdges = useCallback(
+    (updater: React.SetStateAction<Edge[]>) => {
+      setEdges((currentEdges) => {
+        const nextEdges = typeof updater === "function" ? updater(currentEdges) : updater;
+        onUpdateGraph(cell.id, nodes, nextEdges);
+        return nextEdges;
+      });
+    },
+    [cell.id, nodes, onUpdateGraph, setEdges]
+  );
+
+  // Seleção de nó enriquecida com cellId
+  const handleSelectNode = useCallback(
+    (node: Node<CanvasNodeData> | null) => {
+      onSelectCell(cell.id);
+      if (node) {
+        onSelectNode({
+          ...node,
+          data: {
+            ...node.data,
+            cellId: cell.id,
+          },
+        });
+      } else {
+        onSelectNode(null);
+      }
+    },
+    [cell.id, onSelectCell, onSelectNode]
+  );
+
+  const handleDoubleClickNode = useCallback(
+    (node: Node<CanvasNodeData>) => {
+      onSelectCell(cell.id);
+      onDoubleClickNode?.({
+        ...node,
+        data: {
+          ...node.data,
+          cellId: cell.id,
+        },
+      });
+    },
+    [cell.id, onSelectCell, onDoubleClickNode]
   );
 
   const handleCommitName = () => {
@@ -423,30 +488,46 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
 
         {/* Right: Actions Toolbar */}
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          {/* Show Metrics Button if available and closed */}
-          {cell.metrics && !cell.showMetricsPanel && (
-            <button
-              type="button"
-              className="btn btn-secondary"
-              style={{
-                fontSize: "0.7rem",
-                padding: "3px 8px",
-                display: "flex",
-                alignItems: "center",
-                gap: 4,
-                color: "var(--accent-cyan)",
-                borderColor: "rgba(6, 182, 212, 0.4)",
-              }}
-              title="Exibir métricas e logs desta célula"
-              onClick={(e) => {
-                e.stopPropagation();
-                onUpdateCellMeta(cell.id, { showMetricsPanel: true });
-              }}
-            >
-              <Activity size={12} />
-              Métricas & Logs
-            </button>
-          )}
+          {/* Métricas & Logs Toggle Button */}
+          <button
+            type="button"
+            className={`btn btn-secondary ${cell.showMetricsPanel ? "active" : ""}`}
+            style={{
+              fontSize: "0.7rem",
+              padding: "3px 8px",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              color: cell.showMetricsPanel
+                ? "var(--accent-cyan)"
+                : cell.status === "failed"
+                ? "var(--status-danger)"
+                : "var(--text-secondary)",
+              borderColor: cell.showMetricsPanel
+                ? "var(--accent-cyan)"
+                : cell.status === "failed"
+                ? "rgba(239, 68, 68, 0.4)"
+                : "var(--border-subtle)",
+              background: cell.showMetricsPanel
+                ? "rgba(6, 182, 212, 0.15)"
+                : cell.status === "failed"
+                ? "rgba(239, 68, 68, 0.1)"
+                : undefined,
+            }}
+            title={cell.showMetricsPanel ? "Ocultar painel de métricas e logs" : "Exibir painel de métricas e logs desta célula"}
+            onClick={(e) => {
+              e.stopPropagation();
+              onUpdateCellMeta(cell.id, { showMetricsPanel: !cell.showMetricsPanel });
+            }}
+          >
+            <Activity size={12} />
+            <span>Métricas & Logs</span>
+            {cell.metrics ? (
+              <span style={{ fontSize: "0.68rem", opacity: 0.85 }}>({cell.metrics.durationMs}ms)</span>
+            ) : cell.logs && cell.logs.length > 0 ? (
+              <span style={{ fontSize: "0.68rem", opacity: 0.85 }}>({cell.logs.length})</span>
+            ) : null}
+          </button>
 
           {/* Reset Status Button */}
           <button
@@ -631,10 +712,12 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
             edges={edges}
             onNodesChange={handleNodesChange}
             onEdgesChange={handleEdgesChange}
-            setNodes={setNodes}
-            setEdges={setEdges}
-            onSelectNode={onSelectNode}
-            onDoubleClickNode={onDoubleClickNode}
+            setNodes={handleSetNodes}
+            setEdges={handleSetEdges}
+            onSelectNode={handleSelectNode}
+            onDoubleClickNode={handleDoubleClickNode}
+            allNodes={allJobNodes}
+            cellId={cell.id}
           />
         </ReactFlowProvider>
       </div>
@@ -743,37 +826,63 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
                               key={t.node_id}
                               style={{
                                 display: "flex",
-                                alignItems: "center",
-                                justifyContent: "space-between",
-                                padding: "4px 8px",
-                                background: "rgba(0,0,0,0.18)",
+                                flexDirection: "column",
+                                gap: 4,
+                                padding: "6px 8px",
+                                background: t.status === "failed" ? "rgba(239,68,68,0.12)" : "rgba(0,0,0,0.18)",
                                 borderRadius: 4,
-                                border: "1px solid var(--border-subtle)",
+                                border: `1px solid ${t.status === "failed" ? "rgba(239,68,68,0.35)" : "var(--border-subtle)"}`,
                                 fontSize: "0.72rem",
                               }}
                             >
-                              <span style={{ fontFamily: "var(--font-mono)", fontWeight: 500 }}>
-                                {t.node_id}
-                              </span>
-                              <div style={{ display: "flex", gap: 10, color: "var(--text-muted)" }}>
-                                <span>In: <strong style={{ color: "var(--text-primary)" }}>{t.rows_in}</strong></span>
-                                <span>Out: <strong style={{ color: "var(--text-primary)" }}>{t.rows_out}</strong></span>
-                                <span>{t.duration_ms}ms</span>
-                                <span
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                                <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--accent-cyan)" }}>
+                                  {t.node_id}
+                                </span>
+                                <div style={{ display: "flex", gap: 10, color: "var(--text-muted)" }}>
+                                  <span>In: <strong style={{ color: "var(--text-primary)" }}>{t.rows_in}</strong></span>
+                                  <span>Out: <strong style={{ color: "var(--text-primary)" }}>{t.rows_out}</strong></span>
+                                  <span>{t.duration_ms}ms</span>
+                                  <span
+                                    style={{
+                                      color: t.status === "succeeded" ? "var(--status-success)" : "var(--status-danger)",
+                                      fontWeight: 600,
+                                    }}
+                                  >
+                                    {t.status}
+                                  </span>
+                                </div>
+                              </div>
+                              {t.error_message && (
+                                <div
                                   style={{
-                                    color: t.status === "succeeded" ? "var(--status-success)" : "var(--status-danger)",
-                                    fontWeight: 600,
+                                    marginTop: 2,
+                                    padding: "4px 8px",
+                                    background: "rgba(239,68,68,0.18)",
+                                    borderRadius: 3,
+                                    color: "var(--status-danger)",
+                                    fontSize: "0.71rem",
+                                    lineHeight: 1.35,
+                                    wordBreak: "break-word",
+                                    borderLeft: "2px solid var(--status-danger)",
                                   }}
                                 >
-                                  {t.status}
-                                </span>
-                              </div>
+                                  ❌ <b>Erro no nó:</b> {t.error_message}
+                                </div>
+                              )}
                             </div>
                           ))}
                         </div>
                       </div>
                     )}
                   </>
+                ) : cell.status === "failed" ? (
+                  <div style={{ padding: "12px", background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6, color: "var(--status-danger)" }}>
+                    <div style={{ fontWeight: 600, marginBottom: 4 }}>❌ A execução desta célula falhou</div>
+                    <div style={{ fontSize: "0.73rem", color: "var(--text-primary)" }}>
+                      {cell.logs?.[0]?.message || "Ocorreu um erro durante a execução. Verifique a aba Logs ao lado para visualizar a mensagem detalhada."}
+                    </div>
+                  </div>
                 ) : (
                   <div style={{ textAlign: "center", padding: "12px", color: "var(--text-muted)" }}>
                     Nenhuma métrica registrada ainda. Execute a célula individualmente para inspecionar.

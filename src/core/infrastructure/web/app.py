@@ -77,6 +77,18 @@ def create_app() -> FastAPI:
             content={"error": exc.code or "ERR_DOMAIN", "message": exc.message}
         )
 
+    @app.exception_handler(Exception)
+    async def general_exception_handler(request: Request, exc: Exception):
+        import logging
+        import traceback
+        logging.getLogger("uvicorn.error").error(
+            f"Exceção não tratada na rota {request.url.path}: {exc}\n{traceback.format_exc()}"
+        )
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"error": "ERR_INTERNAL_SERVER_ERROR", "detail": str(exc), "message": str(exc)}
+        )
+
     @app.get("/health", tags=["Health"])
     @app.get("/api/v1/health", tags=["Health"])
     def health_check():
