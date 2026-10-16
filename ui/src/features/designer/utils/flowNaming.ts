@@ -1,7 +1,7 @@
 import { Node, Edge } from "reactflow";
 import { CanvasNodeData } from "../../../types";
 
-export type FlowType = "main" | "lkp" | "out" | "reject" | "iterate";
+export type FlowType = "main" | "lkp" | "out" | "reject" | "iterate" | "trigger";
 
 export interface FlowMeta {
   type: FlowType;
@@ -27,6 +27,15 @@ export const FLOW_CONFIG: Record<FlowType, FlowMeta> = {
     type: "iterate",
     labelPrefix: "iterate",
     displayTitle: "Fluxo de Iteração (Loop/Map)",
+    strokeColor: "#10b981",
+    badgeBg: "rgba(6, 78, 59, 0.95)",
+    badgeBorder: "#059669",
+    badgeColor: "#34d399",
+  },
+  trigger: {
+    type: "trigger",
+    labelPrefix: "trigger",
+    displayTitle: "Gatilho de Execução (OnSubjobOk / Sync)",
     strokeColor: "#10b981",
     badgeBg: "rgba(6, 78, 59, 0.95)",
     badgeBorder: "#059669",
@@ -84,6 +93,18 @@ export function getFlowType(
   targetHandle?: string | null,
   sourceHandle?: string | null
 ): FlowType {
+  // Se a porta de origem ou destino for trigger, ou componente for control.sync / barrier
+  if (
+    sourceHandle === "trigger" ||
+    targetHandle === "trigger" ||
+    sourceNode?.data?.componentType === "control.sync" ||
+    targetNode?.data?.componentType === "control.sync" ||
+    sourceNode?.data?.category === "control" ||
+    targetNode?.data?.category === "control"
+  ) {
+    return "trigger";
+  }
+
   // Se a porta de origem for explicitamente reject
   if (sourceHandle === "reject" || sourceHandle === "reject_out") {
     return "reject";

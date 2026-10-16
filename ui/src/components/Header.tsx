@@ -26,7 +26,7 @@ import {
   Info,
   HardDrive,
 } from "lucide-react";
-import { Environment } from "../store/jobStore";
+import { Environment, jobStore } from "../store/jobStore";
 
 const ENV_LABELS: Record<Environment, { label: string; color: string }> = {
   dev: { label: "DEV", color: "#10b981" },
@@ -254,19 +254,40 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         )}
 
-        {/* Environment Badge */}
-        <button
-          className="env-badge-btn"
-          style={{ "--env-color": env.color } as any}
-          onClick={onOpenContextVars}
-          title="Variáveis de Contexto & Ambientes"
-        >
-          <span className="env-dot" style={{ background: env.color }} />
-          <span className="env-label" style={{ color: env.color }}>
-            {env.label}
-          </span>
-          <Globe size={12} opacity={0.7} />
-        </button>
+        {/* Interactive Environment Profile Switcher (Tópico 7) */}
+        <div style={{ display: "flex", alignItems: "center", gap: 4, background: "var(--bg-card)", border: `1px solid ${env.color}40`, padding: "2px 6px", borderRadius: 6 }}>
+          <span className="env-dot" style={{ background: env.color, width: 7, height: 7, borderRadius: "50%", display: "inline-block" }} />
+          <select
+            value={activeEnvironment}
+            onChange={(e) => {
+              const newEnv = e.target.value as Environment;
+              jobStore.setEnvironment(newEnv);
+            }}
+            title="Alternar Perfil de Execução / Ambiente (DEV, HML, PRD) - Altera resolução de conexões e contexto"
+            style={{
+              background: "transparent",
+              border: "none",
+              color: env.color,
+              fontWeight: 700,
+              fontSize: "0.74rem",
+              cursor: "pointer",
+              outline: "none",
+            }}
+          >
+            <option value="dev" style={{ background: "#0f172a", color: "#10b981" }}>DEV (Desenvolvimento)</option>
+            <option value="hml" style={{ background: "#0f172a", color: "#f59e0b" }}>HML (Homologação)</option>
+            <option value="prd" style={{ background: "#0f172a", color: "#ef4444" }}>PRD (Produção)</option>
+          </select>
+          <button
+            type="button"
+            className="icon-btn"
+            style={{ padding: 2 }}
+            onClick={onOpenContextVars}
+            title="Gerenciar Variáveis de Contexto & Perfis de Ambiente"
+          >
+            <Globe size={11} color="var(--text-muted)" />
+          </button>
+        </div>
 
         {/* Workspace Indicator & Selector */}
         {onOpenWorkspace && (

@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import threading
 from typing import Any, Dict, List, Optional
 
@@ -316,55 +317,119 @@ class DuckDBRunner:
 
     @staticmethod
     def transpile_expression(expr: str, known_columns: Optional[List[str]] = None) -> str:
-        """Converte expressões com sintaxe mista (Java/Python/SQL) para DuckDB SQL válido."""
+        """Converte expressões com sintaxe mista (Java/Talend/Python/SQL) para DuckDB SQL analítico válido.
+        
+        Suporta:
+        - Namespaces / Aliasing preservados (main.col, row1.col, lk_regiao.cidade, Var.total)
+        - Casts e Parsing de Java (Integer.parseInt, String.valueOf, (String)col, col.toString(), etc.)
+        - Operadores lógicos booleanos Java convertidos ANTES da concatenação de strings
+        - Concatenação Java (str1 + " " + str2 -> str1 || ' ' || str2) sem quebrar matemática numérica
+        - Operador ternário aninhado ((cond) ? a : b -> CASE WHEN (cond) THEN a ELSE b END)
+        - Window Functions e Utilitários Talend (Numeric.sequence, previous, Relational.isNull, etc.)
+        """
         if not expr or not expr.strip():
             return "NULL"
 
         import re
         s = expr.strip()
 
-        # 0. Se colunas conhecidas forem fornecidas, substitui com prioridade referências a colunas conhecidas
-        # (especialmente colunas com espaços ou caracteres especiais como "Working URL")
-        if known_columns:
-            sorted_cols = sorted(known_columns, key=len, reverse=True)
-            for col in sorted_cols:
-                escaped = re.escape(col)
-                # Match {node.col}
-                s = re.sub(r'\{[a-zA-Z0-9_\-]+\.' + escaped + r'\}', f'"{col}"', s)
-                # Match prefix."col" ou prefix.'col'
-                s = re.sub(r'\b[a-zA-Z0-9_]+\.["\']' + escaped + r'["\']', f'"{col}"', s)
-                # Match prefix.col (mesmo com espaços, desde que case com o nome exato da coluna)
-                s = re.sub(r'\b[a-zA-Z0-9_]+\.' + escaped + r'(?=\b|\s|[\(\)\+\-\*\/\,\<\>\=\!\?]|$)', f'"{col}"', s)
-                # Match Var.col ou Var."col"
-                s = re.sub(r'\bVar\.["\']?' + escaped + r'["\']?(?=\b|\s|[\(\)\+\-\*\/\,\<\>\=\!\?]|$)', f'"{col}"', s)
-                # Se a expressão for exatamente o nome da coluna sem aspas
-                if s == col:
-                    s = f'"{col}"'
+        # ─── 1. Funções de Janela / Variáveis Stateful estilo Talend ───
+        s = re.sub(r'\bNumeric\.sequence\s*\([^)]*\)', 'ROW_NUMBER() OVER ()', s)
+        s = re.sub(r'\b(?:sequence|row_number)\s*\(\s*\)', 'ROW_NUMBER() OVER ()', s, flags=re.IGNORECASE)
+        s = re.sub(
+            r'\b(?:previous|prev|lag)\s*\(\s*([^,\)]+)(?:\s*,\s*(\d+))?\s*\)',
+            lambda m: f'LAG({m.group(1).strip()}, {m.group(2) or 1}) OVER (ORDER BY _tmap_main_idx)',
+            s,
+            flags=re.IGNORECASE
+        )
+        s = re.sub(
+            r'\b(?:next|lead)\s*\(\s*([^,\)]+)(?:\s*,\s*(\d+))?\s*\)',
+            lambda m: f'LEAD({m.group(1).strip()}, {m.group(2) or 1}) OVER (ORDER BY _tmap_main_idx)',
+            s,
+            flags=re.IGNORECASE
+        )
+        s = re.sub(
+            r'\b(?:running_sum|accumulate|sum_accum)\s*\(\s*([^,\)]+)\s*\)',
+            r'SUM(\1) OVER (ORDER BY _tmap_main_idx)',
+            s,
+            flags=re.IGNORECASE
+        )
 
-        # 1. Tokens genéricos {node.col} -> "col"
-        s = re.sub(r'\{[a-zA-Z0-9_\-]+\.([^\}]+)\}', r'"\1"', s)
+        # ─── 2. Conversões e Casts de Tipos Estilo Java (Parsing & Casting) ───
+        s = re.sub(r'\bString\.valueOf\s*\(\s*([^\)]+)\s*\)', r'TRY_CAST(\1 AS VARCHAR)', s)
+        s = re.sub(r'([a-zA-Z0-9_\.\"]+)\.toString\(\)', r'TRY_CAST(\1 AS VARCHAR)', s)
+        s = re.sub(r'\((?:String|java\.lang\.String)\)\s*([a-zA-Z0-9_\.\"]+)', r'TRY_CAST(\1 AS VARCHAR)', s)
 
-        # 2. Transpila Var."xxx" ou Var.xxx -> "xxx"
-        s = re.sub(r'\bVar\.["\']?([a-zA-Z0-9_]+)["\']?\b', r'"\1"', s)
+        s = re.sub(r'\bInteger\.parseInt\s*\(\s*([^\)]+)\s*\)', r'TRY_CAST(\1 AS INTEGER)', s)
+        s = re.sub(r'\((?:Integer|int)\)\s*([a-zA-Z0-9_\.\"]+)', r'TRY_CAST(\1 AS INTEGER)', s)
+        s = re.sub(r'\bLong\.parseLong\s*\(\s*([^\)]+)\s*\)', r'TRY_CAST(\1 AS BIGINT)', s)
+        s = re.sub(r'\((?:Long|long)\)\s*([a-zA-Z0-9_\.\"]+)', r'TRY_CAST(\1 AS BIGINT)', s)
+        s = re.sub(r'\bDouble\.parseDouble\s*\(\s*([^\)]+)\s*\)', r'TRY_CAST(\1 AS DOUBLE)', s)
+        s = re.sub(r'\((?:Double|double)\)\s*([a-zA-Z0-9_\.\"]+)', r'TRY_CAST(\1 AS DOUBLE)', s)
+        s = re.sub(r'\bFloat\.parseFloat\s*\(\s*([^\)]+)\s*\)', r'TRY_CAST(\1 AS FLOAT)', s)
+        s = re.sub(r'\((?:Float|float)\)\s*([a-zA-Z0-9_\.\"]+)', r'TRY_CAST(\1 AS FLOAT)', s)
+        s = re.sub(r'\bBoolean\.parseBoolean\s*\(\s*([^\)]+)\s*\)', r'TRY_CAST(\1 AS BOOLEAN)', s)
+        s = re.sub(r'\((?:Boolean|bool|boolean)\)\s*([a-zA-Z0-9_\.\"]+)', r'TRY_CAST(\1 AS BOOLEAN)', s)
 
-        # 3. Transpila prefixos com aspas: rowX."col name" -> "col name"
-        s = re.sub(r'\b[a-zA-Z0-9_]+\.["\']([^"\']+)["\']', r'"\1"', s)
+        # ─── 3. Funções Utilitárias Talend (StringHandling, Relational, TalendDate) ───
+        s = re.sub(r'\bStringHandling\.UPCASE\s*\(\s*([^\)]+)\s*\)', r'UPPER(\1)', s)
+        s = re.sub(r'\bStringHandling\.DOWNCASE\s*\(\s*([^\)]+)\s*\)', r'LOWER(\1)', s)
+        s = re.sub(r'\bStringHandling\.TRIM\s*\(\s*([^\)]+)\s*\)', r'TRIM(\1)', s)
+        s = re.sub(r'!\s*Relational\.isNull\s*\(\s*([^\)]+)\s*\)', r'\1 IS NOT NULL', s)
+        s = re.sub(r'\bRelational\.isNull\s*\(\s*([^\)]+)\s*\)', r'\1 IS NULL', s)
 
-        # 4. Transpila prefixos de tabela (rowX.col -> "col")
-        s = re.sub(r'\b[a-zA-Z0-9_]+\.([a-zA-Z0-9_]+)\b', r'"\1"', s)
-
-        # 5. Operadores lógicos e de comparação comuns
+        # ─── 4. OPERADORES LÓGICOS BOOLEANOS (EXECUTA ANTES DA CONCATENAÇÃO DE STRINGS) ───
         s = re.sub(r'==\s*null\b', ' IS NULL', s, flags=re.IGNORECASE)
         s = re.sub(r'!=\s*null\b', ' IS NOT NULL', s, flags=re.IGNORECASE)
         s = re.sub(r'==', '=', s)
         s = re.sub(r'&&', ' AND ', s)
+        # Protege temporariamente a concatenação SQL de strings ('...' || ou || '...')
+        s = re.sub(r"'\s*\|\|", "' __SQL_CONCAT__ ", s)
+        s = re.sub(r"\|\|\s*'", " __SQL_CONCAT__ '", s)
+        # Transforma qualquer '||' restante em ' OR ' (operador lógico Java)
+        s = re.sub(r"\s*\|\|\s*", " OR ", s)
+        # Restaura a concatenação SQL
+        s = s.replace("__SQL_CONCAT__", "||")
 
-        # 6. Converte ternário cond ? a : b -> CASE WHEN cond THEN a ELSE b END
-        if "?" in s and ":" in s:
-            ternary_match = re.match(r'^(.*?)\?(.*?)\:(.*)$', s)
-            if ternary_match:
-                cond, t_val, f_val = ternary_match.groups()
-                s = f"CASE WHEN {cond.strip()} THEN {t_val.strip()} ELSE {f_val.strip()} END"
+        # ─── 5. CONCATENAÇÃO DE STRINGS ESTILO JAVA (str1 + " " + str2 -> str1 || ' ' || str2) ───
+        # Converte aspas duplas de strings constantes Java ("...") para aspas simples SQL ('...')
+        s = re.sub(r'"([^"\n\r]*)"', r"'\1'", s)
+        # Substitui '+' adjacente a aspas simples por '||' (preserva adições numéricas puras como col + 500)
+        s = re.sub(r"'\s*\+\s*", r"' || ", s)
+        s = re.sub(r"\s*\+\s*'", r" || '", s)
+
+        # ─── 6. Preservação de Namespaces (alias.coluna -> "alias.coluna") ───
+        # Desempacota tags/tokens do tipo {{node.col}} ou {node.col}
+        s = re.sub(r'\{\{\s*([a-zA-Z0-9_\-]+)\.([^\}]+)\s*\}\}', r'\1.\2', s)
+        s = re.sub(r'\{([a-zA-Z0-9_\-]+)\.([^\}]+)\}', r'\1.\2', s)
+
+        # Se houver colunas conhecidas, prioriza a substituição exata de prefix.coluna (suporta colunas com espaços)
+        if known_columns:
+            for col in sorted(known_columns, key=len, reverse=True):
+                esc_col = re.escape(col)
+                pattern = rf'(?<!")\b([a-zA-Z0-9_]+)\.(?:"{esc_col}"|\'{esc_col}\'|{esc_col})(?=\b|\s|[\(\)\+\-\*\/\,\<\>\=\!\?\'"]|$)(?!")'
+                s = re.sub(pattern, rf'"\1.{col}"', s)
+
+        s = re.sub(r'(?<!")\b([a-zA-Z0-9_]+)\.["\']([^"\']+)["\']', r'"\1.\2"', s)
+        s = re.sub(r'(?<!")\b([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\b(?!")', r'"\1.\2"', s)
+        # Limpeza defensiva de chaves residuais em tokens
+        s = re.sub(r'\{\{\s*"?([a-zA-Z0-9_\-]+)"?\."?([^\}"]+)"?\s*\}\}', r'"\1.\2"', s)
+        s = re.sub(r'\{\s*"?([a-zA-Z0-9_\-]+)"?\."?([^\}"]+)"?\s*\}', r'"\1.\2"', s)
+
+        # Se houver colunas conhecidas sem prefixo, coloca entre aspas se necessário
+        if known_columns:
+            for col in sorted(known_columns, key=len, reverse=True):
+                if s == col:
+                    s = f'"{col}"'
+                    break
+
+        # ─── 7. Operador Ternário (If/Else): (cond) ? valor_v : valor_f ───
+        ternary_pattern = re.compile(r'([^?]+?)\s*\?\s*([^?:]+?)\s*:\s*([^,;)]+)')
+        for _ in range(5):
+            new_s = ternary_pattern.sub(r'CASE WHEN \1 THEN \2 ELSE \3 END', s)
+            if new_s == s:
+                break
+            s = new_s
 
         return s
 
@@ -374,10 +439,11 @@ class DuckDBRunner:
         lookups: List[Dict[str, Any]],
         lookup_dfs: Dict[str, pl.DataFrame],
         variables: List[Dict[str, Any]],
-        outputs: List[Dict[str, Any]]
+        outputs: List[Dict[str, Any]],
+        main_alias: str = "row1",
+        **kwargs: Any
     ) -> Dict[str, pl.DataFrame]:
-        """Executa a transformação completa do tMap usando DuckDB."""
-        # Se outputs não estiver configurado explicitamente, preserva o esquema da entrada
+        """Executa a transformação completa do tMap usando DuckDB com suporte a Namespaces e Aliasing."""
         if not outputs:
             clean_cols = [c for c in main_df.columns if not c.startswith("_tmap")]
             empty_df = pl.DataFrame({c: [] for c in clean_cols}) if clean_cols else pl.DataFrame()
@@ -402,7 +468,7 @@ class DuckDBRunner:
                     empty_results[out_name] = pl.DataFrame()
             return empty_results
 
-        # Coleta todas as colunas conhecidas para transpilação precisa de expressões com espaços
+        # Coleta todas as colunas conhecidas para auxílio na resolução
         known_cols = list(main_df.columns)
         for lk_df in lookup_dfs.values():
             for c in lk_df.columns:
@@ -415,84 +481,199 @@ class DuckDBRunner:
 
         conn = duckdb.connect(":memory:")
 
-        # 1. Registra Main Table com índice único de ordenação
-        conn.register("_main_raw", main_df.to_arrow())
-        conn.execute("CREATE TEMPORARY TABLE _tmap_working AS SELECT *, ROW_NUMBER() OVER () as _tmap_main_idx FROM _main_raw;")
+        # ─── 1. Criação das Views com Aliases do Fluxo Principal (Main) ───
+        main_alias_raw = kwargs.get("main_alias") or main_alias or "row1"
+        main_alias_safe = re.sub(r'[^a-zA-Z0-9_]', '_', str(main_alias_raw).strip()) or "row1"
 
-        # 2. Processa cada Lookup com Joins, Filtros e Match Models
+        conn.register("_main_raw", main_df.to_arrow())
+        conn.execute(f"""
+            CREATE TEMPORARY VIEW {main_alias_safe} AS 
+            SELECT *, ROW_NUMBER() OVER () as _tmap_main_idx 
+            FROM _main_raw;
+        """)
+        if main_alias_safe != "main":
+            conn.execute(f"CREATE TEMPORARY VIEW main AS SELECT * FROM {main_alias_safe};")
+        if main_alias_safe != "row1":
+            conn.execute(f"CREATE TEMPORARY VIEW row1 AS SELECT * FROM {main_alias_safe};")
+
+        # Constrói tabela de trabalho inicial com colunas prefixadas e livres
+        main_init_cols = []
+        for c in main_df.columns:
+            main_init_cols.append(f'"{c}" AS "{main_alias_safe}.{c}"')
+            if main_alias_safe != "main":
+                main_init_cols.append(f'"{c}" AS "main.{c}"')
+            if main_alias_safe != "row1":
+                main_init_cols.append(f'"{c}" AS "row1.{c}"')
+            main_init_cols.append(f'"{c}" AS "{c}"')
+
+        main_node_id = kwargs.get("main_node_id") or kwargs.get("main_id")
+        if main_node_id:
+            safe_main_node_id = re.sub(r'[^a-zA-Z0-9_]', '_', str(main_node_id).strip())
+            for c in main_df.columns:
+                main_init_cols.append(f'"{c}" AS "{safe_main_node_id}.{c}"')
+                if safe_main_node_id != str(main_node_id):
+                    main_init_cols.append(f'"{c}" AS "{main_node_id}.{c}"')
+
+        main_init_cols.append("_tmap_main_idx")
+        init_cols_sql = ", ".join(main_init_cols)
+        conn.execute(f"CREATE TEMPORARY TABLE _tmap_working AS SELECT {init_cols_sql} FROM {main_alias_safe};")
+
+        # ─── 2. Processa cada Lookup com Views Nomeadas, Joins, Filtros e Match Models ───
         inner_join_checks = []
 
         for idx, lk in enumerate(lookups):
             node_id = lk.get("node_id") or lk.get("id") or ""
-            lk_alias = f"_lk_{idx+1}"
+            raw_alias = lk.get("alias") or lk.get("label") or f"row{idx+2}"
+            safe_lk_alias = re.sub(r'[^a-zA-Z0-9_]', '_', str(raw_alias).strip()) or f"row{idx+2}"
             lk_df = lookup_dfs.get(node_id, pl.DataFrame())
 
             if lk_df.height == 0:
                 continue
 
-            conn.register(f"{lk_alias}_raw", lk_df.to_arrow())
+            conn.register(f"_{safe_lk_alias}_raw", lk_df.to_arrow())
 
-            # Filtro do Lookup
-            raw_lk_filter = lk.get("lookup_filter") or lk.get("filter") or ""
-            if raw_lk_filter.strip():
+            # Filtro pré-join do Lookup
+            raw_lk_filter = (lk.get("lookup_filter") or lk.get("filter") or "").strip()
+            if raw_lk_filter:
                 transpiled_filter = self.transpile_expression(raw_lk_filter, known_columns=known_cols)
-                conn.execute(f"CREATE TEMPORARY VIEW {lk_alias}_filtered AS SELECT *, ROW_NUMBER() OVER () as _lk_row_id FROM {lk_alias}_raw WHERE ({transpiled_filter});")
+                conn.execute(f"""
+                    CREATE TEMPORARY VIEW _{safe_lk_alias}_filtered AS 
+                    SELECT *, ROW_NUMBER() OVER () as _lk_row_id 
+                    FROM _{safe_lk_alias}_raw 
+                    WHERE ({transpiled_filter});
+                """)
             else:
-                conn.execute(f"CREATE TEMPORARY VIEW {lk_alias}_filtered AS SELECT *, ROW_NUMBER() OVER () as _lk_row_id FROM {lk_alias}_raw;")
+                conn.execute(f"""
+                    CREATE TEMPORARY VIEW _{safe_lk_alias}_filtered AS 
+                    SELECT *, ROW_NUMBER() OVER () as _lk_row_id 
+                    FROM _{safe_lk_alias}_raw;
+                """)
 
             # Match Model (all, first, unique/last)
             match_model = str(lk.get("match_model", "all")).lower()
             right_keys = lk.get("right_keys", [])
             left_keys = lk.get("left_keys", [])
 
-            if right_keys and match_model == "first":
-                part_cols = ", ".join([f'"{k}"' for k in right_keys])
+            # Limpa e sanitiza as colunas de partição para o deduplicador do DuckDB
+            clean_part_cols = []
+            for k in right_keys:
+                raw_k = str(k).strip().strip('"').strip("'")
+                raw_k = re.sub(r'^\{\{?|\}\}?$', '', raw_k).strip()
+                col_name = raw_k.split(".")[-1].strip().strip('"').strip("'")
+                if col_name in lk_df.columns:
+                    clean_part_cols.append(f'"{col_name}"')
+                elif raw_k in lk_df.columns:
+                    clean_part_cols.append(f'"{raw_k}"')
+                elif col_name:
+                    clean_part_cols.append(f'"{col_name}"')
+
+            part_cols = ", ".join(clean_part_cols)
+
+            if clean_part_cols and "first" in match_model:
                 conn.execute(f"""
-                    CREATE TEMPORARY VIEW {lk_alias}_dedup AS
+                    CREATE TEMPORARY VIEW _{safe_lk_alias}_dedup AS
                     SELECT * EXCLUDE (_rn) FROM (
                         SELECT *, ROW_NUMBER() OVER (PARTITION BY {part_cols} ORDER BY _lk_row_id ASC) as _rn
-                        FROM {lk_alias}_filtered
+                        FROM _{safe_lk_alias}_filtered
                     ) WHERE _rn = 1;
                 """)
-            elif right_keys and match_model == "unique":
-                part_cols = ", ".join([f'"{k}"' for k in right_keys])
+            elif clean_part_cols and ("unique" in match_model or "last" in match_model):
                 conn.execute(f"""
-                    CREATE TEMPORARY VIEW {lk_alias}_dedup AS
+                    CREATE TEMPORARY VIEW _{safe_lk_alias}_dedup AS
                     SELECT * EXCLUDE (_rn) FROM (
                         SELECT *, ROW_NUMBER() OVER (PARTITION BY {part_cols} ORDER BY _lk_row_id DESC) as _rn
-                        FROM {lk_alias}_filtered
+                        FROM _{safe_lk_alias}_filtered
                     ) WHERE _rn = 1;
                 """)
             else:
-                conn.execute(f"CREATE TEMPORARY VIEW {lk_alias}_dedup AS SELECT * FROM {lk_alias}_filtered;")
+                conn.execute(f"CREATE TEMPORARY VIEW _{safe_lk_alias}_dedup AS SELECT * FROM _{safe_lk_alias}_filtered;")
 
-            # Executa Join
+            # Cria Views temporárias com o Alias do Lookup
+            conn.execute(f"CREATE TEMPORARY VIEW {safe_lk_alias} AS SELECT * FROM _{safe_lk_alias}_dedup;")
+            if safe_lk_alias != f"row{idx+2}":
+                conn.execute(f"CREATE TEMPORARY VIEW row{idx+2} AS SELECT * FROM _{safe_lk_alias}_dedup;")
+
+            # ─── Montagem Dinâmica do Join (Chaves Transpiladas + Join Filter) ───
+            join_clauses = []
+
+            # 1. Chaves de Junção (Left Keys x Right Keys) com suporte a expressões
             if left_keys and right_keys:
-                join_cond = " AND ".join([
-                    f'_tmap_working."{lk_k}" = {lk_alias}_dedup."{rk_k}"'
-                    for lk_k, rk_k in zip(left_keys, right_keys)
-                ])
+                for lk_k, rk_k in zip(left_keys, right_keys):
+                    raw_left = str(lk_k).strip()
+                    clean_raw_left = re.sub(r'^\{\{?|\}\}?$', '', raw_left).strip()
+                    t_left = self.transpile_expression(clean_raw_left, known_columns=known_cols)
+                    clean_left = clean_raw_left.strip('"').strip("'")
+                    col_left = clean_left.split(".")[-1].strip().strip('"').strip("'")
 
-                join_model = str(lk.get("join_model", "left_outer")).lower()
-                has_match_col = f"_has_match_{idx+1}"
+                    if clean_left in known_cols or f"{main_alias_safe}.{col_left}" in known_cols:
+                        t_left = f'_tmap_working."{clean_left}"'
+                    elif re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', clean_raw_left) or re.match(r'^"[^"]+"$', t_left):
+                        t_left = f'_tmap_working."{clean_left}"'
 
-                # Realiza Left Join e cria flag indicadora de match
-                conn.execute(f"""
-                    CREATE TEMPORARY TABLE _tmap_step_{idx+1} AS
-                    SELECT 
-                        _tmap_working.*,
-                        {lk_alias}_dedup.* EXCLUDE (_lk_row_id),
-                        CASE WHEN {lk_alias}_dedup._lk_row_id IS NOT NULL THEN 1 ELSE 0 END AS {has_match_col}
-                    FROM _tmap_working
-                    LEFT JOIN {lk_alias}_dedup ON {join_cond};
-                """)
-                conn.execute("DROP TABLE _tmap_working;")
-                conn.execute(f"ALTER TABLE _tmap_step_{idx+1} RENAME TO _tmap_working;")
+                    raw_right = str(rk_k).strip()
+                    clean_raw_right = re.sub(r'^\{\{?|\}\}?$', '', raw_right).strip()
+                    t_right = self.transpile_expression(clean_raw_right, known_columns=known_cols)
+                    clean_right = clean_raw_right.strip('"').strip("'")
+                    col_right = clean_right.split(".")[-1].strip().strip('"').strip("'")
 
-                if join_model == "inner":
-                    inner_join_checks.append(f"{has_match_col} = 1")
+                    if col_right in lk_df.columns:
+                        t_right = f'{safe_lk_alias}."{col_right}"'
+                    elif clean_right in lk_df.columns:
+                        t_right = f'{safe_lk_alias}."{clean_right}"'
+                    elif re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', clean_right) or re.match(r'^"[^"]+"$', t_right):
+                        t_right = f'{safe_lk_alias}."{clean_right}"'
 
-        # 3. Computa Variáveis Intermediárias (Var) em Ordem Sequencial
+                    join_clauses.append(f"({t_left}) = ({t_right})")
+
+            # 2. Join Filter (Filtro Condicional Adicional no ON do Join)
+            raw_join_filter = (lk.get("join_filter") or lk.get("filter_expression") or "").strip()
+            if raw_join_filter:
+                t_join_filter = self.transpile_expression(raw_join_filter, known_columns=known_cols)
+                t_join_filter = re.sub(r'\b(main|row1|_tmap_working)\.', '_tmap_working.', t_join_filter, flags=re.IGNORECASE)
+                t_join_filter = re.sub(rf'\b({re.escape(node_id)}|lk|lookup|{safe_lk_alias})\.', f'{safe_lk_alias}.', t_join_filter, flags=re.IGNORECASE)
+                join_clauses.append(f"({t_join_filter})")
+
+            join_cond = " AND ".join(join_clauses) if join_clauses else "1=1"
+            join_model = str(lk.get("join_model", "left_outer")).lower()
+            has_match_col = f"_has_match_{idx+1}"
+
+            # Projeção das colunas do lookup com namespace para evitar colisão no DuckDB
+            lk_proj_cols = []
+            safe_node_id = re.sub(r'[^a-zA-Z0-9_]', '_', str(node_id).strip()) if node_id else ""
+            for c in lk_df.columns:
+                lk_proj_cols.append(f'{safe_lk_alias}."{c}" AS "{safe_lk_alias}.{c}"')
+                if safe_lk_alias != f"row{idx+2}":
+                    lk_proj_cols.append(f'{safe_lk_alias}."{c}" AS "row{idx+2}.{c}"')
+                if node_id and safe_node_id != safe_lk_alias:
+                    lk_proj_cols.append(f'{safe_lk_alias}."{c}" AS "{safe_node_id}.{c}"')
+                    if safe_node_id != str(node_id):
+                        lk_proj_cols.append(f'{safe_lk_alias}."{c}" AS "{node_id}.{c}"')
+                raw_lk_label = lk.get("label")
+                if raw_lk_label:
+                    safe_lk_label = re.sub(r'[^a-zA-Z0-9_]', '_', str(raw_lk_label).strip())
+                    if safe_lk_label not in (safe_lk_alias, f"row{idx+2}", safe_node_id):
+                        lk_proj_cols.append(f'{safe_lk_alias}."{c}" AS "{safe_lk_label}.{c}"')
+                if c not in main_df.columns:
+                    lk_proj_cols.append(f'{safe_lk_alias}."{c}" AS "{c}"')
+            lk_proj_sql = (", " + ", ".join(lk_proj_cols)) if lk_proj_cols else ""
+
+            # Realiza Left Join e cria flag indicadora de match
+            conn.execute(f"""
+                CREATE TEMPORARY TABLE _tmap_step_{idx+1} AS
+                SELECT 
+                    _tmap_working.*
+                    {lk_proj_sql},
+                    CASE WHEN {safe_lk_alias}._lk_row_id IS NOT NULL THEN 1 ELSE 0 END AS {has_match_col}
+                FROM _tmap_working
+                LEFT JOIN {safe_lk_alias} ON {join_cond};
+            """)
+            conn.execute("DROP TABLE _tmap_working;")
+            conn.execute(f"ALTER TABLE _tmap_step_{idx+1} RENAME TO _tmap_working;")
+
+            if join_model == "inner":
+                inner_join_checks.append(f"{has_match_col} = 1")
+
+        # ─── 3. Computa Variáveis Intermediárias (Var) em Ordem Sequencial ───
         for v_idx, var in enumerate(variables):
             var_name = var.get("name")
             var_expr = var.get("expression", "")
@@ -501,16 +682,18 @@ class DuckDBRunner:
                 try:
                     conn.execute(f"""
                         CREATE TEMPORARY TABLE _tmap_var_step_{v_idx} AS
-                        SELECT *, ({transpiled_v}) AS "{var_name}"
+                        SELECT *, 
+                               ({transpiled_v}) AS "Var.{var_name}",
+                               ({transpiled_v}) AS "{var_name}"
                         FROM _tmap_working;
                     """)
                     conn.execute("DROP TABLE _tmap_working;")
                     conn.execute(f"ALTER TABLE _tmap_var_step_{v_idx} RENAME TO _tmap_working;")
                 except Exception as e:
-                    # Se falhar a expressão da variável, continua com coluna nula
+                    conn.execute(f'ALTER TABLE _tmap_working ADD COLUMN "Var.{var_name}" VARCHAR;')
                     conn.execute(f'ALTER TABLE _tmap_working ADD COLUMN "{var_name}" VARCHAR;')
 
-        # 4. Processa Tabelas de Saída e Rejeições
+        # ─── 4. Processa Tabelas de Saída e Rejeições ───
         results: Dict[str, pl.DataFrame] = {}
         standard_filter_conditions: List[str] = []
 
@@ -534,13 +717,11 @@ class DuckDBRunner:
             where_clauses = []
 
             if is_catch_inner:
-                # Rejeição de Inner Join: registros onde pelo menos um inner join falhou
                 if inner_join_checks:
                     where_clauses.append("NOT (" + " AND ".join(inner_join_checks) + ")")
                 else:
-                    where_clauses.append("1=0")  # Sem inner joins, nenhum reject
+                    where_clauses.append("1=0")
             elif is_catch_output:
-                # Rejeição de Filtro de Saída: registros aceitos pelos joins mas rejeitados por todas as saídas
                 if inner_join_checks:
                     where_clauses.extend(inner_join_checks)
                 if standard_filter_conditions:
@@ -548,7 +729,6 @@ class DuckDBRunner:
                 else:
                     where_clauses.append("1=0")
             else:
-                # Saída normal
                 if inner_join_checks:
                     where_clauses.extend(inner_join_checks)
                 if filter_expr:
@@ -566,7 +746,9 @@ class DuckDBRunner:
                     select_items.append(f'({trans_expr}) AS "{target_name}"')
                 select_sql = ", ".join(select_items)
             else:
-                select_sql = "* EXCLUDE (_tmap_main_idx" + "".join([f", _has_match_{i+1}" for i in range(len(lookups))]) + ")"
+                exclude_cols = ["_tmap_main_idx"] + [f"_has_match_{i+1}" for i in range(len(lookups))]
+                exclude_clause = f" EXCLUDE ({', '.join(exclude_cols)})"
+                select_sql = f"*{exclude_clause}"
 
             query = f"SELECT {select_sql} FROM _tmap_working{where_sql};"
             try:

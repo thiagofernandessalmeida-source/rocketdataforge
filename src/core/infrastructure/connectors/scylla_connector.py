@@ -485,13 +485,57 @@ class ScyllaConnector:
             if cql_consistency:
                 prepared.consistency_level = cql_consistency
 
+            # Mapeamento de tipos CQL a partir dos metadados do prepared statement para auto-coerção resiliente
+            import datetime
+            import uuid
+
+            col_type_map = {}
+            if hasattr(prepared, "column_metadata") and prepared.column_metadata:
+                for col_spec in prepared.column_metadata:
+                    c_name = getattr(col_spec, "name", None)
+                    c_type = getattr(col_spec, "type", None)
+                    if c_name:
+                        col_type_map[str(c_name).lower()] = c_type
+
+            def _coerce_cql_val(col_name: str, val: Any) -> Any:
+                if val is None:
+                    return None
+                cql_type = col_type_map.get(str(col_name).lower())
+                type_name = getattr(cql_type, "__name__", str(cql_type)).lower() if cql_type else ""
+
+                # Auto-coerção de String para Date / Timestamp
+                if ("date" in type_name or "time" in type_name or "timestamp" in str(col_name).lower() or "date" in str(col_name).lower()) and isinstance(val, str):
+                    s = val.strip()
+                    if not s:
+                        return None
+                    try:
+                        return datetime.datetime.fromisoformat(s.replace(" ", "T"))
+                    except Exception:
+                        pass
+                    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y", "%Y-%m-%dT%H:%M:%S"):
+                        try:
+                            return datetime.datetime.strptime(s, fmt)
+                        except Exception:
+                            pass
+
+                # Auto-coerção de String para UUID
+                elif "uuid" in type_name and isinstance(val, str):
+                    s = val.strip()
+                    if s:
+                        try:
+                            return uuid.UUID(s)
+                        except Exception:
+                            pass
+
+                return val
+
             records = df.to_dicts()
             total_inserted = 0
 
             # ─── Estratégia 1: Concorrência Assíncrona (Recomendada ScyllaDB - Shard-Aware) ───
             if write_strategy == "concurrent":
                 effective_concurrency = min(max(10, concurrency), 250)
-                param_tuples = [tuple(row[col] for col in columns) for row in records]
+                param_tuples = [tuple(_coerce_cql_val(col, row[col]) for col in columns) for row in records]
                 
                 # Executa em lotes controlados de in-flight requests para manter baixa latência
                 chunk_size = max(500, batch_size)
@@ -519,7 +563,7 @@ class ScyllaConnector:
                     batch = BatchStatement(batch_type=b_type, consistency_level=cql_consistency)
                     chunk = records[i:i + effective_batch_sz]
                     for row in chunk:
-                        batch.add(prepared, tuple(row[col] for col in columns))
+                        batch.add(prepared, tuple(_coerce_cql_val(col, row[col]) for col in columns))
                     session.execute(batch, timeout=timeout)
                     total_inserted += len(chunk)
 

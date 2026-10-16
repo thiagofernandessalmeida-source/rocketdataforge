@@ -77,3 +77,25 @@ class CompiledPlans(BaseModel):
 class ExportedPipelineBundle(BaseModel):
     pipeline_yaml: str
     layout_json: str
+
+
+class CellPreconditionDTO(BaseModel):
+    id: Optional[str] = None
+    target_cell_id: str
+    expected_status: str = "OK"
+
+
+class PipelineCellDTO(BaseModel):
+    id: str
+    name: str
+    order: int = 1
+    cell_type: str = "CANVAS"
+    is_active: bool = True
+    is_minimized: bool = False
+    description: Optional[str] = None
+    code_snippet: Optional[str] = None
+    preconditions: List[CellPreconditionDTO] = Field(default_factory=list)
+    precondition_operator: str = "AND"
+    nodes: List[Dict[str, Any]] = Field(default_factory=list)
+    edges: List[Dict[str, Any]] = Field(default_factory=list)
+

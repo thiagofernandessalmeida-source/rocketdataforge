@@ -30,9 +30,14 @@ import {
   List,
   Terminal,
   Code2,
+  ArrowRightLeft,
+  ArrowUpDown,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 
 import { Canvas } from "../Canvas";
+import { getLayoutedElements, LayoutDirection } from "../utils/autoLayout";
 import { PythonCellEditor } from "./PythonCellEditor";
 import { CanvasCellData, CellExecutionStatus, CellPrecondition } from "../../../store/jobStore";
 import { CanvasNodeData } from "../../../types";
@@ -116,6 +121,12 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
     setOrderInput(String(cell.order));
   }, [cell.order]);
 
+  // Refs para manter sempre a versão mais recente e evitar stale closures entre nodes e edges
+  const nodesRef = useRef<Node<CanvasNodeData>[]>(nodes);
+  nodesRef.current = nodes;
+  const edgesRef = useRef<Edge[]>(edges);
+  edgesRef.current = edges;
+
   // Todos os nós existentes no Job inteiro (unindo as outras células com esta)
   const allJobNodes = useMemo(() => {
     const otherNodes = (allCells || [])
@@ -124,44 +135,63 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
     return [...otherNodes, ...nodes];
   }, [allCells, cell.id, nodes]);
 
-  // Propagate graph changes to parent container
+  // Propagate graph changes to parent container com validação de consistência
   const handleNodesChange = useCallback(
     (changes: any) => {
       onNodesChange(changes);
-      // Inform parent with updated node positions on next tick
-      setTimeout(() => {
-        setNodes((currentNodes) => {
-          onUpdateGraph(cell.id, currentNodes, edges);
-          return currentNodes;
-        });
-      }, 0);
+      setNodes((currentNodes) => {
+        // Remove arestas que apontavam para nós deletados
+        const validNodeIds = new Set(currentNodes.map((n) => n.id));
+        const currentEdges = edgesRef.current;
+        const validEdges = currentEdges.filter(
+          (e) => validNodeIds.has(e.source) && validNodeIds.has(e.target)
+        );
+        if (validEdges.length !== currentEdges.length) {
+          setEdges(validEdges);
+        }
+        onUpdateGraph(cell.id, currentNodes, validEdges);
+        return currentNodes;
+      });
     },
-    [onNodesChange, onUpdateGraph, cell.id, edges, setNodes]
+    [onNodesChange, onUpdateGraph, cell.id, setNodes, setEdges]
   );
 
   const handleEdgesChange = useCallback(
     (changes: any) => {
       onEdgesChange(changes);
-      setTimeout(() => {
-        setEdges((currentEdges) => {
-          onUpdateGraph(cell.id, nodes, currentEdges);
-          return currentEdges;
-        });
-      }, 0);
+      setEdges((currentEdges) => {
+        onUpdateGraph(cell.id, nodesRef.current, currentEdges);
+        return currentEdges;
+      });
     },
-    [onEdgesChange, onUpdateGraph, cell.id, nodes, setEdges]
+    [onEdgesChange, onUpdateGraph, cell.id, setEdges]
   );
 
-  // Wrapper para setNodes que propaga adições e mudanças imediatas ao jobStore
+  // Wrapper para setNodes que propaga adições e mudanças imediatas ao jobStore garantindo cellId
   const handleSetNodes = useCallback(
     (updater: React.SetStateAction<Node<CanvasNodeData>[]>) => {
       setNodes((currentNodes) => {
-        const nextNodes = typeof updater === "function" ? updater(currentNodes) : updater;
-        onUpdateGraph(cell.id, nextNodes, edges);
+        const rawNext = typeof updater === "function" ? updater(currentNodes) : updater;
+        const nextNodes = rawNext.map((n) => ({
+          ...n,
+          data: {
+            ...n.data,
+            cellId: cell.id,
+          },
+        }));
+        const validNodeIds = new Set(nextNodes.map((n) => n.id));
+        const currentEdges = edgesRef.current;
+        const validEdges = currentEdges.filter(
+          (e) => validNodeIds.has(e.source) && validNodeIds.has(e.target)
+        );
+        if (validEdges.length !== currentEdges.length) {
+          setEdges(validEdges);
+        }
+        onUpdateGraph(cell.id, nextNodes, validEdges);
         return nextNodes;
       });
     },
-    [cell.id, edges, onUpdateGraph, setNodes]
+    [cell.id, onUpdateGraph, setNodes, setEdges]
   );
 
   // Wrapper para setEdges que propaga adições de arestas ao jobStore
@@ -169,11 +199,25 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
     (updater: React.SetStateAction<Edge[]>) => {
       setEdges((currentEdges) => {
         const nextEdges = typeof updater === "function" ? updater(currentEdges) : updater;
-        onUpdateGraph(cell.id, nodes, nextEdges);
+        onUpdateGraph(cell.id, nodesRef.current, nextEdges);
         return nextEdges;
       });
     },
-    [cell.id, nodes, onUpdateGraph, setEdges]
+    [cell.id, onUpdateGraph, setEdges]
+  );
+
+  // Auto-Layout Direcional (Horizontal 'LR' ou Vertical 'TB')
+  const handleApplyAutoLayout = useCallback(
+    (direction: LayoutDirection) => {
+      onSelectCell(cell.id);
+      if (!nodes || nodes.length === 0) return;
+      const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(nodes, edges, direction);
+      setNodes(layoutedNodes);
+      setEdges(layoutedEdges);
+      onUpdateGraph(cell.id, layoutedNodes, layoutedEdges);
+      onUpdateCellMeta(cell.id, { layoutDirection: direction });
+    },
+    [nodes, edges, cell.id, setNodes, setEdges, onUpdateGraph, onUpdateCellMeta, onSelectCell]
   );
 
   // Seleção de nó enriquecida com cellId
@@ -290,9 +334,12 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
 
   const currentStatus = cell.status || "idle";
   const statusMeta = statusConfig[currentStatus];
+  const isCellActive = cell.is_active !== false;
+  const isCellMinimized = Boolean(cell.is_minimized);
 
   // Card outline glow style
   const getBorderColor = () => {
+    if (!isCellActive) return "var(--border-subtle)";
     if (currentStatus === "running") return "var(--accent-cyan)";
     if (currentStatus === "failed") return "var(--status-danger)";
     if (currentStatus === "cancelled") return "#f97316";
@@ -303,6 +350,7 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
   };
 
   const getBoxShadow = () => {
+    if (!isCellActive) return "none";
     if (currentStatus === "running") return "0 0 16px rgba(6, 182, 212, 0.35)";
     if (currentStatus === "failed") return "0 0 14px rgba(239, 68, 68, 0.3)";
     if (currentStatus === "cancelled") return "0 0 12px rgba(249, 115, 22, 0.3)";
@@ -316,7 +364,7 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
     <div
       className={`canvas-cell-container ${isFocusMode ? "focus-mode" : ""} ${
         isActive ? "active-cell" : ""
-      }`}
+      } ${!isCellActive ? "cell-inactive opacity-50" : ""} ${isCellMinimized ? "minimized" : ""}`}
       style={{
         display: "flex",
         flexDirection: "column",
@@ -325,9 +373,11 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
         borderRadius: isFocusMode ? 0 : 10,
         boxShadow: getBoxShadow(),
         marginBottom: isFocusMode ? 0 : 18,
-        height: isFocusMode ? "100%" : 460,
-        minHeight: isFocusMode ? "100%" : 380,
-        transition: "border-color 0.2s ease, box-shadow 0.2s ease",
+        height: isCellMinimized ? "auto" : isFocusMode ? "100%" : 460,
+        minHeight: isCellMinimized ? "auto" : isFocusMode ? "100%" : 380,
+        opacity: isCellActive ? 1 : 0.52,
+        filter: isCellActive ? "none" : "grayscale(0.35)",
+        transition: "border-color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease",
         position: "relative",
       }}
       onClick={() => onSelectCell(cell.id)}
@@ -496,6 +546,35 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
 
         {/* Right: Actions Toolbar */}
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          {/* Active / Inactive Toggle (Eye / EyeOff) */}
+          <button
+            type="button"
+            className={`btn btn-secondary ${!isCellActive ? "cell-inactive-btn" : ""}`}
+            style={{
+              fontSize: "0.7rem",
+              padding: "2px 8px",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              color: isCellActive ? "var(--status-success)" : "var(--text-muted)",
+              background: isCellActive ? "rgba(16, 185, 129, 0.12)" : "rgba(255, 255, 255, 0.05)",
+              borderColor: isCellActive ? "rgba(16, 185, 129, 0.3)" : "var(--border-subtle)",
+              cursor: "pointer",
+            }}
+            title={
+              isCellActive
+                ? "Célula Ativa. Clique para desativar (será ignorada com status SKIPPED na execução)."
+                : "Célula Desativada. Clique para ativar."
+            }
+            onClick={(e) => {
+              e.stopPropagation();
+              onUpdateCellMeta(cell.id, { is_active: !isCellActive });
+            }}
+          >
+            {isCellActive ? <Eye size={12} /> : <EyeOff size={12} />}
+            <span>{isCellActive ? "Ativa" : "Desativada"}</span>
+          </button>
+
           {/* Métricas & Logs Toggle Button */}
           <button
             type="button"
@@ -553,6 +632,50 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
             <RotateCcw size={13} />
           </button>
 
+          {/* Auto-Layout Buttons */}
+          <div style={{ display: "flex", alignItems: "center", gap: 2, background: "rgba(255, 255, 255, 0.04)", borderRadius: 4, padding: "1px 2px" }}>
+            <button
+              type="button"
+              className="icon-btn"
+              style={{
+                fontSize: "0.68rem",
+                display: "flex",
+                alignItems: "center",
+                gap: 3,
+                padding: "2px 5px",
+                color: cell.layoutDirection === "LR" || !cell.layoutDirection ? "var(--accent-cyan)" : "var(--text-muted)",
+              }}
+              title="Organizar nós automaticamente em Layout Horizontal (Left to Right)"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleApplyAutoLayout("LR");
+              }}
+            >
+              <ArrowRightLeft size={11} />
+              <span>Horiz</span>
+            </button>
+            <button
+              type="button"
+              className="icon-btn"
+              style={{
+                fontSize: "0.68rem",
+                display: "flex",
+                alignItems: "center",
+                gap: 3,
+                padding: "2px 5px",
+                color: cell.layoutDirection === "TB" ? "var(--accent-cyan)" : "var(--text-muted)",
+              }}
+              title="Organizar nós automaticamente em Layout Vertical (Top to Bottom)"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleApplyAutoLayout("TB");
+              }}
+            >
+              <ArrowUpDown size={11} />
+              <span>Vert</span>
+            </button>
+          </div>
+
           {/* Run or Stop Single Cell Button */}
           {currentStatus === "running" ? (
             <button
@@ -581,18 +704,26 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
             <button
               type="button"
               className="btn btn-secondary"
+              disabled={!isCellActive}
               style={{
                 fontSize: "0.72rem",
                 padding: "3px 9px",
                 display: "flex",
                 alignItems: "center",
                 gap: 4,
-                color: "var(--status-success)",
-                borderColor: "rgba(16, 185, 129, 0.4)",
+                color: isCellActive ? "var(--status-success)" : "var(--text-muted)",
+                borderColor: isCellActive ? "rgba(16, 185, 129, 0.4)" : "var(--border-subtle)",
+                opacity: isCellActive ? 1 : 0.45,
+                cursor: isCellActive ? "pointer" : "not-allowed",
               }}
-              title="Executar apenas esta célula de forma isolada"
+              title={
+                !isCellActive
+                  ? "Célula desativada. Ative-a para poder executar."
+                  : "Executar apenas esta célula de forma isolada"
+              }
               onClick={(e) => {
                 e.stopPropagation();
+                if (!isCellActive) return;
                 onRunSingleCell(cell);
               }}
             >
@@ -678,6 +809,27 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
           >
             {isFocusMode ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
           </button>
+
+          {/* Minimize / Expand Toggle */}
+          {!isFocusMode && (
+            <button
+              type="button"
+              className={`icon-btn ${isCellMinimized ? "active" : ""}`}
+              style={{
+                marginLeft: 2,
+                color: isCellMinimized ? "var(--accent-cyan)" : "var(--text-secondary)",
+                background: isCellMinimized ? "rgba(6, 182, 212, 0.15)" : undefined,
+                borderColor: isCellMinimized ? "var(--accent-cyan)" : undefined,
+              }}
+              title={isCellMinimized ? "Expandir célula" : "Minimizar célula (economiza recursos do navegador)"}
+              onClick={(e) => {
+                e.stopPropagation();
+                onUpdateCellMeta(cell.id, { is_minimized: !isCellMinimized });
+              }}
+            >
+              {isCellMinimized ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+            </button>
+          )}
         </div>
       </div>
 
@@ -713,7 +865,9 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
       )}
 
       {/* ─── Cell Body: Canvas (ReactFlow) or Python Editor (Monaco) ─── */}
-      <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+      {!isCellMinimized && (
+        <>
+          <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
         {cell.cellType === "PYTHON" ? (
           <PythonCellEditor
             cell={cell}
@@ -953,8 +1107,10 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
           </div>
         </div>
       )}
+    </>
+  )}
 
-      {/* Preconditions Modal */}
+  {/* Preconditions Modal */}
       {showPreconditionsModal && (
         <CellPreconditionsModal
           cell={cell}

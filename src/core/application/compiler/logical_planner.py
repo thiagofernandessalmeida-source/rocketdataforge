@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from src.core.application.compiler.operators import (
+    LogicalBarrier,
     LogicalFilter,
     LogicalJoin,
     LogicalOperator,
@@ -372,6 +373,16 @@ class LogicalPlanner:
                 variables=cfg.get("variables", []),
                 outputs=cfg.get("outputs", []),
                 input_ids=input_ids
+            )
+
+        # Controle / Sincronização (Barrier / Wait All)
+        if component_type in ("control.sync", "control.barrier"):
+            return LogicalBarrier(
+                id=node_id,
+                input_ids=input_ids,
+                mode=cfg.get("mode", "wait_all"),
+                timeout_seconds=int(cfg.get("timeout_seconds") or 0),
+                failure_policy=cfg.get("failure_policy", "fail_fast")
             )
 
         # Fallback para operador genérico

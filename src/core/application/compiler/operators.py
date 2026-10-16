@@ -150,3 +150,21 @@ class LogicalSink(LogicalOperator):
         })
         return res
 
+
+@dataclass
+class LogicalBarrier(LogicalOperator):
+    """Operador de sincronização / semáforo (Sync Barrier - Wait All)."""
+    operator_type: str = "barrier"
+    mode: str = "wait_all"
+    timeout_seconds: int = 0
+    failure_policy: str = "fail_fast"
+
+    def to_dict(self) -> Dict[str, Any]:
+        res = super().to_dict()
+        res.update({
+            "mode": self.mode,
+            "timeout_seconds": self.timeout_seconds,
+            "failure_policy": self.failure_policy
+        })
+        return res
+

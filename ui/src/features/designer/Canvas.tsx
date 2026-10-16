@@ -18,12 +18,14 @@ import "reactflow/dist/style.css";
 
 import { GenericNode } from "./nodes/GenericNode";
 import { FlowEdge } from "./edges/FlowEdge";
+import { TriggerEdge } from "./edges/TriggerEdge";
 import { CanvasNodeData, ComponentDefinition } from "../../types";
 import {
   getFlowType,
   generateFlowName,
   FLOW_CONFIG,
 } from "./utils/flowNaming";
+import { jobStore, generateRocketNodeId } from "../../store/jobStore";
 
 const nodeTypes: NodeTypes = {
   genericNode: GenericNode,
@@ -31,6 +33,7 @@ const nodeTypes: NodeTypes = {
 
 const edgeTypes: EdgeTypes = {
   flowEdge: FlowEdge,
+  triggerEdge: TriggerEdge,
   default: FlowEdge,
 };
 
@@ -47,46 +50,7 @@ export interface CanvasProps {
   cellId?: string;
 }
 
-export function generateRocketNodeId(typeId: string, existingNodes: Node<CanvasNodeData>[]): string {
-  let prefix = "node";
-  if (typeId.includes("postgresql.output") || typeId.includes("postgres.output")) prefix = "postgres_sink";
-  else if (typeId.includes("postgresql") || typeId.includes("postgres") || typeId.includes("database.source")) prefix = "postgres_source";
-  else if (typeId.includes("duckdb.output")) prefix = "duckdb_sink";
-  else if (typeId.includes("duckdb")) prefix = "duckdb_source";
-  else if (typeId.includes("oracle.output")) prefix = "oracle_sink";
-  else if (typeId.includes("oracle")) prefix = "oracle_source";
-  else if (typeId.includes("sqlserver.output")) prefix = "sqlserver_sink";
-  else if (typeId.includes("sqlserver")) prefix = "sqlserver_source";
-  else if (typeId.includes("mysql.output")) prefix = "mysql_sink";
-  else if (typeId.includes("mysql")) prefix = "mysql_source";
-  else if (typeId.includes("file.source.csv") || typeId.includes(".csv")) prefix = "csv_source";
-  else if (typeId.includes("file.source.parquet") || typeId.includes(".parquet")) prefix = "parquet_source";
-  else if (typeId.includes("file.source.json") || typeId.includes(".json")) prefix = "json_source";
-  else if (typeId.includes("file.source.excel") || typeId.includes(".excel")) prefix = "excel_source";
-  else if (typeId.includes("file.target")) prefix = "file_sink";
-  else if (typeId.includes("file.source")) prefix = "file_source";
-  else if (typeId.includes("tmap") || typeId.includes("mapper")) prefix = "data_mapper";
-  else if (typeId.includes("filter")) prefix = "filter";
-  else if (typeId.includes("select")) prefix = "project";
-  else if (typeId.includes("join")) prefix = "join";
-  else if (typeId.includes("aggregate")) prefix = "aggregate";
-  else if (typeId.includes("sort")) prefix = "sort";
-  else if (typeId.includes("deduplicate")) prefix = "dedup";
-  else if (typeId.includes("lookup")) prefix = "lookup";
-  else if (typeId.includes("union")) prefix = "union";
-  else if (typeId.includes("pivot")) prefix = "pivot";
-  else {
-    const last = typeId.split(".").pop() || "node";
-    prefix = last.replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase();
-  }
-
-  let count = 1;
-  const existingIds = new Set(existingNodes.map((n) => n.id.toLowerCase()));
-  while (existingIds.has(`${prefix}_${count}`.toLowerCase())) {
-    count++;
-  }
-  return `${prefix}_${count}`;
-}
+export { generateRocketNodeId };
 
 export const Canvas: React.FC<CanvasProps> = ({
   nodes,
@@ -121,7 +85,7 @@ export const Canvas: React.FC<CanvasProps> = ({
         const edgeData = {
           ...params,
           id: `e_${flowName}_${Date.now()}`,
-          type: "flowEdge",
+          type: flowType === "trigger" ? "triggerEdge" : "flowEdge",
           label: flowName,
           animated: true,
           style: { stroke: meta.strokeColor, strokeWidth: 2 },
@@ -175,8 +139,17 @@ export const Canvas: React.FC<CanvasProps> = ({
         y: event.clientY,
       });
 
-      // Garantir que a geração do ID verifica todos os nós existentes no Job (todas as células)
+      // Garantir unicidade global de ID consultando todas as células do Job
       const pool = new Map<string, Node<CanvasNodeData>>();
+      const activeJob = jobStore.getActiveJob();
+      if (activeJob?.cells) {
+        activeJob.cells.forEach((c: any) => {
+          (c.nodes || []).forEach((n: any) => pool.set(n.id.toLowerCase(), n));
+        });
+      }
+      if (activeJob?.nodes) {
+        activeJob.nodes.forEach((n: any) => pool.set(n.id.toLowerCase(), n));
+      }
       if (allNodes && allNodes.length > 0) {
         allNodes.forEach((n) => pool.set(n.id.toLowerCase(), n));
       }

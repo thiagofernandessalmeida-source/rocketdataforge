@@ -16,6 +16,7 @@ import { Canvas } from "./features/designer/Canvas";
 import { MultiCanvasContainer } from "./features/designer/cells/MultiCanvasContainer";
 import { PropertyPanel } from "./features/designer/PropertyPanel";
 import { FloatingNodeConfig } from "./features/designer/FloatingNodeConfig";
+import { TMapModal, TMapConfig } from "./features/designer/TMapModal";
 import { ExecutionConsole, ProblemItem } from "./features/execution/ExecutionConsole";
 import { JobRepository } from "./features/repository/JobRepository";
 import { JobTabBar } from "./features/repository/JobTabBar";
@@ -29,6 +30,7 @@ import { WorkspaceModal } from "./features/workspace/WorkspaceModal";
 import { WorkspaceLauncher } from "./features/workspace/WorkspaceLauncher";
 import { api, getBaseApiUrl } from "./api/client";
 import { EXPANDED_CATALOG } from "./catalog/components";
+import { getLayoutedElements, LayoutDirection } from "./features/designer/utils/autoLayout";
 import {
   jobStore,
   JobData,
@@ -369,6 +371,13 @@ export const App: React.FC = () => {
   });
   const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceInfo | null>(null);
   const [floatingNode, setFloatingNode] = useState<Node<CanvasNodeData> | null>(null);
+  const [tmapModalNode, setTmapModalNode] = useState<Node<CanvasNodeData> | null>(null);
+
+  const isTMapNode = useCallback((node: Node<CanvasNodeData> | null) => {
+    if (!node) return false;
+    const ct = node.data?.componentType || "";
+    return ct === "core.tmap" || ct === "transform.tmap";
+  }, []);
 
   const handleLauncherComplete = useCallback(async (ws: WorkspaceInfo) => {
     setWorkspaceInfo(ws);
@@ -748,22 +757,96 @@ export const App: React.FC = () => {
   // ─── Keyboard Shortcuts ────────────────────────────────────
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key.toLowerCase() === "s") {
+      const isInput =
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        Boolean((e.target as HTMLElement)?.isContentEditable) ||
+        Boolean((e.target as HTMLElement)?.closest(".monaco-editor"));
+
+      // Salvar Job (Ctrl+S)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
         handleSaveLocal();
+        return;
       }
-      if (e.ctrlKey && e.key.toLowerCase() === "b") {
+
+      // Alternar Repositório (Ctrl+B)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") {
         e.preventDefault();
         setRepoVisible((v) => !v);
+        return;
       }
-      if (e.ctrlKey && e.key.toLowerCase() === "j") {
+
+      // Alternar Console (Ctrl+J)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "j") {
         e.preventDefault();
         setConsoleVisible((v) => !v);
+        return;
+      }
+
+      // Se o foco estiver dentro de um campo de texto / input, não intercepta atalhos de edição
+      if (isInput) return;
+
+      // Desfazer (Ctrl+Z)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
+        e.preventDefault();
+        if (activeJobId && jobStore.canUndo(activeJobId)) {
+          const ok = jobStore.undo(activeJobId);
+          if (ok) showToast("info", "Ação desfeita (Ctrl+Z).");
+        } else {
+          showToast("info", "Nada a desfazer.");
+        }
+        return;
+      }
+
+      // Refazer (Ctrl+Y ou Ctrl+Shift+Z)
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        (e.key.toLowerCase() === "y" || (e.shiftKey && e.key.toLowerCase() === "z"))
+      ) {
+        e.preventDefault();
+        if (activeJobId && jobStore.canRedo(activeJobId)) {
+          const ok = jobStore.redo(activeJobId);
+          if (ok) showToast("info", "Ação refeita (Ctrl+Y).");
+        } else {
+          showToast("info", "Nada a refazer.");
+        }
+        return;
+      }
+
+      // Copiar Nó Selecionado (Ctrl+C)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
+        if (selectedNode && activeJobId) {
+          const targetCellId =
+            (selectedNode.data as any)?.cellId || activeJob?.activeCellId || activeJob?.cells?.[0]?.id;
+          if (targetCellId) {
+            e.preventDefault();
+            jobStore.copyNodes(activeJobId, targetCellId, [selectedNode.id]);
+            showToast("info", `Componente "${selectedNode.data?.label || selectedNode.id}" copiado (Ctrl+C).`);
+          }
+        }
+        return;
+      }
+
+      // Colar Nó(s) (Ctrl+V)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
+        if (activeJobId && jobStore.hasClipboardNodes()) {
+          e.preventDefault();
+          const targetCellId =
+            (selectedNode?.data as any)?.cellId || activeJob?.activeCellId || activeJob?.cells?.[0]?.id;
+          const pasted = jobStore.pasteNodes(activeJobId, targetCellId);
+          if (pasted.length > 0) {
+            setSelectedNode(pasted[0]);
+            showToast("success", `${pasted.length} componente(s) colado(s) com sucesso (Ctrl+V)!`);
+          }
+        }
+        return;
       }
     };
+
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [handleSaveLocal]);
+  }, [handleSaveLocal, activeJobId, activeJob, selectedNode, showToast]);
 
   // ─── Serialize Canvas ──────────────────────────────────────
   const serializeCanvas = (customPipelineId?: string) => {
@@ -1483,6 +1566,123 @@ export const App: React.FC = () => {
     }
   }, [activeJob, handleStopCellIsolated]);
 
+  const handleUndo = useCallback(() => {
+    if (!activeJobId) return;
+    if (jobStore.canUndo(activeJobId)) {
+      const ok = jobStore.undo(activeJobId);
+      if (ok) showToast("info", "Ação desfeita com sucesso (Undo).");
+    } else {
+      showToast("info", "Nada a desfazer.");
+    }
+  }, [activeJobId, showToast]);
+
+  const handleRedo = useCallback(() => {
+    if (!activeJobId) return;
+    if (jobStore.canRedo(activeJobId)) {
+      const ok = jobStore.redo(activeJobId);
+      if (ok) showToast("info", "Ação refeita com sucesso (Redo).");
+    } else {
+      showToast("info", "Nada a refazer.");
+    }
+  }, [activeJobId, showToast]);
+
+  const handleCopySelectedNode = useCallback(() => {
+    if (!selectedNode || !activeJobId) return;
+    const targetCellId =
+      (selectedNode.data as any)?.cellId || activeJob?.activeCellId || activeJob?.cells?.[0]?.id;
+    if (targetCellId) {
+      jobStore.copyNodes(activeJobId, targetCellId, [selectedNode.id]);
+      showToast("info", `Componente "${selectedNode.data?.label || selectedNode.id}" copiado.`);
+    }
+  }, [selectedNode, activeJobId, activeJob, showToast]);
+
+  const handlePasteNode = useCallback(() => {
+    if (!activeJobId || !jobStore.hasClipboardNodes()) return;
+    const targetCellId =
+      (selectedNode?.data as any)?.cellId || activeJob?.activeCellId || activeJob?.cells?.[0]?.id;
+    const pasted = jobStore.pasteNodes(activeJobId, targetCellId);
+    if (pasted.length > 0) {
+      setSelectedNode(pasted[0]);
+      showToast("success", `${pasted.length} componente(s) colado(s) com sucesso!`);
+    }
+  }, [activeJobId, selectedNode, activeJob, showToast]);
+
+  const handleLayoutHorizontal = useCallback(
+    (allCells: boolean = false) => {
+      if (!activeJobId || !activeJob) return;
+      jobStore.takeSnapshot(activeJobId, true);
+
+      if (allCells) {
+        let appliedCount = 0;
+        (activeJob.cells || []).forEach((c) => {
+          if (c.nodes && c.nodes.length > 0) {
+            const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
+              c.nodes,
+              c.edges || [],
+              "LR"
+            );
+            jobStore.saveCellGraph(activeJobId, c.id, layoutedNodes, layoutedEdges);
+            jobStore.updateCell(activeJobId, c.id, { layoutDirection: "LR" });
+            appliedCount++;
+          }
+        });
+        showToast("info", `Auto-Layout Horizontal (LR) aplicado em ${appliedCount} célula(s).`);
+      } else {
+        const targetCellId = activeJob.activeCellId || activeJob.cells?.[0]?.id;
+        if (!targetCellId) return;
+        const targetCell = activeJob.cells?.find((c) => c.id === targetCellId);
+        if (!targetCell || !targetCell.nodes || targetCell.nodes.length === 0) return;
+        const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
+          targetCell.nodes,
+          targetCell.edges || [],
+          "LR"
+        );
+        jobStore.saveCellGraph(activeJobId, targetCellId, layoutedNodes, layoutedEdges);
+        jobStore.updateCell(activeJobId, targetCellId, { layoutDirection: "LR" });
+        showToast("info", `Auto-Layout Horizontal (LR) aplicado na célula "${targetCell.name}".`);
+      }
+    },
+    [activeJobId, activeJob, showToast]
+  );
+
+  const handleLayoutVertical = useCallback(
+    (allCells: boolean = false) => {
+      if (!activeJobId || !activeJob) return;
+      jobStore.takeSnapshot(activeJobId, true);
+
+      if (allCells) {
+        let appliedCount = 0;
+        (activeJob.cells || []).forEach((c) => {
+          if (c.nodes && c.nodes.length > 0) {
+            const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
+              c.nodes,
+              c.edges || [],
+              "TB"
+            );
+            jobStore.saveCellGraph(activeJobId, c.id, layoutedNodes, layoutedEdges);
+            jobStore.updateCell(activeJobId, c.id, { layoutDirection: "TB" });
+            appliedCount++;
+          }
+        });
+        showToast("info", `Auto-Layout Vertical (TB) aplicado em ${appliedCount} célula(s).`);
+      } else {
+        const targetCellId = activeJob.activeCellId || activeJob.cells?.[0]?.id;
+        if (!targetCellId) return;
+        const targetCell = activeJob.cells?.find((c) => c.id === targetCellId);
+        if (!targetCell || !targetCell.nodes || targetCell.nodes.length === 0) return;
+        const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
+          targetCell.nodes,
+          targetCell.edges || [],
+          "TB"
+        );
+        jobStore.saveCellGraph(activeJobId, targetCellId, layoutedNodes, layoutedEdges);
+        jobStore.updateCell(activeJobId, targetCellId, { layoutDirection: "TB" });
+        showToast("info", `Auto-Layout Vertical (TB) aplicado na célula "${targetCell.name}".`);
+      }
+    },
+    [activeJobId, activeJob, showToast]
+  );
+
   const handleRunActiveCell = useCallback(async () => {
     if (!activeJob || !activeJob.cells || activeJob.cells.length === 0) return;
     const targetCell =
@@ -1588,6 +1788,14 @@ export const App: React.FC = () => {
           await Promise.all(
             parallelCells.map(async (cell) => {
               if (cancelOrchestrationRef.current) {
+                jobStore.setCellStatus(activeJob.id, cell.id, "skipped");
+                completedStatuses[cell.id] = "skipped";
+                completedStatuses[cell.name] = "skipped";
+                return;
+              }
+
+              // Intercepta células desativadas (is_active === false)
+              if (cell.is_active === false) {
                 jobStore.setCellStatus(activeJob.id, cell.id, "skipped");
                 completedStatuses[cell.id] = "skipped";
                 completedStatuses[cell.name] = "skipped";
@@ -1973,6 +2181,18 @@ export const App: React.FC = () => {
         onOpenAbout={() => setShowAboutModal(true)}
         onOpenWorkspace={() => setShowWorkspaceModal(true)}
         onOpenWorkspaceFolder={handleOpenWorkspaceFolder}
+        onLayoutHorizontal={() => handleLayoutHorizontal(false)}
+        onLayoutVertical={() => handleLayoutVertical(false)}
+        onLayoutHorizontalAll={() => handleLayoutHorizontal(true)}
+        onLayoutVerticalAll={() => handleLayoutVertical(true)}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
+        canUndo={Boolean(activeJobId && jobStore.canUndo(activeJobId))}
+        canRedo={Boolean(activeJobId && jobStore.canRedo(activeJobId))}
+        onCopyNode={handleCopySelectedNode}
+        onPasteNode={handlePasteNode}
+        canPaste={jobStore.hasClipboardNodes()}
+        hasSelectedNode={Boolean(selectedNode)}
       />
 
       <div className="studio-body">
@@ -1995,10 +2215,24 @@ export const App: React.FC = () => {
               {activeJob ? (
                 <MultiCanvasContainer
                   job={activeJob}
-                  onSelectNode={setSelectedNode}
+                  onSelectNode={(node) => {
+                    if (isTMapNode(node)) {
+                      setTmapModalNode(node);
+                      setSelectedNode(null);
+                      setFloatingNode(null);
+                    } else {
+                      setSelectedNode(node);
+                    }
+                  }}
                   onDoubleClickNode={(node) => {
-                    setFloatingNode(node);
-                    setSelectedNode(null);
+                    if (isTMapNode(node)) {
+                      setTmapModalNode(node);
+                      setSelectedNode(null);
+                      setFloatingNode(null);
+                    } else {
+                      setFloatingNode(node);
+                      setSelectedNode(null);
+                    }
                   }}
                   onRunEntireJob={handleRun}
                   onStopJob={handleStopJob}
@@ -2015,10 +2249,24 @@ export const App: React.FC = () => {
                     onEdgesChange={onEdgesChange}
                     setNodes={setNodes}
                     setEdges={setEdges}
-                    onSelectNode={setSelectedNode}
+                    onSelectNode={(node) => {
+                      if (isTMapNode(node)) {
+                        setTmapModalNode(node);
+                        setSelectedNode(null);
+                        setFloatingNode(null);
+                      } else {
+                        setSelectedNode(node);
+                      }
+                    }}
                     onDoubleClickNode={(node) => {
-                      setFloatingNode(node);
-                      setSelectedNode(null);
+                      if (isTMapNode(node)) {
+                        setTmapModalNode(node);
+                        setSelectedNode(null);
+                        setFloatingNode(null);
+                      } else {
+                        setFloatingNode(node);
+                        setSelectedNode(null);
+                      }
                     }}
                     allNodes={nodes}
                     cellId={undefined}
@@ -2064,8 +2312,14 @@ export const App: React.FC = () => {
             allNodes={activeJob?.cells ? activeJob.cells.flatMap((c) => c.nodes) : nodes}
             edges={activeJob?.cells ? activeJob.cells.flatMap((c) => c.edges) : edges}
             onPopOut={(node) => {
-              setFloatingNode(node);
-              setSelectedNode(null);
+              if (isTMapNode(node)) {
+                setTmapModalNode(node);
+                setSelectedNode(null);
+                setFloatingNode(null);
+              } else {
+                setFloatingNode(node);
+                setSelectedNode(null);
+              }
             }}
           />
         )}
@@ -2165,6 +2419,87 @@ export const App: React.FC = () => {
           edges={activeJob?.cells ? activeJob.cells.flatMap((c) => c.edges) : edges}
         />
       )}
+
+      {/* Direct Data Mapper Studio Modal (TASK: bypass intermediate screen) */}
+      {tmapModalNode && (() => {
+        const allJobNodes = activeJob?.cells ? activeJob.cells.flatMap((c) => c.nodes) : nodes;
+        const allJobEdges = activeJob?.cells ? activeJob.cells.flatMap((c) => c.edges) : edges;
+        const liveTMap = allJobNodes.find((n) => n.id === tmapModalNode.id) || tmapModalNode;
+        const tmapCellId = (liveTMap.data as any)?.cellId;
+
+        const scopedEdges = tmapCellId
+          ? allJobEdges.filter((e) => {
+              if ((e.data as any)?.cellId) return (e.data as any).cellId === tmapCellId;
+              const src = allJobNodes.find((n) => n.id === e.source);
+              const tgt = allJobNodes.find((n) => n.id === e.target);
+              return (!src || (src.data as any)?.cellId === tmapCellId) && (!tgt || (tgt.data as any)?.cellId === tmapCellId);
+            })
+          : allJobEdges;
+
+        const incomingEdges = scopedEdges.filter((e) => e.target === liveTMap.id);
+        const upstreamNodes = incomingEdges
+          .map((e) => allJobNodes.find((n) => n.id === e.source))
+          .filter((n): n is Node<CanvasNodeData> => Boolean(n));
+
+        const outgoingEdges = scopedEdges.filter((e) => e.source === liveTMap.id);
+        const downstreamNodes = outgoingEdges
+          .map((e) => {
+            const tgtNode = allJobNodes.find((n) => n.id === e.target);
+            const flowName =
+              e.data?.flowName ||
+              (typeof e.label === "string" ? e.label : "") ||
+              (e.id.startsWith("e_") || e.id.startsWith("e-") ? "" : e.id);
+            return {
+              edgeId: e.id,
+              flowName,
+              targetId: e.target,
+              targetLabel: tgtNode?.data?.label || e.target,
+              targetCategory: tgtNode?.data?.category || "target",
+              targetComponentType: tgtNode?.data?.componentType || "",
+              targetSchema: (tgtNode?.data as any)?.schema || [],
+            };
+          })
+          .filter((d) => Boolean(d.targetId));
+
+        const mainSchema: SchemaColumn[] = (upstreamNodes[0]?.data as any)?.schema || (liveTMap.data as any)?.schema || [];
+        const lookupSchemas: Record<string, SchemaColumn[]> = {};
+        upstreamNodes.slice(1).forEach((un) => {
+          lookupSchemas[un.id] = (un.data as any)?.schema || [];
+        });
+
+        const availableUpstreamNodes = upstreamNodes.map((un, idx) => {
+          const edge = incomingEdges.find((e) => e.source === un.id);
+          const alias = edge?.data?.flowName || (idx === 0 ? "row1" : `row${idx + 1}`);
+          return {
+            id: un.id,
+            label: un.data?.label || un.id,
+            alias: alias,
+            schema: (un.data as any)?.schema || [],
+          };
+        });
+
+        return (
+          <TMapModal
+            nodeId={liveTMap.id}
+            nodeLabel={liveTMap.data?.label || liveTMap.id}
+            config={(liveTMap.data?.config || {}) as TMapConfig}
+            mainSchema={mainSchema}
+            lookupSchemas={lookupSchemas}
+            availableUpstreamNodes={availableUpstreamNodes}
+            downstreamNodes={downstreamNodes}
+            onSave={(newCfg, targetSchemaUpdates) => {
+              handleUpdateConfig(liveTMap.id, { ...(liveTMap.data?.config || {}), ...newCfg });
+              if (targetSchemaUpdates && targetSchemaUpdates.length > 0) {
+                targetSchemaUpdates.forEach((up) => {
+                  handleUpdateSchema(up.nodeId, up.schema);
+                });
+              }
+              setTmapModalNode(null);
+            }}
+            onClose={() => setTmapModalNode(null)}
+          />
+        );
+      })()}
 
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>

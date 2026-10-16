@@ -22,6 +22,7 @@ import {
   Loader2,
   BookOpen,
   ChevronRight,
+  FileText,
 } from "lucide-react";
 import { ConnectionEntry, ContextVariable, SchemaColumn, Environment, QueryEntry, QueryDialect, ConnectionType } from "../../store/jobStore";
 import { SqlAutocompleteTextarea, AutocompleteSource } from "../../components/common/SqlAutocompleteTextarea";
@@ -395,7 +396,7 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
   const [showVarHint, setShowVarHint] = useState(false);
   const [showSchemaModal, setShowSchemaModal] = useState(false);
   const [showTMapModal, setShowTMapModal] = useState(false);
-  const [activeTab, setActiveTab] = useState<"config" | "schema">("config");
+  const [activeTab, setActiveTab] = useState<"config" | "schema" | "documentation">("config");
   const [editingNodeId, setEditingNodeId] = useState<string>("");
   const [isRenamingId, setIsRenamingId] = useState(false);
   const [inferringDirect, setInferringDirect] = useState(false);
@@ -405,6 +406,10 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
     if (selectedNode) {
       setEditingNodeId(selectedNode.id);
       setIsRenamingId(false);
+      const selCt = selectedNode.data?.componentType || "";
+      if (selCt === "core.tmap" || selCt === "transform.tmap") {
+        setShowTMapModal(true);
+      }
     }
   }, [selectedNode?.id]);
 
@@ -466,17 +471,34 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
 
   // ─── Busca Colunas a Montante (Upstream) e Fontes para Autocomplete ───
   const selectedNodeId = selectedNode?.id;
+  const selectedCellId = (selectedNode?.data as any)?.cellId;
+
+  const scopedEdges = React.useMemo(() => {
+    if (!selectedNodeId) return [];
+    if (!selectedCellId) return edges;
+    // Se o nó pertence a uma canvas-cell específica, filtra apenas arestas cujos nós pertencem à mesma célula
+    return edges.filter((e) => {
+      if ((e.data as any)?.cellId) {
+        return (e.data as any).cellId === selectedCellId;
+      }
+      const srcNode = allNodes.find((n) => n.id === e.source);
+      const tgtNode = allNodes.find((n) => n.id === e.target);
+      const srcCell = (srcNode?.data as any)?.cellId;
+      const tgtCell = (tgtNode?.data as any)?.cellId;
+      return (!srcCell || srcCell === selectedCellId) && (!tgtCell || tgtCell === selectedCellId);
+    });
+  }, [edges, selectedNodeId, selectedCellId, allNodes]);
 
   const incomingEdges = React.useMemo(() => {
     if (!selectedNodeId) return [];
-    return edges.filter((e) => e.target === selectedNodeId);
-  }, [edges, selectedNodeId]);
+    return scopedEdges.filter((e) => e.target === selectedNodeId);
+  }, [scopedEdges, selectedNodeId]);
 
   const upstreamNodes = React.useMemo(() => {
     return incomingEdges
-      .map((e) => allNodes.find((n) => n.id === e.source))
+      .map((e) => allNodes.find((n) => n.id === e.source && (!selectedCellId || (n.data as any)?.cellId === selectedCellId)))
       .filter((n): n is Node<CanvasNodeData> => Boolean(n));
-  }, [incomingEdges, allNodes]);
+  }, [incomingEdges, allNodes, selectedCellId]);
 
   // ─── Prepara Fontes para Autocomplete (rowX.coluna / {{node.coluna}}) ───
   const autocompleteSources: AutocompleteSource[] = React.useMemo(() => {
@@ -714,8 +736,55 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
           </div>
         </div>
 
-        {/* Tabs */}
-        <div className="prop-tabs">
+        {isTMap ? (
+          <div style={{ padding: "20px 16px", textAlign: "center" }}>
+            <div
+              style={{
+                background: "rgba(13, 16, 31, 0.85)",
+                border: "1px solid rgba(0, 212, 255, 0.3)",
+                borderRadius: 10,
+                padding: "24px 16px",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: 12,
+              }}
+            >
+              <div
+                style={{
+                  width: 48,
+                  height: 48,
+                  borderRadius: "50%",
+                  background: "rgba(0, 212, 255, 0.12)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  border: "1px solid rgba(0, 212, 255, 0.4)",
+                }}
+              >
+                <GitMerge size={24} color="var(--accent-cyan)" />
+              </div>
+              <h3 style={{ margin: 0, fontSize: "1rem", color: "var(--text-primary)" }}>Data Mapper Studio</h3>
+              <p style={{ margin: 0, fontSize: "0.75rem", color: "var(--text-secondary)", lineHeight: 1.5, maxWidth: 280 }}>
+                A identificação de schemas, conexões de entrada/saída, expressões e mapeamento de colunas é gerenciada 100% no <strong>Data Mapper Studio</strong>.
+              </p>
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ width: "100%", padding: "10px 16px", fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 8 }}
+                onClick={() => setShowTMapModal(true)}
+              >
+                <GitMerge size={15} /> Abrir Data Mapper Studio
+              </button>
+              <div style={{ fontSize: "0.7rem", color: "var(--text-dim)", marginTop: 4 }}>
+                Entradas conectadas: {upstreamNodes.length} | Saídas: {downstreamNodes.length}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Tabs */}
+            <div className="prop-tabs">
           <button
             className={`prop-tab ${activeTab === "config" ? "active" : ""}`}
             onClick={() => setActiveTab("config")}
@@ -728,6 +797,12 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
           >
             Schema
             {schema.length > 0 && <span className="prop-tab-badge">{schema.length}</span>}
+          </button>
+          <button
+            className={`prop-tab ${activeTab === "documentation" ? "active" : ""}`}
+            onClick={() => setActiveTab("documentation")}
+          >
+            Documentação
           </button>
           {activeTab === "schema" && (
             <button
@@ -1638,6 +1713,46 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                 </div>
               </>
             )}
+
+            {/* ─── Configurações Avançadas: Throttling, Timers & Resiliência (Tópico 6) ─── */}
+            <div style={{ marginTop: 16, borderTop: "1px solid var(--border-subtle)", paddingTop: 12 }}>
+              <div style={{ fontSize: "0.75rem", fontWeight: 600, color: "var(--accent-cyan)", marginBottom: 8, display: "flex", alignItems: "center", gap: 5 }}>
+                <Zap size={13} />
+                <span>Resiliência & Throttling (Controle Enterprise)</span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label className="form-label" title="Pausa intencional entre processamento de lotes/chunks em segundos (Sleep)">
+                    Sleep Lote (seg)
+                  </label>
+                  <DebouncedInput
+                    value={String(config.batch_delay_seconds ?? 0)}
+                    placeholder="0"
+                    onChange={(v) => handleChange("batch_delay_seconds", parseFloat(v) || 0)}
+                  />
+                </div>
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label className="form-label" title="Tentativas máximas de execução em caso de falha de rede/banco">
+                    Max Retries
+                  </label>
+                  <DebouncedInput
+                    value={String(config.max_retries ?? 0)}
+                    placeholder="0"
+                    onChange={(v) => handleChange("max_retries", parseInt(v, 10) || 0)}
+                  />
+                </div>
+              </div>
+              <div className="form-group" style={{ marginTop: 8 }}>
+                <label className="form-label" title="Intervalo de espera entre novas tentativas em segundos">
+                  Intervalo Retry (segundos)
+                </label>
+                <DebouncedInput
+                  value={String(config.retry_interval_seconds ?? 5)}
+                  placeholder="5"
+                  onChange={(v) => handleChange("retry_interval_seconds", parseFloat(v) || 5)}
+                />
+              </div>
+            </div>
           </div>
         )}
 
@@ -1655,6 +1770,31 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
               onOpenModal={() => setShowSchemaModal(true)}
             />
           </div>
+        )}
+
+        {activeTab === "documentation" && (
+          <div className="prop-content">
+            <div className="form-group">
+              <label className="form-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span>
+                  <FileText size={12} style={{ marginRight: 5, verticalAlign: "middle" }} />
+                  Notas de Negócio (Markdown)
+                </span>
+                <span style={{ fontSize: "0.68rem", color: "var(--text-muted)" }}>Docs-as-Code</span>
+              </label>
+              <p style={{ fontSize: "0.72rem", color: "var(--text-muted)", margin: "0 0 8px 0" }}>
+                Descreva o propósito deste componente, regras de negócio ou transformações aplicadas. Este texto será incluído nos artefatos gerados pelo Auto-Doc (Markdown e HTML).
+              </p>
+              <DebouncedTextarea
+                value={config.documentation_md ?? ""}
+                placeholder="# Regras deste componente&#10;&#10;- Fonte: ERP SAP&#10;- Filtra registros ativos&#10;- Transforma chave para maiúsculo"
+                style={{ minHeight: "220px", fontFamily: "monospace", fontSize: "0.8rem", lineHeight: "1.4" }}
+                onChange={(v) => handleChange("documentation_md", v)}
+              />
+            </div>
+          </div>
+        )}
+          </>
         )}
       </div>
 
@@ -1686,11 +1826,16 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
             });
             return lkSchemas;
           })()}
-          availableUpstreamNodes={upstreamNodes.map((un) => ({
-            id: un.id,
-            label: un.data?.label || un.id,
-            schema: (un.data as any)?.schema || [],
-          }))}
+          availableUpstreamNodes={upstreamNodes.map((un, idx) => {
+            const edge = incomingEdges.find((e) => e.source === un.id);
+            const alias = edge?.data?.flowName || (idx === 0 ? "row1" : `row${idx + 1}`);
+            return {
+              id: un.id,
+              label: un.data?.label || un.id,
+              alias: alias,
+              schema: (un.data as any)?.schema || [],
+            };
+          })}
           downstreamNodes={downstreamNodes}
           onSave={(newCfg, targetSchemaUpdates) => {
             onUpdateConfig(id, { ...config, ...newCfg });

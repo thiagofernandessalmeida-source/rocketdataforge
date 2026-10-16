@@ -215,7 +215,12 @@ class GraphValidator:
                 in_degree[to_node] += 1
 
                 to_port_key = str(edge.to_port)
-                if to_port_key in connected_to_ports:
+                is_control_port = (
+                    edge.to_port.port_name == "trigger" or
+                    edge.to_port.port_name.startswith("trigger") or
+                    draft.nodes[to_node].component_type in ("control.sync", "control.barrier")
+                )
+                if not is_control_port and to_port_key in connected_to_ports:
                     errors.append(ValidationErrorItem(
                         code="ERR_DUPLICATE_PORT_CONNECTION",
                         node_id=to_node,

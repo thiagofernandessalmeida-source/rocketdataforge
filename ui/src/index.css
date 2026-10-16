@@ -3267,6 +3267,143 @@ html, body {
   gap: 8px;
 }
 
+/* ─── Upstream Suggestion Chips Bar inside TMapModal ─── */
+.tmap-upstream-suggestions-bar {
+  background: #080a14;
+  border-bottom: 1px solid rgba(79, 142, 247, 0.2);
+  padding: 8px 16px;
+  flex-shrink: 0;
+  max-height: 140px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.suggestions-bar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.suggestions-title {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--accent-cyan, #00d4ff);
+  letter-spacing: -0.01em;
+}
+
+.suggestions-subtitle {
+  font-size: 0.68rem;
+  color: var(--text-dim, #718096);
+  margin-left: 6px;
+}
+
+.copied-badge {
+  font-size: 0.7rem;
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+  animation: fadeIn 0.2s ease-in;
+}
+
+.suggestions-sources-container {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.suggestions-source-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.suggestions-source-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-secondary, #a0aec0);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.src-alias-badge {
+  background: rgba(0, 212, 255, 0.18);
+  color: var(--accent-cyan, #00d4ff);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.65rem;
+}
+
+.src-label-text {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.src-count {
+  color: var(--text-dim, #718096);
+  font-size: 0.65rem;
+}
+
+.suggestions-chips-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.token-chip.tmap-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: rgba(26, 32, 53, 0.85);
+  border: 1px solid rgba(79, 142, 247, 0.3);
+  border-radius: 5px;
+  padding: 2px 7px;
+  font-size: 0.7rem;
+  color: var(--text-primary, #e2e8f0);
+  cursor: pointer;
+  transition: all 0.15s ease-in-out;
+  user-select: none;
+}
+
+.token-chip.tmap-chip:hover {
+  background: rgba(0, 212, 255, 0.15);
+  border-color: var(--accent-cyan, #00d4ff);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 212, 255, 0.2);
+}
+
+.token-chip.tmap-chip .chip-alias {
+  color: var(--accent-cyan, #00d4ff);
+  font-family: var(--font-mono, monospace);
+  font-weight: 600;
+}
+
+.token-chip.tmap-chip .chip-colname {
+  font-weight: 500;
+}
+
+.token-chip.tmap-chip .chip-type {
+  font-size: 0.62rem;
+  color: var(--text-dim, #718096);
+  background: rgba(0, 0, 0, 0.3);
+  padding: 0 4px;
+  border-radius: 3px;
+  margin-left: 2px;
+}
+
 /* 3-Pane Body */
 .data-mapper-body {
   display: flex;

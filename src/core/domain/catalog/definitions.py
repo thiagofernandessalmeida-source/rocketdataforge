@@ -131,7 +131,9 @@ DUCKDB_TARGET = ComponentDefinition(
     category="target",
     description="Grava registros em banco de dados DuckDB local ou arquivo persistido com criação automática.",
     ports=[
-        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET)
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET),
+        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, required=False, description="Fluxo pass-through de registros gravados"),
+        PortDefinition(name="reject", direction=PortDirection.OUTPUT, type=PortType.REJECT, required=False, description="Registros rejeitados")
     ],
     config_schema={
         "type": "object",
@@ -242,7 +244,9 @@ DATABASE_TARGET = ComponentDefinition(
     category="target",
     description="Grava dados em banco relacional (PostgreSQL, MySQL, Oracle, etc.) com ações avançadas de tabela e dados.",
     ports=[
-        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET)
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET),
+        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, required=False, description="Fluxo pass-through de dados gravados com sucesso"),
+        PortDefinition(name="reject", direction=PortDirection.OUTPUT, type=PortType.REJECT, required=False, description="Linhas rejeitadas ou que falharam na gravação")
     ],
     config_schema={
         "type": "object",
@@ -266,7 +270,9 @@ FILE_TARGET = ComponentDefinition(
     category="target",
     description="Grava dados em arquivos locais (Parquet, CSV, JSON).",
     ports=[
-        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET)
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET),
+        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, required=False, description="Fluxo pass-through de arquivos gerados"),
+        PortDefinition(name="reject", direction=PortDirection.OUTPUT, type=PortType.REJECT, required=False, description="Linhas rejeitadas")
     ],
     config_schema={
         "type": "object",
@@ -311,7 +317,9 @@ SCYLLA_TARGET = ComponentDefinition(
     category="target",
     description="Grava registros em alta performance no ScyllaDB ou Cassandra via batches CQL.",
     ports=[
-        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET)
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET),
+        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, required=False, description="Fluxo pass-through de dados"),
+        PortDefinition(name="reject", direction=PortDirection.OUTPUT, type=PortType.REJECT, required=False, description="Linhas rejeitadas")
     ],
     config_schema={
         "type": "object",
@@ -355,7 +363,9 @@ KAFKA_TARGET = ComponentDefinition(
     category="target",
     description="Produz e publica lotes de eventos serializados em JSON em tópicos Kafka.",
     ports=[
-        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET)
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET),
+        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, required=False, description="Fluxo pass-through de dados"),
+        PortDefinition(name="reject", direction=PortDirection.OUTPUT, type=PortType.REJECT, required=False, description="Linhas rejeitadas")
     ],
     config_schema={
         "type": "object",
@@ -399,7 +409,9 @@ AWS_SQS_TARGET = ComponentDefinition(
     category="target",
     description="Enfileira registros como mensagens em lotes em filas AWS SQS.",
     ports=[
-        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET)
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET),
+        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, required=False, description="Fluxo pass-through de dados"),
+        PortDefinition(name="reject", direction=PortDirection.OUTPUT, type=PortType.REJECT, required=False, description="Linhas rejeitadas")
     ],
     config_schema={
         "type": "object",
@@ -420,7 +432,9 @@ AWS_SNS_TARGET = ComponentDefinition(
     category="target",
     description="Dispara notificações e publica eventos em tópicos AWS SNS Pub/Sub.",
     ports=[
-        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET)
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET),
+        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, required=False, description="Fluxo pass-through de dados"),
+        PortDefinition(name="reject", direction=PortDirection.OUTPUT, type=PortType.REJECT, required=False, description="Linhas rejeitadas")
     ],
     config_schema={
         "type": "object",
@@ -477,6 +491,29 @@ CATALOG_COMPONENTS: List[ComponentDefinition] = [
     AWS_SNS_TARGET,
     MYSQL_AGREEMENTS
 ]
+
+CONTROL_SYNC = ComponentDefinition(
+    type_id="control.sync",
+    version=SemanticVersion(1, 0, 0),
+    name="Sync Barrier (Wait All)",
+    category="control",
+    description="Barreira de sincronização que bloqueia a execução até que todas as ramificações paralelas upstream terminem com sucesso.",
+    ports=[
+        PortDefinition(name="trigger", direction=PortDirection.INPUT, type=PortType.CONTROL, description="Entrada de gatilho/sinalização"),
+        PortDefinition(name="trigger", direction=PortDirection.OUTPUT, type=PortType.CONTROL, required=False, description="Saída de gatilho de liberação"),
+        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, required=False, description="Fluxo vazio para disparar nós a jusante")
+    ],
+    config_schema={
+        "type": "object",
+        "properties": {
+            "mode": {"type": "string", "enum": ["wait_all", "wait_any"], "default": "wait_all"},
+            "timeout_seconds": {"type": "integer", "default": 0, "minimum": 0},
+            "failure_policy": {"type": "string", "enum": ["fail_fast", "wait_all_and_fail", "ignore_and_continue"], "default": "fail_fast"}
+        }
+    }
+)
+
+CATALOG_COMPONENTS.append(CONTROL_SYNC)
 
 
 def get_component_definition(type_id: str) -> ComponentDefinition:

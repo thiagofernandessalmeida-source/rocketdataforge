@@ -79,6 +79,15 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
     }
   }, [cells, focusCellId]);
 
+  // Sincroniza a célula ativa tanto localmente quanto no jobStore
+  const handleSelectCell = useCallback(
+    (cellId: string) => {
+      setActiveCellId(cellId);
+      jobStore.setActiveCell(job.id, cellId);
+    },
+    [job.id]
+  );
+
   // ─── Cell Operations ──────────────────────────────────────────
 
   const handleAddCell = () => {
@@ -255,6 +264,14 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
         await Promise.all(
           parallelCells.map(async (cell) => {
             if (cancelOrchestrationRef.current) {
+              jobStore.setCellStatus(job.id, cell.id, "skipped");
+              completedStatuses[cell.id] = "skipped";
+              completedStatuses[cell.name] = "skipped";
+              return;
+            }
+
+            // Intercepta células desativadas (is_active === false)
+            if (cell.is_active === false) {
               jobStore.setCellStatus(job.id, cell.id, "skipped");
               completedStatuses[cell.id] = "skipped";
               completedStatuses[cell.name] = "skipped";
@@ -525,7 +542,7 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
               isFocusMode={true}
               isActive={true}
               canDelete={sortedCells.length > 1}
-              onSelectCell={setActiveCellId}
+              onSelectCell={handleSelectCell}
               onUpdateGraph={handleUpdateGraph}
               onRenameCell={handleRenameCell}
               onUpdateCellMeta={handleUpdateCellMeta}
@@ -558,7 +575,7 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
                 isFocusMode={false}
                 isActive={activeCellId === cell.id}
                 canDelete={sortedCells.length > 1}
-                onSelectCell={setActiveCellId}
+                onSelectCell={handleSelectCell}
                 onUpdateGraph={handleUpdateGraph}
                 onRenameCell={handleRenameCell}
                 onUpdateCellMeta={handleUpdateCellMeta}

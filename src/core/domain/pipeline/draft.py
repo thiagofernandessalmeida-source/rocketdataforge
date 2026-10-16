@@ -166,7 +166,15 @@ class PipelineDraft:
             }
         }
         if self.cells:
-            result["spec"]["cells"] = self.cells
+            sanitized_cells = []
+            for c in self.cells:
+                cell_data = dict(c)
+                if "is_active" not in cell_data:
+                    cell_data["is_active"] = True
+                if "is_minimized" not in cell_data:
+                    cell_data["is_minimized"] = False
+                sanitized_cells.append(cell_data)
+            result["spec"]["cells"] = sanitized_cells
         return result
 
     def _increment_revision(self) -> None:

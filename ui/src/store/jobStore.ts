@@ -3,7 +3,7 @@
 // ============================================================
 
 import { Node, Edge } from "reactflow";
-import { CanvasNodeData, ComponentCategory } from "../types";
+import { CanvasNodeData, ComponentCategory } from "../types/index";
 import { telemetryStore } from "./telemetryStore";
 import { getBaseApiUrl } from "../api/client";
 
@@ -55,6 +55,9 @@ export interface CanvasCellData {
   metrics?: CellExecutionMetrics;
   logs?: any[];
   showMetricsPanel?: boolean;
+  layoutDirection?: "LR" | "TB";
+  is_active?: boolean;
+  is_minimized?: boolean;
 }
 
 export interface JobData {
@@ -213,6 +216,47 @@ interface StoreState {
   activeEnvironment: Environment;
   openTabIds: string[];
   activeTabId: string | null;
+}
+
+export function generateRocketNodeId(typeId: string, existingNodes: Node<CanvasNodeData>[]): string {
+  let prefix = "node";
+  if (typeId.includes("postgresql.output") || typeId.includes("postgres.output")) prefix = "postgres_sink";
+  else if (typeId.includes("postgresql") || typeId.includes("postgres") || typeId.includes("database.source")) prefix = "postgres_source";
+  else if (typeId.includes("duckdb.output")) prefix = "duckdb_sink";
+  else if (typeId.includes("duckdb")) prefix = "duckdb_source";
+  else if (typeId.includes("oracle.output")) prefix = "oracle_sink";
+  else if (typeId.includes("oracle")) prefix = "oracle_source";
+  else if (typeId.includes("sqlserver.output")) prefix = "sqlserver_sink";
+  else if (typeId.includes("sqlserver")) prefix = "sqlserver_source";
+  else if (typeId.includes("mysql.output")) prefix = "mysql_sink";
+  else if (typeId.includes("mysql")) prefix = "mysql_source";
+  else if (typeId.includes("file.source.csv") || typeId.includes(".csv")) prefix = "csv_source";
+  else if (typeId.includes("file.source.parquet") || typeId.includes(".parquet")) prefix = "parquet_source";
+  else if (typeId.includes("file.source.json") || typeId.includes(".json")) prefix = "json_source";
+  else if (typeId.includes("file.source.excel") || typeId.includes(".excel")) prefix = "excel_source";
+  else if (typeId.includes("file.target")) prefix = "file_sink";
+  else if (typeId.includes("file.source")) prefix = "file_source";
+  else if (typeId.includes("tmap") || typeId.includes("mapper")) prefix = "data_mapper";
+  else if (typeId.includes("filter")) prefix = "filter";
+  else if (typeId.includes("select")) prefix = "project";
+  else if (typeId.includes("join")) prefix = "join";
+  else if (typeId.includes("aggregate")) prefix = "aggregate";
+  else if (typeId.includes("sort")) prefix = "sort";
+  else if (typeId.includes("deduplicate")) prefix = "dedup";
+  else if (typeId.includes("lookup")) prefix = "lookup";
+  else if (typeId.includes("union")) prefix = "union";
+  else if (typeId.includes("pivot")) prefix = "pivot";
+  else {
+    const last = typeId.split(".").pop() || "node";
+    prefix = last.replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase();
+  }
+
+  let count = 1;
+  const existingIds = new Set(existingNodes.map((n) => n.id.toLowerCase()));
+  while (existingIds.has(`${prefix}_${count}`.toLowerCase())) {
+    count++;
+  }
+  return `${prefix}_${count}`;
 }
 
 export function inferAndNormalizeNode(rawNode: any): Node<CanvasNodeData> {
@@ -889,6 +933,43 @@ export function validateParallelCellConsistency(cells: CanvasCellData[]): string
   return errors.length > 0 ? errors : null;
 }
 
+// ─── Undo/Redo (History) & Clipboard State ───────────────────────
+
+interface HistorySnapshot {
+  cells: CanvasCellData[];
+  activeCellId?: string;
+}
+
+const undoStacks: Record<string, HistorySnapshot[]> = {};
+const redoStacks: Record<string, HistorySnapshot[]> = {};
+let lastSnapshotTime = 0;
+
+export function takeSnapshot(jobId: string, force = false): void {
+  const now = Date.now();
+  if (!force && now - lastSnapshotTime < 400) {
+    return;
+  }
+  lastSnapshotTime = now;
+  const job = state.jobs.find((j) => j.id === jobId);
+  if (!job) return;
+  if (!undoStacks[jobId]) undoStacks[jobId] = [];
+  undoStacks[jobId].push({
+    cells: JSON.parse(JSON.stringify(job.cells || [])),
+    activeCellId: job.activeCellId,
+  });
+  if (undoStacks[jobId].length > 40) {
+    undoStacks[jobId].shift();
+  }
+  redoStacks[jobId] = [];
+}
+
+interface ClipboardData {
+  nodes: Node<CanvasNodeData>[];
+  sourceCellId?: string;
+}
+
+let nodeClipboard: ClipboardData | null = null;
+
 export const jobStore = {
   subscribe(listener: Listener): () => void {
     listeners.add(listener);
@@ -897,6 +978,177 @@ export const jobStore = {
 
   getState(): StoreState {
     return state;
+  },
+
+  getActiveJob(): JobData | undefined {
+    return state.jobs.find((j) => j.id === state.activeTabId);
+  },
+
+  // ─── History (Undo / Redo) ────────────────────────────────
+
+  takeSnapshot(jobId: string, force = true): void {
+    takeSnapshot(jobId, force);
+  },
+
+  canUndo(jobId?: string): boolean {
+    const id = jobId || state.activeTabId;
+    return Boolean(id && undoStacks[id] && undoStacks[id].length > 0);
+  },
+
+  canRedo(jobId?: string): boolean {
+    const id = jobId || state.activeTabId;
+    return Boolean(id && redoStacks[id] && redoStacks[id].length > 0);
+  },
+
+  undo(jobId?: string): boolean {
+    const id = jobId || state.activeTabId;
+    if (!id) return false;
+    const job = state.jobs.find((j) => j.id === id);
+    const stack = undoStacks[id];
+    if (!job || !stack || stack.length === 0) return false;
+
+    const previous = stack.pop()!;
+    if (!redoStacks[id]) redoStacks[id] = [];
+    redoStacks[id].push({
+      cells: JSON.parse(JSON.stringify(job.cells || [])),
+      activeCellId: job.activeCellId,
+    });
+
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== id) return j;
+        const activeCell = previous.cells.find((c) => c.id === previous.activeCellId) || previous.cells[0];
+        return {
+          ...j,
+          cells: previous.cells,
+          activeCellId: previous.activeCellId || activeCell?.id,
+          nodes: activeCell ? activeCell.nodes : previous.cells.flatMap((c) => c.nodes),
+          edges: activeCell ? activeCell.edges : previous.cells.flatMap((c) => c.edges),
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+    return true;
+  },
+
+  redo(jobId?: string): boolean {
+    const id = jobId || state.activeTabId;
+    if (!id) return false;
+    const job = state.jobs.find((j) => j.id === id);
+    const stack = redoStacks[id];
+    if (!job || !stack || stack.length === 0) return false;
+
+    const next = stack.pop()!;
+    if (!undoStacks[id]) undoStacks[id] = [];
+    undoStacks[id].push({
+      cells: JSON.parse(JSON.stringify(job.cells || [])),
+      activeCellId: job.activeCellId,
+    });
+
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== id) return j;
+        const activeCell = next.cells.find((c) => c.id === next.activeCellId) || next.cells[0];
+        return {
+          ...j,
+          cells: next.cells,
+          activeCellId: next.activeCellId || activeCell?.id,
+          nodes: activeCell ? activeCell.nodes : next.cells.flatMap((c) => c.nodes),
+          edges: activeCell ? activeCell.edges : next.cells.flatMap((c) => c.edges),
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+    return true;
+  },
+
+  // ─── Clipboard (Copy / Paste) ─────────────────────────────
+
+  copyNodes(jobId: string, cellId: string, nodeIds: string[]): boolean {
+    const job = state.jobs.find((j) => j.id === jobId);
+    if (!job) return false;
+    const cell = (job.cells || []).find((c) => c.id === cellId);
+    if (!cell) return false;
+    const targetNodes = (cell.nodes || []).filter((n) => nodeIds.includes(n.id));
+    if (targetNodes.length === 0) return false;
+    nodeClipboard = {
+      nodes: JSON.parse(JSON.stringify(targetNodes)),
+      sourceCellId: cellId,
+    };
+    return true;
+  },
+
+  hasClipboardNodes(): boolean {
+    return Boolean(nodeClipboard && nodeClipboard.nodes && nodeClipboard.nodes.length > 0);
+  },
+
+  pasteNodes(jobId: string, targetCellId?: string): Node<CanvasNodeData>[] {
+    if (!nodeClipboard || !nodeClipboard.nodes || nodeClipboard.nodes.length === 0) return [];
+    const job = state.jobs.find((j) => j.id === jobId);
+    if (!job) return [];
+    const effectiveCellId = targetCellId || job.activeCellId || job.cells?.[0]?.id;
+    const targetCell = (job.cells || []).find((c) => c.id === effectiveCellId) || job.cells?.[0];
+    if (!targetCell) return [];
+
+    takeSnapshot(jobId, true);
+
+    const allJobNodes = (job.cells || []).flatMap((c) => c.nodes || []);
+    const pastedNodes: Node<CanvasNodeData>[] = [];
+
+    nodeClipboard.nodes.forEach((originalNode, idx) => {
+      const newId = generateRocketNodeId(originalNode.data?.componentType || "node", [...allJobNodes, ...pastedNodes]);
+
+      const clonedNode: Node<CanvasNodeData> = {
+        ...JSON.parse(JSON.stringify(originalNode)),
+        id: newId,
+        position: {
+          x: originalNode.position.x + 35 * (idx + 1),
+          y: originalNode.position.y + 35 * (idx + 1),
+        },
+        selected: true,
+        data: {
+          ...originalNode.data,
+          label: `${originalNode.data?.label || originalNode.id} (Cópia)`,
+          cellId: targetCell.id,
+          status: undefined,
+          metrics: undefined,
+        },
+      };
+      pastedNodes.push(clonedNode);
+    });
+
+    const unselectedExistingNodes = (targetCell.nodes || []).map((n) => ({
+      ...n,
+      selected: false,
+    }));
+
+    const updatedNodes = [...unselectedExistingNodes, ...pastedNodes];
+
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) =>
+          c.id === targetCell.id ? { ...c, nodes: updatedNodes } : c
+        );
+        const isActive = j.activeCellId === targetCell.id;
+        return {
+          ...j,
+          cells: updatedCells,
+          nodes: isActive ? updatedNodes : j.nodes,
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+    return pastedNodes;
   },
 
   // ─── Folders ──────────────────────────────────────────────
@@ -1052,6 +1304,8 @@ export const jobStore = {
     const job = state.jobs.find((j) => j.id === jobId);
     if (!job) return null;
 
+    takeSnapshot(jobId, true);
+
     const existingCells = job.cells || [];
     const nextIndex = existingCells.length + 1;
     const prefix = cellType === "PYTHON" ? "python-cell" : "canvas-cell";
@@ -1106,6 +1360,8 @@ print("Dados publicados com sucesso via context.write_output!")
       nodes: [],
       edges: [],
       status: "idle",
+      is_active: true,
+      is_minimized: false,
     };
 
     state = {
@@ -1127,6 +1383,9 @@ print("Dados publicados com sucesso via context.write_output!")
   },
 
   updateCell(jobId: string, cellId: string, updates: Partial<CanvasCellData>): void {
+    if (updates.nodes || updates.edges || updates.order !== undefined || updates.layoutDirection) {
+      takeSnapshot(jobId, true);
+    }
     state = {
       ...state,
       jobs: state.jobs.map((j) => {
@@ -1218,6 +1477,8 @@ print("Dados publicados com sucesso via context.write_output!")
       return false; // Job must retain at least one cell
     }
 
+    takeSnapshot(jobId, true);
+
     state = {
       ...state,
       jobs: state.jobs.map((j) => {
@@ -1303,6 +1564,8 @@ print("Dados publicados com sucesso via context.write_output!")
       viewport: sourceCell.viewport ? { ...sourceCell.viewport } : undefined,
       nodeSchemas: sourceCell.nodeSchemas ? { ...sourceCell.nodeSchemas } : {},
       status: "idle",
+      is_active: sourceCell.is_active !== undefined ? sourceCell.is_active : true,
+      is_minimized: false,
     };
 
     state = {
@@ -1363,6 +1626,74 @@ print("Dados publicados com sucesso via context.write_output!")
           c.id === cellId ? { ...c, status } : c
         );
         return { ...j, cells: updatedCells };
+      }),
+    };
+    saveState(state);
+    notify();
+  },
+
+  toggleCellActive(cellIdOrJobId: string, maybeCellId?: string): void {
+    const jobId = maybeCellId ? cellIdOrJobId : (state.activeTabId || "");
+    const cellId = maybeCellId ? maybeCellId : cellIdOrJobId;
+    if (!jobId || !cellId) return;
+    takeSnapshot(jobId, true);
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) =>
+          c.id === cellId ? { ...c, is_active: c.is_active === false ? true : false } : c
+        );
+        return { ...j, cells: updatedCells, updatedAt: new Date().toISOString() };
+      }),
+    };
+    saveState(state);
+    notify();
+  },
+
+  toggleCellMinimized(cellIdOrJobId: string, maybeCellId?: string): void {
+    const jobId = maybeCellId ? cellIdOrJobId : (state.activeTabId || "");
+    const cellId = maybeCellId ? maybeCellId : cellIdOrJobId;
+    if (!jobId || !cellId) return;
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) =>
+          c.id === cellId ? { ...c, is_minimized: !c.is_minimized } : c
+        );
+        return { ...j, cells: updatedCells, updatedAt: new Date().toISOString() };
+      }),
+    };
+    saveState(state);
+    notify();
+  },
+
+  setCellActive(jobId: string, cellId: string, isActive: boolean): void {
+    takeSnapshot(jobId, true);
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) =>
+          c.id === cellId ? { ...c, is_active: isActive } : c
+        );
+        return { ...j, cells: updatedCells, updatedAt: new Date().toISOString() };
+      }),
+    };
+    saveState(state);
+    notify();
+  },
+
+  setCellMinimized(jobId: string, cellId: string, isMinimized: boolean): void {
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) =>
+          c.id === cellId ? { ...c, is_minimized: isMinimized } : c
+        );
+        return { ...j, cells: updatedCells, updatedAt: new Date().toISOString() };
       }),
     };
     saveState(state);
@@ -1546,19 +1877,39 @@ print("Dados publicados com sucesso via context.write_output!")
     edges: Edge[],
     viewport?: { x: number; y: number; zoom: number }
   ): void {
+    takeSnapshot(jobId);
+    // Assegura que todos os nós tenham data.cellId registrado e higieniza arestas órfãs
+    const safeNodes = (nodes || []).map((n) => ({
+      ...n,
+      data: {
+        ...n.data,
+        cellId,
+      },
+    }));
+    const validNodeIds = new Set(safeNodes.map((n) => n.id));
+    const safeEdges = (edges || [])
+      .filter((e) => validNodeIds.has(e.source) && validNodeIds.has(e.target))
+      .map((e) => ({
+        ...e,
+        data: {
+          ...e.data,
+          cellId,
+        },
+      }));
+
     state = {
       ...state,
       jobs: state.jobs.map((j) => {
         if (j.id !== jobId) return j;
         const updatedCells = (j.cells || []).map((c) =>
-          c.id === cellId ? { ...c, nodes, edges, viewport } : c
+          c.id === cellId ? { ...c, nodes: safeNodes, edges: safeEdges, viewport } : c
         );
         const isActive = j.activeCellId === cellId;
         return {
           ...j,
           cells: updatedCells,
-          nodes: isActive ? nodes : j.nodes,
-          edges: isActive ? edges : j.edges,
+          nodes: isActive ? safeNodes : j.nodes,
+          edges: isActive ? safeEdges : j.edges,
           viewport: isActive ? viewport : j.viewport,
           updatedAt: new Date().toISOString(),
         };

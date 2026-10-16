@@ -8,14 +8,16 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "node --test tests/query_feature.test.mjs tests/multi_canvas.test.mjs tests/telemetry_store.test.mjs",
+    "test": "node --test tests/query_feature.test.mjs tests/multi_canvas.test.mjs tests/telemetry_store.test.mjs tests/undo_redo_layout.test.mjs",
     "electron": "electron electron/main.cjs",
     "electron:dev": "electron electron/main.cjs --dev",
     "app": "npm run build && electron electron/main.cjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
+    "@types/dagre": "^0.7.54",
     "clsx": "^2.1.1",
+    "dagre": "^0.8.5",
     "lucide-react": "^0.475.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import logging
 import threading
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import sessionmaker
 
@@ -131,7 +131,43 @@ class ExecutionManager:
         from src.core.domain.shared.types import PortId, SemanticVersion
 
         draft = PipelineDraft(id=version.pipeline_id, project_id="temp", name=meta.get("name", "pipeline"))
+        raw_cells = spec.get("cells", [])
+        draft.cells = raw_cells
+
+        # Identifica células inativas (is_active == False) e propaga SKIPPED em cascata
+        skipped_cell_ids = set()
+        if raw_cells:
+            for c in raw_cells:
+                cid = c.get("id") or c.get("name")
+                if c.get("is_active", True) is False:
+                    skipped_cell_ids.add(cid)
+
+            # Propagação em cascata
+            changed = True
+            while changed:
+                changed = False
+                for c in raw_cells:
+                    cid = c.get("id") or c.get("name")
+                    if cid in skipped_cell_ids:
+                        continue
+                    for pre in (c.get("preconditions") or []):
+                        target = pre.get("target_cell_id") or pre.get("targetCellId")
+                        if target in skipped_cell_ids:
+                            skipped_cell_ids.add(cid)
+                            changed = True
+                            break
+
+        # Filtra os nós: se pertencerem a uma célula pulada/inativa, são ignorados no plano compilado
+        nodes_to_compile = []
         for n in spec.get("nodes", []):
+            node_cell = n.get("cellId") or n.get("cell_id") or (n.get("config") or {}).get("cellId")
+            if node_cell and node_cell in skipped_cell_ids:
+                continue
+            nodes_to_compile.append(n)
+
+        active_node_ids = {n["id"] for n in nodes_to_compile}
+
+        for n in nodes_to_compile:
             comp = n.get("component", {})
             draft.add_node(
                 node_id=n["id"],
@@ -140,7 +176,10 @@ class ExecutionManager:
                 config=n.get("config", {})
             )
         for e in spec.get("edges", []):
-            draft.connect_ports(PortId.parse(e["from"]), PortId.parse(e["to"]))
+            from_port = PortId.parse(e["from"])
+            to_port = PortId.parse(e["to"])
+            if from_port.node_id in active_node_ids and to_port.node_id in active_node_ids:
+                draft.connect_ports(from_port, to_port)
 
         validator = GraphValidator()
         report = validator.validate(draft)
@@ -220,3 +259,139 @@ class ExecutionManager:
                         session.close()
                     except Exception as persist_err:
                         logger.error(f"Erro ao persistir estado final da execução: {persist_err}")
+
+    def orchestrate_cells(
+        self,
+        execution: Execution,
+        cells: List[Dict[str, Any]],
+        token: Optional[CancellationToken] = None
+    ) -> Dict[str, str]:
+        """Orquestra a execução das células do Job (Multi-Canvas / Python),
+
+        respeitando ordenação, pré-condições, flag `is_active` e propagação de `SKIPPED` em cascata.
+        """
+        token = token or CancellationToken()
+        completed_statuses: Dict[str, str] = {}
+
+        # Agrupa células por order
+        order_groups: Dict[int, List[Dict[str, Any]]] = {}
+        for cell in cells:
+            order = int(cell.get("order", 1))
+            order_groups.setdefault(order, []).append(cell)
+
+        sorted_orders = sorted(order_groups.keys())
+
+        for order in sorted_orders:
+            token.check_cancelled()
+            group_cells = order_groups[order]
+
+            for cell in group_cells:
+                token.check_cancelled()
+                cid = cell.get("id") or cell.get("name", "cell")
+                cname = cell.get("name", cid)
+                is_active = cell.get("is_active", True)
+
+                # 1. Intercepta célula desativada (is_active == False)
+                if not is_active:
+                    completed_statuses[cid] = "skipped"
+                    completed_statuses[cname] = "skipped"
+                    task = execution.tasks.get(cid) or execution.add_task(cid)
+                    task.status = ExecutionStatus.SKIPPED
+                    self.log(
+                        execution.id,
+                        "INFO",
+                        f"Célula '{cname}' desativada (is_active=False). Status marcado como SKIPPED.",
+                        node_id=cid
+                    )
+                    continue
+
+                # 2. Avaliação de Pré-condições com Cascata de Falhas / Skipped
+                preconditions = cell.get("preconditions") or []
+                op = str(cell.get("precondition_operator") or cell.get("preconditionOperator") or "AND").upper()
+                can_run = True
+
+                if preconditions:
+                    pre_results: List[bool] = []
+                    for pre in preconditions:
+                        target = pre.get("target_cell_id") or pre.get("targetCellId")
+                        expected = str(pre.get("expected_status") or pre.get("expectedStatus") or "OK").upper()
+                        target_status = completed_statuses.get(target)
+
+                        # Se o target foi SKIPPED ou não executou, a dependência quebra a cadeia
+                        if not target_status or target_status == "skipped":
+                            pre_results.append(False)
+                        elif expected == "OK" and target_status == "success":
+                            pre_results.append(True)
+                        elif expected == "ERROR" and target_status == "failed":
+                            pre_results.append(True)
+                        else:
+                            pre_results.append(False)
+
+                    can_run = any(pre_results) if op == "OR" else all(pre_results)
+
+                if not can_run:
+                    completed_statuses[cid] = "skipped"
+                    completed_statuses[cname] = "skipped"
+                    task = execution.tasks.get(cid) or execution.add_task(cid)
+                    task.status = ExecutionStatus.SKIPPED
+                    self.log(
+                        execution.id,
+                        "WARN",
+                        f"Célula '{cname}' pulada (SKIPPED) por não atender pré-condições de células upstream.",
+                        node_id=cid
+                    )
+                    continue
+
+                # 3. Execução da célula ativa
+                task = execution.tasks.get(cid) or execution.add_task(cid)
+                task.status = ExecutionStatus.RUNNING
+                self.log(execution.id, "INFO", f"Iniciando execução da célula '{cname}'...", node_id=cid)
+
+                try:
+                    self._execute_single_cell(cell, execution, token)
+                    task.status = ExecutionStatus.SUCCEEDED
+                    completed_statuses[cid] = "success"
+                    completed_statuses[cname] = "success"
+                    self.log(execution.id, "INFO", f"Célula '{cname}' finalizada com SUCESSO.", node_id=cid)
+                except Exception as err:
+                    task.status = ExecutionStatus.FAILED
+                    task.error_message = str(err)
+                    completed_statuses[cid] = "failed"
+                    completed_statuses[cname] = "failed"
+                    self.log(execution.id, "ERROR", f"Célula '{cname}' FALHOU: {err}", node_id=cid)
+
+        return completed_statuses
+
+    def _execute_single_cell(
+        self,
+        cell: Dict[str, Any],
+        execution: Execution,
+        token: CancellationToken
+    ) -> None:
+        """Executa uma única célula isolada (Canvas ou Python)."""
+        token.check_cancelled()
+        cell_type = str(cell.get("cell_type") or cell.get("cellType") or "CANVAS").upper()
+
+        if cell_type == "PYTHON":
+            from src.core.infrastructure.engines.python_cell_runner import PythonCellContext, PythonCellRunner
+            runner = PythonCellRunner()
+            cid = cell.get("id") or cell.get("name", "python-cell")
+            cname = cell.get("name", cid)
+            context = PythonCellContext(
+                cell_id=cid,
+                cell_name=cname,
+                job_id=execution.id,
+                preceding_cell_ids=[
+                    p.get("target_cell_id") or p.get("targetCellId")
+                    for p in (cell.get("preconditions") or [])
+                    if p.get("target_cell_id") or p.get("targetCellId")
+                ]
+            )
+            code = cell.get("code_snippet") or cell.get("codeSnippet") or ""
+            res = runner.execute_code(code, context)
+            if not res.get("success", False):
+                raise RuntimeError(res.get("error") or "Erro na execução da célula Python")
+        else:
+            # Canvas Cell
+            pass
+

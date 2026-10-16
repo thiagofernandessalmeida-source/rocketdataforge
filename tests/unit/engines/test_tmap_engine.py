@@ -89,6 +89,43 @@ def test_tmap_match_models_all_first_unique(runner):
     assert res_unique["out"].filter(pl.col("cust_id") == 1)["car_color"][0] == "Black"
 
 
+def test_tmap_qualified_right_keys_and_tokens(runner):
+    """Testa que chaves com prefixo (ex: lkp1.person_code ou {{lkp1.person_code}}) não quebram o DuckDB Binder."""
+    main_df = pl.DataFrame({"cust_id": [1, 2]})
+    lookup_df = pl.DataFrame({
+        "cust_id": [1, 1, 2],
+        "person_code": ["P001", "P002", "P003"]
+    })
+
+    lookups = [{
+        "node_id": "postgres_source_2",
+        "alias": "lkp1",
+        "left_keys": ["{{postgres_source_1.cust_id}}"],
+        "right_keys": ["lkp1.cust_id"],
+        "match_model": "unique",
+        "join_model": "left_outer"
+    }]
+
+    outputs = [{
+        "name": "out",
+        "columns": [
+            {"name": "code", "expression": "{{postgres_source_2.person_code}}"}
+        ]
+    }]
+
+    res = runner.execute_tmap_transform(
+        main_df=main_df,
+        lookups=lookups,
+        lookup_dfs={"postgres_source_2": lookup_df},
+        variables=[],
+        outputs=outputs,
+        main_node_id="postgres_source_1"
+    )
+
+    assert res["out"].height == 2
+    assert res["out"]["code"].to_list() == ["P002", "P003"]
+
+
 def test_tmap_inner_join_and_rejections(runner):
     # Cenário de referência (Owners, Cars, Resellers)
     owners_df = pl.DataFrame({

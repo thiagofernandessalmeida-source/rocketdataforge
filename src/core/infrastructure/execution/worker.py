@@ -144,23 +144,45 @@ class ExecutionWorker:
                 op_type = phys_op.operator_type
                 cfg = phys_op.config
 
-                if op_type == "scan":
-                    self._execute_scan_node(phys_op, cfg, plan, token, task, node_buffers)
+                # Suporte a Resiliência (Retries) e Throttling (Sleep) (Tópico 6)
+                raw_cfg = cfg.get("raw_config") or {}
+                max_retries = int(raw_cfg.get("max_retries") or cfg.get("max_retries") or 0)
+                retry_interval = float(raw_cfg.get("retry_interval_seconds") or cfg.get("retry_interval_seconds") or 5.0)
+                batch_delay = float(raw_cfg.get("batch_delay_seconds") or cfg.get("batch_delay_seconds") or 0.0)
 
-                elif op_type == "filter":
-                    self._execute_filter_node(phys_op, cfg, token, task, node_buffers)
+                attempt = 0
+                while True:
+                    try:
+                        token.check_cancelled()
+                        if op_type == "scan":
+                            self._execute_scan_node(phys_op, cfg, plan, token, task, node_buffers)
+                        elif op_type == "filter":
+                            self._execute_filter_node(phys_op, cfg, token, task, node_buffers)
+                        elif op_type == "project":
+                            self._execute_project_node(phys_op, cfg, token, task, node_buffers)
+                        elif op_type == "join":
+                            self._execute_join_node(phys_op, cfg, token, task, node_buffers)
+                        elif op_type == "tmap":
+                            self._execute_tmap_node(phys_op, cfg, token, task, node_buffers)
+                        elif op_type == "sink":
+                            self._execute_sink_node(phys_op, cfg, token, task, node_buffers)
+                        elif op_type in ("barrier", "control.sync", "control.barrier"):
+                            self._execute_barrier_node(phys_op, cfg, execution, token, task, node_buffers)
 
-                elif op_type == "project":
-                    self._execute_project_node(phys_op, cfg, token, task, node_buffers)
+                        # Throttling / Sleep intencional entre nós/chunks
+                        if batch_delay > 0:
+                            time.sleep(batch_delay)
 
-                elif op_type == "join":
-                    self._execute_join_node(phys_op, cfg, token, task, node_buffers)
-
-                elif op_type == "tmap":
-                    self._execute_tmap_node(phys_op, cfg, token, task, node_buffers)
-
-                elif op_type == "sink":
-                    self._execute_sink_node(phys_op, cfg, token, task, node_buffers)
+                        break  # Execução bem sucedida deste operador
+                    except Exception as node_err:
+                        attempt += 1
+                        if token.is_cancelled() or attempt > max_retries:
+                            raise node_err
+                        logger.warning(
+                            f"Falha no nó '{node_id}' (tentativa {attempt}/{max_retries}). "
+                            f"Aguardando {retry_interval}s antes de tentar novamente. Erro: {node_err}"
+                        )
+                        time.sleep(retry_interval)
 
                 task.complete(datetime.now(timezone.utc))
                 current_task = None
@@ -995,7 +1017,9 @@ class ExecutionWorker:
             lookups=lookups,
             lookup_dfs=lookup_dfs,
             variables=variables,
-            outputs=outputs
+            outputs=outputs,
+            main_alias=cfg.get("main_alias", "row1"),
+            main_node_id=main_id
         )
 
         total_out_rows = sum(df.height for df in results.values())
@@ -1022,6 +1046,12 @@ class ExecutionWorker:
 
         input_id = phys_op.input_ids[0]
         input_chunks = self._get_node_chunks(input_id, node_buffers)
+
+        # Pass-through: disponibiliza os chunks de entrada no buffer do nó de sink
+        # permitindo que nós subsequentes (ex: tMap ou outro Target) continuem o fluxo
+        node_buffers[phys_op.id] = input_chunks
+        node_buffers[f"{phys_op.id}:main"] = input_chunks
+        node_buffers[f"{phys_op.id}.main"] = input_chunks
 
         # Filtra e projeta as colunas definidas no schema do componente (projeção e tipagem explícitas)
         schema_cols = cfg.get("schema_columns") or []
@@ -1291,4 +1321,42 @@ class ExecutionWorker:
                 rows_out_increment=written
             )
         logger.info(f"Nó sink '{phys_op.id}': {total_written} linhas gravadas em '{target_path}'.")
+
+    def _execute_barrier_node(
+        self,
+        phys_op: Any,
+        cfg: Dict[str, Any],
+        execution: Execution,
+        token: CancellationToken,
+        task: Any,
+        node_buffers: Dict[str, List[pl.DataFrame]]
+    ) -> None:
+        """Executa um nó de sincronização / semáforo (Sync Barrier / Wait All).
+
+        Garante que todas as ramificações ou nós upstream concluíram com sucesso
+        antes de liberar o fluxo para os nós subsequentes.
+        """
+        token.check_cancelled()
+        inputs = phys_op.input_ids
+        raw_cfg = cfg.get("raw_config") or {}
+        failure_policy = raw_cfg.get("failure_policy") or cfg.get("failure_policy", "fail_fast")
+
+        for inp_id in inputs:
+            upstream_task = execution.tasks.get(inp_id)
+            if upstream_task:
+                if upstream_task.status == ExecutionStatus.FAILED and failure_policy == "fail_fast":
+                    raise DomainError(
+                        f"Barreira '{phys_op.id}' interrompida: dependência upstream '{inp_id}' falhou.",
+                        code="ERR_BARRIER_UPSTREAM_FAILED"
+                    )
+
+        # Barreira passa um DataFrame vazio (ou propaga os buffers upstream se houver) para manter integridade
+        upstream_chunks = []
+        for inp_id in inputs:
+            if inp_id in node_buffers and node_buffers[inp_id]:
+                upstream_chunks.extend(node_buffers[inp_id])
+
+        node_buffers[phys_op.id] = upstream_chunks if upstream_chunks else [pl.DataFrame()]
+        task.record_progress(rows_in_increment=0, rows_out_increment=0)
+        logger.info(f"Nó de barreira '{phys_op.id}' sincronizado com sucesso ({len(inputs)} entradas conectadas).")
 

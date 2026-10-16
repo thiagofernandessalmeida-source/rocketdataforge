@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
 from src.core.application.compiler.operators import (
+    LogicalBarrier,
     LogicalFilter,
     LogicalJoin,
     LogicalProject,
@@ -96,6 +97,9 @@ class PhysicalPlanner:
         """Regra determinística de seleção de engine (ADR-010)."""
         # Joins, DuckDB e tMap utilizam o motor DuckDB
         if isinstance(op, LogicalJoin):
+            return "duckdb"
+
+        if isinstance(op, LogicalBarrier) or getattr(op, "operator_type", None) == "barrier":
             return "duckdb"
 
         # Leitura e escrita PostgreSQL e DuckDB utilizam DuckDB

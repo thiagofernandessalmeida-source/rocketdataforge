@@ -125,6 +125,7 @@ NodeTelemetryFooter.displayName = "NodeTelemetryFooter";
 
 function getCategoryIcon(typeId?: string) {
   const safeId = typeId || "";
+  if (safeId.includes("control.sync") || safeId.includes("control.barrier") || safeId.includes("control")) return <Clock size={15} color="#10b981" />;
   if (safeId.includes("database.source") || safeId.includes("connector.db")) return <Database size={15} color="#10b981" />;
   if (safeId.includes("file.source")) return <FileText size={15} color="#10b981" />;
   if (safeId.includes("filter")) return <Filter size={15} color="#3b82f6" />;
@@ -143,17 +144,26 @@ function getCategoryBadgeColor(category: string) {
       return "rgba(59, 130, 246, 0.15)";
     case "target":
       return "rgba(245, 158, 11, 0.15)";
+    case "control":
+      return "rgba(16, 185, 129, 0.25)";
     default:
       return "rgba(139, 92, 246, 0.15)";
   }
 }
 
-export const GenericNode: React.FC<NodeProps<CanvasNodeData>> = memo(({ id, data, selected }) => {
+export const GenericNode: React.FC<NodeProps<CanvasNodeData>> = memo(({ id, data, selected, targetPosition, sourcePosition }) => {
   const { setNodes } = useReactFlow();
   const [isEditing, setIsEditing] = useState(false);
   const [titleText, setTitleText] = useState(data.label || id);
   const [showTooltip, setShowTooltip] = useState(false);
   const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Determina orientação dos handles (LR padrão, ou TB no layout vertical)
+  const isVertical = (data as any)?.layoutDirection
+    ? (data as any).layoutDirection === "TB"
+    : targetPosition === Position.Top || sourcePosition === Position.Bottom;
+  const inPosition = isVertical ? Position.Top : Position.Left;
+  const outPosition = isVertical ? Position.Bottom : Position.Right;
 
   // Busca descrição no catálogo de componentes
   const catalogComp = EXPANDED_CATALOG.find((c) => c.type_id === data.componentType);
@@ -168,10 +178,14 @@ export const GenericNode: React.FC<NodeProps<CanvasNodeData>> = memo(({ id, data
     ? [{ name: "input", direction: "input", type: "dataset" }]
     : (data.ports?.filter((p) => p.direction === "input") || []);
 
-  const outputPorts: PortDefinition[] = (data.ports && data.ports.some((p) => p.direction === "output"))
-    ? data.ports.filter((p) => p.direction === "output")
+  // Pass-through nos Nós de Target (Output):
+  // Mesmo componentes de categoria "target" agora podem ter portas de saída ("main" e "reject")
+  // permitindo encadeamento contínuo do fluxo de dados estilo Talend
+  const hasDeclaredOutput = data.ports?.some((p) => p.direction === "output");
+  const outputPorts: PortDefinition[] = hasDeclaredOutput
+    ? (data.ports?.filter((p) => p.direction === "output") || [])
     : data.category === "target"
-    ? []
+    ? [{ name: "main", direction: "output", type: "dataset" }]
     : [{ name: "main", direction: "output", type: "dataset" }];
 
   // ─── Salvar renomeação ──────────────────────────────────────
@@ -223,14 +237,17 @@ export const GenericNode: React.FC<NodeProps<CanvasNodeData>> = memo(({ id, data
     >
       {/* Input Handles */}
       {inputPorts.map((port: PortDefinition, idx: number) => {
-        const topPercent = ((idx + 1) / (inputPorts.length + 1)) * 100;
+        const offsetPercent = ((idx + 1) / (inputPorts.length + 1)) * 100;
+        const handleStyle: React.CSSProperties = isVertical
+          ? { left: `${offsetPercent}%`, top: "-5px", bottom: "auto", right: "auto", transform: "translateX(-50%)" }
+          : { top: `${offsetPercent}%`, left: "-5px", right: "auto", bottom: "auto", transform: "translateY(-50%)" };
         return (
           <Handle
             key={`${id}-${port.name}`}
             type="target"
-            position={Position.Left}
+            position={inPosition}
             id={port.name}
-            style={{ top: `${topPercent}%` }}
+            style={handleStyle}
             className={`custom-handle ${
               port.type === "reject" ? "handle-reject" : "handle-dataset"
             }`}
@@ -338,14 +355,17 @@ export const GenericNode: React.FC<NodeProps<CanvasNodeData>> = memo(({ id, data
 
       {/* Output Handles */}
       {outputPorts.map((port: PortDefinition, idx: number) => {
-        const topPercent = ((idx + 1) / (outputPorts.length + 1)) * 100;
+        const offsetPercent = ((idx + 1) / (outputPorts.length + 1)) * 100;
+        const handleStyle: React.CSSProperties = isVertical
+          ? { left: `${offsetPercent}%`, bottom: "-5px", top: "auto", right: "auto", transform: "translateX(-50%)" }
+          : { top: `${offsetPercent}%`, right: "-5px", left: "auto", bottom: "auto", transform: "translateY(-50%)" };
         return (
           <Handle
             key={`${id}-${port.name}`}
             type="source"
-            position={Position.Right}
+            position={outPosition}
             id={port.name}
-            style={{ top: `${topPercent}%` }}
+            style={handleStyle}
             className={`custom-handle ${
               port.type === "reject" ? "handle-reject" : "handle-dataset"
             }`}
@@ -353,6 +373,40 @@ export const GenericNode: React.FC<NodeProps<CanvasNodeData>> = memo(({ id, data
           />
         );
       })}
+
+      {/* Trigger / OnComponentOk Source Handle (Disponível em nós de Target e Control) */}
+      {(data.category === "target" || data.category === "control" || data.componentType?.includes("sync")) && (
+        <Handle
+          key={`${id}-trigger-out`}
+          type="source"
+          position={outPosition}
+          id="trigger"
+          style={
+            isVertical
+              ? { left: "85%", bottom: "-5px", top: "auto", right: "auto", transform: "translateX(-50%)", background: "#10b981", borderColor: "#059669", borderRadius: 2 }
+              : { top: "85%", right: "-5px", left: "auto", bottom: "auto", transform: "translateY(-50%)", background: "#10b981", borderColor: "#059669", borderRadius: 2 }
+          }
+          className="custom-handle handle-trigger-source"
+          title="Gatilho de Execução: OnComponentOk / Trigger (Puxe para ordenar execução)"
+        />
+      )}
+
+      {/* Trigger / Barrier Target Handle (Para componentes de Controle / Sincronização) */}
+      {(data.category === "control" || data.componentType?.includes("sync")) && (
+        <Handle
+          key={`${id}-trigger-in`}
+          type="target"
+          position={inPosition}
+          id="trigger"
+          style={
+            isVertical
+              ? { left: "15%", top: "-5px", bottom: "auto", right: "auto", transform: "translateX(-50%)", background: "#10b981", borderColor: "#059669", borderRadius: 2 }
+              : { top: "15%", left: "-5px", right: "auto", bottom: "auto", transform: "translateY(-50%)", background: "#10b981", borderColor: "#059669", borderRadius: 2 }
+          }
+          className="custom-handle handle-trigger-target"
+          title="Entrada Trigger: Aguarda conclusão dos ramos upstream antes de liberar"
+        />
+      )}
 
       {/* ─── Hover Description Tooltip ─────────────────────────── */}
       {showTooltip && (
