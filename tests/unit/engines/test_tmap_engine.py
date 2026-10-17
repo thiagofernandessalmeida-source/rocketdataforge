@@ -373,3 +373,260 @@ def test_tmap_chained_intermediate_variables(runner):
     assert sales_df["total_amount"][1] == pytest.approx(55.0)
     assert sales_df["display_text"][0] == "Total: $33.0"
 
+
+def test_tmap_parity_case_insensitive_postgres_oracle_aliases(runner):
+    """Cenário 1: Teste de Paridade de Colunas (Case-Insensitive & Aliases).
+
+    Validação:
+    - O fluxo principal (main1) vem do Postgres com colunas em minúsculo (person_code, email_address).
+    - O lookup (lkp1) vem do Oracle com colunas em maiúsculo (PERSON_CODE, REGISTRATION_DATE, STATUS).
+    - O tMap deve compilar o SQL no DuckDB mapeando corretamente as chaves sem Binder Error.
+    """
+    main_df = pl.DataFrame({
+        "person_code": ["P001", "P002", "P003"],
+        "email_address": ["alice@corp.com", "bob@corp.com", "charlie@corp.com"]
+    })
+    oracle_df = pl.DataFrame({
+        "PERSON_CODE": ["P001", "P002", "P004"],
+        "REGISTRATION_DATE": ["2023-01-15", "2023-02-20", "2023-03-25"],
+        "STATUS": ["ACTIVE", "PENDING", "EXPIRED"]
+    })
+
+    lookups = [{
+        "node_id": "oracle_source_1",
+        "alias": "lkp1",
+        "join_keys": [{"expr_key": "main1.person_code", "column": "lkp1.PERSON_CODE"}],
+        "join_model": "left_outer",
+        "match_model": "all"
+    }]
+
+    outputs = [{
+        "name": "out",
+        "columns": [
+            {"target": "person_code", "expression": "main1.person_code"},
+            {"target": "email", "expression": "main1.email_address"},
+            {"target": "status", "expression": "lkp1.status"},
+            {"target": "reg_date", "expression": "lkp1.REGISTRATION_DATE"}
+        ]
+    }]
+
+    res = runner.execute_tmap_transform(
+        main_df=main_df,
+        lookups=lookups,
+        lookup_dfs={"oracle_source_1": oracle_df},
+        variables=[],
+        outputs=outputs,
+        main_alias="main1"
+    )
+
+    out = res["out"]
+    assert out.height == 3
+    assert out["person_code"].to_list() == ["P001", "P002", "P003"]
+    assert out["status"].to_list() == ["ACTIVE", "PENDING", None]
+    assert out["reg_date"].to_list() == ["2023-01-15", "2023-02-20", None]
+
+
+def test_tmap_match_models_all_first_unique_multi_row(runner):
+    """Cenário 2: Teste de Match Models (Unique vs First vs All).
+
+    Validação:
+    - Dataset de lookup com múltiplas linhas para a mesma chave com valores sequenciais.
+    - Modo First traz a primeira linha inserida.
+    - Modo Unique traz a última ocorrência (equivalente ao Last Match do Talend).
+    - Modo All multiplica as linhas (cardinalidade 1:N).
+    """
+    main_df = pl.DataFrame({"key": [10]})
+    lookup_multi_df = pl.DataFrame({
+        "key": [10, 10, 10],
+        "version": ["v1", "v2", "v3"],
+        "score": [100, 200, 300]
+    })
+
+    outputs = [{
+        "name": "out",
+        "columns": [
+            {"target": "key", "expression": "main1.key"},
+            {"target": "version", "expression": "lkp1.version"},
+            {"target": "score", "expression": "lkp1.score"}
+        ]
+    }]
+
+    # 1. All Matches -> 3 linhas
+    res_all = runner.execute_tmap_transform(
+        main_df=main_df,
+        lookups=[{
+            "node_id": "lookup_1",
+            "alias": "lkp1",
+            "join_keys": [{"expr_key": "main1.key", "column": "lkp1.key"}],
+            "join_model": "left_outer",
+            "match_model": "all"
+        }],
+        lookup_dfs={"lookup_1": lookup_multi_df},
+        variables=[],
+        outputs=outputs,
+        main_alias="main1"
+    )
+    assert res_all["out"].height == 3
+    assert res_all["out"]["version"].to_list() == ["v1", "v2", "v3"]
+
+    # 2. First Match -> 1 linha (v1)
+    res_first = runner.execute_tmap_transform(
+        main_df=main_df,
+        lookups=[{
+            "node_id": "lookup_1",
+            "alias": "lkp1",
+            "join_keys": [{"expr_key": "main1.key", "column": "lkp1.key"}],
+            "join_model": "left_outer",
+            "match_model": "first"
+        }],
+        lookup_dfs={"lookup_1": lookup_multi_df},
+        variables=[],
+        outputs=outputs,
+        main_alias="main1"
+    )
+    assert res_first["out"].height == 1
+    assert res_first["out"]["version"][0] == "v1"
+    assert res_first["out"]["score"][0] == 100
+
+    # 3. Unique Match (Talend Last Match) -> 1 linha (v3)
+    res_unique = runner.execute_tmap_transform(
+        main_df=main_df,
+        lookups=[{
+            "node_id": "lookup_1",
+            "alias": "lkp1",
+            "join_keys": [{"expr_key": "main1.key", "column": "lkp1.key"}],
+            "join_model": "left_outer",
+            "match_model": "unique"
+        }],
+        lookup_dfs={"lookup_1": lookup_multi_df},
+        variables=[],
+        outputs=outputs,
+        main_alias="main1"
+    )
+    assert res_unique["out"].height == 1
+    assert res_unique["out"]["version"][0] == "v3"
+    assert res_unique["out"]["score"][0] == 300
+
+
+def test_tmap_inner_join_reject_routing(runner):
+    """Cenário 3: Teste de Rejects (Inner Join Reject & Output Reject).
+
+    Validação:
+    - Lookup com join_model=inner onde parte das chaves da principal não existe no lookup.
+    - Linhas coincidentes vão para a saída principal.
+    - Linhas rejeitadas pelo inner join vão para a saída catch_inner_join_reject.
+    """
+    main_df = pl.DataFrame({
+        "id": [1, 2, 3, 4],
+        "name": ["A", "B", "C", "D"]
+    })
+    lookup_df = pl.DataFrame({
+        "id": [2, 3],
+        "category": ["Cat2", "Cat3"]
+    })
+
+    lookups = [{
+        "node_id": "lkp_node",
+        "alias": "lkp1",
+        "join_keys": [{"expr_key": "main1.id", "column": "lkp1.id"}],
+        "join_model": "inner",
+        "match_model": "unique"
+    }]
+
+    outputs = [
+        {
+            "name": "main_matched",
+            "catch_inner_join_reject": False,
+            "catch_output_reject": False,
+            "columns": [
+                {"target": "id", "expression": "main1.id"},
+                {"target": "name", "expression": "main1.name"},
+                {"target": "category", "expression": "lkp1.category"}
+            ]
+        },
+        {
+            "name": "reject_inner",
+            "catch_inner_join_reject": True,
+            "catch_output_reject": False,
+            "columns": [
+                {"target": "id", "expression": "main1.id"},
+                {"target": "name", "expression": "main1.name"}
+            ]
+        }
+    ]
+
+    res = runner.execute_tmap_transform(
+        main_df=main_df,
+        lookups=lookups,
+        lookup_dfs={"lkp_node": lookup_df},
+        variables=[],
+        outputs=outputs,
+        main_alias="main1"
+    )
+
+    matched = res["main_matched"]
+    rejected = res["reject_inner"]
+
+    assert matched.height == 2
+    assert set(matched["id"].to_list()) == {2, 3}
+    assert set(matched["category"].to_list()) == {"Cat2", "Cat3"}
+
+    assert rejected.height == 2
+    assert set(rejected["id"].to_list()) == {1, 4}
+    assert set(rejected["name"].to_list()) == {"A", "D"}
+
+
+def test_tmap_ghost_variable_elimination_and_duplicate_target_prevention(runner):
+    """Cenário 4: Teste de Limpeza de Variáveis e Prevenção de Colunas Duplicadas.
+
+    Validação:
+    - O job contém uma variável fantasma (var_ghost = row1.NonExistentField).
+    - O job contém uma variável ativa (var_active = main1.val * 2).
+    - O motor deve ignorar a variável fantasma sem interromper a execução.
+    - A saída contém duas colunas com o mesmo target ('val' de main1 e 'val' de lkp1), que devem ser unificadas via COALESCE sem colisão.
+    """
+    main_df = pl.DataFrame({
+        "id": [1, 2],
+        "val": [10, 20]
+    })
+    lookup_df = pl.DataFrame({
+        "id": [1, 2],
+        "val": [100, 200]
+    })
+
+    variables = [
+        {"name": "var_ghost", "expression": "row1.NonExistentField", "type": "String"},
+        {"name": "var_active", "expression": "main1.val * 2", "type": "Integer"}
+    ]
+
+    outputs = [{
+        "name": "clean_out",
+        "columns": [
+            {"target": "val", "expression": "lkp1.val"},
+            {"target": "val", "expression": "main1.val"},
+            {"target": "doubled", "expression": "Var.var_active"}
+        ]
+    }]
+
+    res = runner.execute_tmap_transform(
+        main_df=main_df,
+        lookups=[{
+            "node_id": "lookup_1",
+            "alias": "lkp1",
+            "join_keys": [{"expr_key": "main1.id", "column": "lkp1.id"}],
+            "join_model": "left_outer",
+            "match_model": "unique"
+        }],
+        lookup_dfs={"lookup_1": lookup_df},
+        variables=variables,
+        outputs=outputs,
+        main_alias="main1"
+    )
+
+    clean_out = res["clean_out"]
+    assert clean_out.height == 2
+    # Confirma deduplicação no schema final
+    assert clean_out.columns == ["val", "doubled"]
+    assert clean_out["val"].to_list() == [100, 200]
+    assert clean_out["doubled"].to_list() == [20, 40]
+

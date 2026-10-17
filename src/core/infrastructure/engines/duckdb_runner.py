@@ -885,12 +885,12 @@ class DuckDBRunner:
                             ("lkp" in prev_expr.lower() and ("main" in raw_expr.lower() or "row1" in raw_expr.lower()))
                         )
                         if is_lkp_main_pair:
-                            t_expr1 = self.compile_tmap_expression(raw_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
-                            t_expr2 = self.compile_tmap_expression(prev_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
+                            t_expr_curr = self.compile_tmap_expression(raw_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
+                            t_expr_prev = self.compile_tmap_expression(prev_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
                             prev_idx = prev_entry["index"]
-                            select_items[prev_idx] = f'COALESCE(({t_expr1}), ({t_expr2})) AS "{target_name}"'
+                            select_items[prev_idx] = f'COALESCE(({t_expr_prev}), ({t_expr_curr})) AS "{target_name}"'
                             logger.warning(
-                                f"Coluna de saída duplicada '{target_name}' no output '{out_name}' consolidada com COALESCE({raw_expr}, {prev_expr})."
+                                f"Coluna de saída duplicada '{target_name}' no output '{out_name}' consolidada com COALESCE({prev_expr}, {raw_expr})."
                             )
                         else:
                             # Desambigua renomeando para target_1, target_2, ...
