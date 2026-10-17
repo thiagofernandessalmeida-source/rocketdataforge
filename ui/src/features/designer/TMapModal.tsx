@@ -144,6 +144,19 @@ const FUNCTION_CATALOG: FunctionDoc[] = [
   { category: "Condicional / Lógica", name: "CAST", syntax: "CAST(expr AS VARCHAR)", description: "Converte explicitamente o tipo do dado", example: "CAST(row1.id AS VARCHAR)" },
 ];
 
+const normalizeMatchModel = (val?: string): "all" | "unique" | "first" => {
+  const s = (val || "").toLowerCase();
+  if (s.includes("unique")) return "unique";
+  if (s.includes("first")) return "first";
+  return "all";
+};
+
+const normalizeJoinType = (type?: string, model?: string): "left" | "inner" => {
+  const s = (type || model || "").toLowerCase();
+  if (s.includes("inner")) return "inner";
+  return "left";
+};
+
 // ─── Main Component ────────────────────────────────────────────
 
 export const TMapModal: React.FC<TMapModalProps> = ({
@@ -167,9 +180,8 @@ export const TMapModal: React.FC<TMapModalProps> = ({
   const [copiedChipToken, setCopiedChipToken] = useState<string | null>(null);
 
   // Main Alias state (row1 / main)
-  const [mainAlias, setMainAlias] = useState<string>(
-    config.main_alias || availableUpstreamNodes[0]?.alias || "row1"
-  );
+  const initialMainAlias = config.main_alias || availableUpstreamNodes[0]?.alias || "main1";
+  const [mainAlias, setMainAlias] = useState<string>(initialMainAlias);
 
   // Lookups state with fallback keys, aliases and auto-sync with upstream nodes
   const [lookups, setLookups] = useState<TMapLookupConfig[]>(() => {
@@ -182,8 +194,9 @@ export const TMapModal: React.FC<TMapModalProps> = ({
         label: un.label || `lkp${idx + 1}`,
         alias: un.alias || `row${idx + 2}`,
         join_type: "left",
+        join_model: "left_outer",
         lookup_model: "Load once",
-        match_model: "All matches",
+        match_model: "all",
         left_keys: [],
         right_keys: [],
         join_keys: [{ expr_key: "", column: "" }],
@@ -197,8 +210,9 @@ export const TMapModal: React.FC<TMapModalProps> = ({
       ...lk,
       alias: lk.alias || lk.label || `row${idx + 2}`,
       lookup_model: lk.lookup_model || "Load once",
-      match_model: lk.match_model || "All matches",
-      join_type: lk.join_type || "left",
+      match_model: normalizeMatchModel(lk.match_model),
+      join_type: normalizeJoinType(lk.join_type, lk.join_model),
+      join_model: normalizeJoinType(lk.join_type, lk.join_model) === "inner" ? "inner" : "left_outer",
       join_keys:
         lk.join_keys ||
         (lk.left_keys && lk.left_keys.length > 0
@@ -210,11 +224,11 @@ export const TMapModal: React.FC<TMapModalProps> = ({
     }));
   });
 
-  // Variables state
+  // Variables state (inicia vazio para novos mappers - sem mocks fantasmas como row1.Title)
   const [variables, setVariables] = useState<TMapVariable[]>(
     config.variables && config.variables.length > 0
       ? config.variables
-      : [{ id: "v1", name: "var1", type: "String", expression: "row1.Title" }]
+      : []
   );
 
   // Outputs state auto-synced with downstream connections
@@ -246,7 +260,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
           cols = dn.targetSchema.map((c) => ({
             id: c.id || `col-${c.name}`,
             target: c.name,
-            expression: mainSchema.some((m) => m.name === c.name) ? `row1.${c.name}` : "",
+            expression: mainSchema.some((m) => m.name === c.name) ? `${initialMainAlias}.${c.name}` : "",
             type: c.type || "String",
             nullable: c.nullable ?? true,
             isPrimaryKey: c.isPrimaryKey,
@@ -258,7 +272,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
           cols = mainSchema.map((c) => ({
             id: `col-${c.name}`,
             target: c.name,
-            expression: `row1.${c.name}`,
+            expression: `${initialMainAlias}.${c.name}`,
             type: c.type || "String",
             nullable: c.nullable ?? true,
             isPrimaryKey: c.isPrimaryKey,
@@ -321,7 +335,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
         columns: mainSchema.map((c) => ({
           id: `col-${c.name}`,
           target: c.name,
-          expression: `row1.${c.name}`,
+          expression: `${initialMainAlias}.${c.name}`,
           type: c.type,
           nullable: c.nullable,
           isPrimaryKey: c.isPrimaryKey,
@@ -375,10 +389,14 @@ export const TMapModal: React.FC<TMapModalProps> = ({
 
   // ─── Direct Mapping / Click-to-Map Handler ───────────────────
   const handleAddOrMapColumnToActiveOutput = (
-    expr: string,
-    colName: string,
+    first: string,
+    second: string,
     colType?: SchemaColumnType
   ) => {
+    // Normaliza os argumentos caso venham invertidos (expr vs colName)
+    const expr = first.includes(".") || first.startsWith("Var.") ? first : second;
+    const baseColName = (!first.includes(".") && !first.startsWith("Var.")) ? first : second;
+
     setOutputs((prevOutputs) =>
       prevOutputs.map((out) => {
         if (out.id !== activeOutputId) return out;
@@ -388,19 +406,72 @@ export const TMapModal: React.FC<TMapModalProps> = ({
         if (emptyIdx >= 0) {
           const updated = [...out.columns];
           const curr = updated[emptyIdx];
+          let target = curr.target.startsWith("col_") || !curr.target.trim() ? baseColName : curr.target;
+
+          // Se já existir outra coluna com esse target, desambigua
+          const otherTargets = new Set(
+            updated.filter((_, i) => i !== emptyIdx).map((c) => c.target.toLowerCase())
+          );
+          if (otherTargets.has(target.toLowerCase())) {
+            const dotParts = expr.split(".");
+            const aliasPrefix = dotParts.length > 1 ? dotParts[0].trim() : "";
+            if (aliasPrefix && !otherTargets.has(`${aliasPrefix}_${baseColName}`.toLowerCase())) {
+              target = `${aliasPrefix}_${baseColName}`;
+            } else {
+              let counter = 1;
+              while (otherTargets.has(`${baseColName}_${counter}`.toLowerCase())) {
+                counter++;
+              }
+              target = `${baseColName}_${counter}`;
+            }
+          }
+
           updated[emptyIdx] = {
             ...curr,
             expression: expr,
-            target: curr.target.startsWith("col_") || !curr.target.trim() ? colName : curr.target,
+            target,
             type: colType || curr.type || "String",
           };
           return { ...out, columns: updated };
         }
 
-        // 2. Se não houver linha vazia, adiciona uma nova coluna mapeada
+        // 2. Se já existir uma coluna com o mesmo target cuja expressão está vazia, atualiza-a
+        const existingIdx = out.columns.findIndex(
+          (c) => c.target.toLowerCase() === baseColName.toLowerCase()
+        );
+        if (
+          existingIdx >= 0 &&
+          (!out.columns[existingIdx].expression || !out.columns[existingIdx].expression.trim())
+        ) {
+          const updated = [...out.columns];
+          updated[existingIdx] = {
+            ...updated[existingIdx],
+            expression: expr,
+            type: colType || updated[existingIdx].type || "String",
+          };
+          return { ...out, columns: updated };
+        }
+
+        // 3. Se já existe uma coluna com esse target e já possui expressão, sugere nome desambiguado
+        const existingTargets = new Set(out.columns.map((c) => c.target.toLowerCase()));
+        let finalTarget = baseColName;
+        if (existingTargets.has(finalTarget.toLowerCase())) {
+          const dotParts = expr.split(".");
+          const aliasPrefix = dotParts.length > 1 ? dotParts[0].trim() : "";
+          if (aliasPrefix && !existingTargets.has(`${aliasPrefix}_${baseColName}`.toLowerCase())) {
+            finalTarget = `${aliasPrefix}_${baseColName}`;
+          } else {
+            let counter = 1;
+            while (existingTargets.has(`${baseColName}_${counter}`.toLowerCase())) {
+              counter++;
+            }
+            finalTarget = `${baseColName}_${counter}`;
+          }
+        }
+
         const newCol: TMapOutputColumn = {
           id: `col-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          target: colName,
+          target: finalTarget,
           expression: expr,
           type: colType || "String",
           nullable: true,
@@ -412,31 +483,51 @@ export const TMapModal: React.FC<TMapModalProps> = ({
 
   // ─── Auto Map Handler ─────────────────────────────────────────
   const handleAutoMap = (outId: string) => {
-    const availableSources: { name: string; expr: string; type: SchemaColumnType }[] = [];
+    const availableSources: { name: string; expr: string; type: SchemaColumnType; prefix: string }[] = [];
     mainSchema.forEach((c) =>
-      availableSources.push({ name: c.name, expr: `${mainAlias}.${c.name}`, type: c.type })
+      availableSources.push({ name: c.name, expr: `${mainAlias}.${c.name}`, type: c.type, prefix: mainAlias })
     );
     lookups.forEach((lk, idx) => {
       const lkCols = lookupSchemas[lk.node_id] || lk.schema || [];
       const prefix = lk.alias || lk.label || `row${idx + 2}`;
       lkCols.forEach((c) =>
-        availableSources.push({ name: c.name, expr: `${prefix}.${c.name}`, type: c.type })
+        availableSources.push({ name: c.name, expr: `${prefix}.${c.name}`, type: c.type, prefix })
       );
     });
     variables.forEach((v) => {
-      if (v.name) availableSources.push({ name: v.name, expr: `Var.${v.name}`, type: v.type || "String" });
+      if (v.name) availableSources.push({ name: v.name, expr: `Var.${v.name}`, type: v.type || "String", prefix: "Var" });
+    });
+
+    const usedTargets = new Set<string>();
+    const newCols: TMapOutputColumn[] = [];
+
+    availableSources.forEach((s) => {
+      let targetName = s.name;
+      if (usedTargets.has(targetName.toLowerCase())) {
+        if (s.prefix && !usedTargets.has(`${s.prefix}_${s.name}`.toLowerCase())) {
+          targetName = `${s.prefix}_${s.name}`;
+        } else {
+          let counter = 1;
+          while (usedTargets.has(`${s.name}_${counter}`.toLowerCase())) {
+            counter++;
+          }
+          targetName = `${s.name}_${counter}`;
+        }
+      }
+      usedTargets.add(targetName.toLowerCase());
+
+      newCols.push({
+        id: `col-${Date.now()}-${targetName}-${Math.random().toString(36).slice(2, 5)}`,
+        target: targetName,
+        expression: s.expr,
+        type: s.type,
+        nullable: true,
+      });
     });
 
     setOutputs((outs) =>
       outs.map((o) => {
         if (o.id !== outId) return o;
-        const newCols: TMapOutputColumn[] = availableSources.map((s) => ({
-          id: `col-${Date.now()}-${s.name}`,
-          target: s.name,
-          expression: s.expr,
-          type: s.type,
-          nullable: true,
-        }));
         return { ...o, columns: newCols };
       })
     );
@@ -489,8 +580,9 @@ export const TMapModal: React.FC<TMapModalProps> = ({
       node_id: `row${count + 1}`,
       label: `row${count + 1}`,
       join_type: "left",
+      join_model: "left_outer",
       lookup_model: "Load once",
-      match_model: "All matches",
+      match_model: "all",
       left_keys: [],
       right_keys: [],
       join_keys: [{ expr_key: "", column: "" }],
@@ -520,7 +612,9 @@ export const TMapModal: React.FC<TMapModalProps> = ({
           right_keys.push(cleanRight);
         }
       });
-      const joinModel = lk.join_type === "inner" ? "inner" : "left_outer";
+      const isInner = lk.join_type === "inner" || lk.join_model === "inner";
+      const joinType = isInner ? "inner" : "left";
+      const joinModel = isInner ? "inner" : "left_outer";
       let matchModel = "all";
       if (lk.match_model?.toLowerCase().includes("first")) matchModel = "first";
       else if (lk.match_model?.toLowerCase().includes("unique")) matchModel = "unique";
@@ -531,6 +625,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
         ...lk,
         alias: flowAlias,
         label: flowAlias,
+        join_type: joinType as "left" | "inner",
         join_model: joinModel,
         match_model: matchModel,
         join_filter: lk.join_filter || lk.filter_expression || "",
@@ -874,7 +969,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                           <span className="prop-label">Match Model</span>
                           <select
                             className="prop-select"
-                            value={lk.match_model || "All matches"}
+                            value={normalizeMatchModel(lk.match_model)}
                             onChange={(e) =>
                               setLookups(
                                 lookups.map((l) =>
@@ -885,9 +980,9 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                               )
                             }
                           >
-                            <option value="All matches">All matches</option>
-                            <option value="Unique match">Unique match</option>
-                            <option value="First match">First match</option>
+                            <option value="all">All matches (all)</option>
+                            <option value="unique">Unique match (unique)</option>
+                            <option value="first">First match (first)</option>
                           </select>
                         </div>
 
@@ -895,19 +990,24 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                           <span className="prop-label">Join Model</span>
                           <select
                             className="prop-select"
-                            value={lk.join_type}
-                            onChange={(e) =>
+                            value={normalizeJoinType(lk.join_type, lk.join_model)}
+                            onChange={(e) => {
+                              const newJoin = e.target.value as "left" | "inner";
                               setLookups(
                                 lookups.map((l) =>
                                   l.node_id === lk.node_id
-                                    ? { ...l, join_type: e.target.value as any }
+                                    ? {
+                                        ...l,
+                                        join_type: newJoin,
+                                        join_model: newJoin === "inner" ? "inner" : "left_outer",
+                                      }
                                     : l
                                 )
-                              )
-                            }
+                              );
+                            }}
                           >
-                            <option value="left">Left Outer Join</option>
-                            <option value="inner">Inner Join</option>
+                            <option value="left">Left Outer Join (left)</option>
+                            <option value="inner">Inner Join (inner)</option>
                           </select>
                         </div>
 
@@ -1325,20 +1425,51 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                                 />
                               </td>
                               <td>
-                                <input
-                                  className="out-cell-input"
-                                  value={col.target}
-                                  placeholder="nome_coluna"
-                                  onChange={(e) => {
-                                    const newCols = [...out.columns];
-                                    newCols[idx] = { ...col, target: e.target.value };
-                                    setOutputs(
-                                      outputs.map((item) =>
-                                        item.id === out.id ? { ...item, columns: newCols } : item
-                                      )
-                                    );
-                                  }}
-                                />
+                                {(() => {
+                                  const isDuplicateTarget = Boolean(
+                                    col.target.trim() &&
+                                      out.columns.filter(
+                                        (c) => c.target.trim().toLowerCase() === col.target.trim().toLowerCase()
+                                      ).length > 1
+                                  );
+                                  return (
+                                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                      <input
+                                        className={`out-cell-input ${isDuplicateTarget ? "input-duplicate-warning" : ""}`}
+                                        value={col.target}
+                                        placeholder="nome_coluna"
+                                        style={
+                                          isDuplicateTarget
+                                            ? { borderColor: "#f59e0b", color: "#f59e0b", backgroundColor: "rgba(245, 158, 11, 0.08)" }
+                                            : undefined
+                                        }
+                                        onChange={(e) => {
+                                          const newCols = [...out.columns];
+                                          newCols[idx] = { ...col, target: e.target.value };
+                                          setOutputs(
+                                            outputs.map((item) =>
+                                              item.id === out.id ? { ...item, columns: newCols } : item
+                                            )
+                                          );
+                                        }}
+                                      />
+                                      {isDuplicateTarget && (
+                                        <span
+                                          title="Aviso: Nome de coluna duplicado nesta saída! Renomeie para evitar erro no banco/Sink."
+                                          style={{
+                                            color: "#f59e0b",
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            cursor: "help",
+                                            flexShrink: 0,
+                                          }}
+                                        >
+                                          <AlertCircle size={14} />
+                                        </span>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
                               </td>
                               <td>
                                 <button
@@ -1429,17 +1560,26 @@ export const TMapModal: React.FC<TMapModalProps> = ({
               <div className="schema-side left-side">
                 <div className="schema-side-header">
                   <span className="side-title">
-                    Origem: <strong>{activeInputId === "main" ? "row1 (Main)" : activeInputId}</strong>
+                    Origem:{" "}
+                    <strong>
+                      {activeInputId === "main"
+                        ? `${mainAlias} (${availableUpstreamNodes[0]?.label || "Main"})`
+                        : lookups.find((l) => l.node_id === activeInputId)?.alias ||
+                          lookups.find((l) => l.node_id === activeInputId)?.label ||
+                          activeInputId}
+                    </strong>
                   </span>
                   <select
                     className="side-stream-picker"
                     value={activeInputId}
                     onChange={(e) => setActiveInputId(e.target.value)}
                   >
-                    <option value="main">row1 (Main)</option>
+                    <option value="main">
+                      {mainAlias} ({availableUpstreamNodes[0]?.label || "Main"})
+                    </option>
                     {lookups.map((lk) => (
                       <option key={lk.node_id} value={lk.node_id}>
-                        {lk.label || lk.node_id} (Lookup)
+                        {lk.alias || lk.label || lk.node_id} ({lk.label || "Lookup"})
                       </option>
                     ))}
                   </select>
@@ -1484,20 +1624,45 @@ export const TMapModal: React.FC<TMapModalProps> = ({
               <div className="schema-transfer-center">
                 <button
                   className="transfer-btn"
-                  title="Copiar todas as colunas da entrada para a saída ativa"
+                  title="Copiar todas as colunas da entrada para a saída ativa (sem duplicar nomes)"
                   onClick={() => {
                     const src = activeInputId === "main" ? mainSchema : lookupSchemas[activeInputId] || [];
-                    const prefix = activeInputId === "main" ? "row1" : activeInputId;
-                    const newCols: TMapOutputColumn[] = src.map((c) => ({
-                      id: `col-${Date.now()}-${c.name}`,
-                      target: c.name,
-                      expression: `${prefix}.${c.name}`,
-                      type: c.type,
-                      nullable: c.nullable,
-                      isPrimaryKey: c.isPrimaryKey,
-                    }));
+                    const prefix =
+                      activeInputId === "main"
+                        ? mainAlias
+                        : lookups.find((l) => l.node_id === activeInputId)?.alias ||
+                          lookups.find((l) => l.node_id === activeInputId)?.label ||
+                          activeInputId;
+                    const currentOut = outputs.find((o) => o.id === activeOutputId);
+                    const usedTargets = new Set((currentOut?.columns || []).map((c) => c.target.toLowerCase()));
+
+                    const addedCols: TMapOutputColumn[] = [];
+                    src.forEach((c) => {
+                      let targetName = c.name;
+                      if (usedTargets.has(targetName.toLowerCase())) {
+                        if (prefix && !usedTargets.has(`${prefix}_${c.name}`.toLowerCase())) {
+                          targetName = `${prefix}_${c.name}`;
+                        } else {
+                          let counter = 1;
+                          while (usedTargets.has(`${c.name}_${counter}`.toLowerCase())) {
+                            counter++;
+                          }
+                          targetName = `${c.name}_${counter}`;
+                        }
+                      }
+                      usedTargets.add(targetName.toLowerCase());
+                      addedCols.push({
+                        id: `col-${Date.now()}-${targetName}-${Math.random().toString(36).slice(2, 5)}`,
+                        target: targetName,
+                        expression: `${prefix}.${c.name}`,
+                        type: c.type,
+                        nullable: c.nullable,
+                        isPrimaryKey: c.isPrimaryKey,
+                      });
+                    });
+
                     setOutputs(
-                      outputs.map((o) => (o.id === activeOutputId ? { ...o, columns: newCols } : o))
+                      outputs.map((o) => (o.id === activeOutputId ? { ...o, columns: [...o.columns, ...addedCols] } : o))
                     );
                   }}
                 >
@@ -1532,9 +1697,16 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                     <button
                       className="btn btn-ghost btn-xs"
                       onClick={() => {
+                        const existingTargets = new Set(
+                          (activeOutput?.columns || []).map((c) => c.target.toLowerCase())
+                        );
+                        let counter = (activeOutput?.columns.length || 0) + 1;
+                        while (existingTargets.has(`col_${counter}`.toLowerCase())) {
+                          counter++;
+                        }
                         const newCol: TMapOutputColumn = {
                           id: `col-${Date.now()}`,
-                          target: `col_${(activeOutput?.columns.length || 0) + 1}`,
+                          target: `col_${counter}`,
                           expression: "",
                           type: "String",
                           nullable: true,

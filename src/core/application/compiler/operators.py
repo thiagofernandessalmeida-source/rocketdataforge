@@ -106,17 +106,21 @@ class LogicalTMap(LogicalOperator):
     """Operador de transformação visual tMap (lookups múltiplos, variáveis e roteamento de saídas)."""
     operator_type: str = "tmap"
     main_input_id: str = ""
+    main_alias: str = "main"
     lookups: List[Dict[str, Any]] = field(default_factory=list)
-    variables: List[Dict[str, str]] = field(default_factory=list)
+    variables: List[Dict[str, Any]] = field(default_factory=list)
     outputs: List[Dict[str, Any]] = field(default_factory=list)
+    raw_config: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         res = super().to_dict()
         res.update({
             "main_input_id": self.main_input_id,
+            "main_alias": self.main_alias,
             "lookups": self.lookups,
             "variables": self.variables,
-            "outputs": self.outputs
+            "outputs": self.outputs,
+            "raw_config": self.raw_config
         })
         return res
 

@@ -253,3 +253,123 @@ def test_tmap_columns_with_spaces_and_special_names(runner):
     assert out_df["Working URL"][0] == "https://example.com/movie"
     assert out_df["Movie Title"][0] == "Inception"
     assert out_df["Release_Date"][0] == "2020-01-01"
+
+
+def test_tmap_exact_user_scenario_main1_and_lkp1_case_insensitive_and_coalesce_dedup(runner):
+    """Cenário exato do diagnóstico: main1 vindo do Postgres (lowercase person_code),
+
+    lkp1 vindo do Oracle (UPPERCASE PERSON_CODE), join_model inner,
+    variável fantasma row1.Title descartada por dead-variable elimination,
+    e duas colunas mapeadas para o mesmo target 'person_code' unificadas com COALESCE.
+    """
+    main_df = pl.DataFrame({
+        "person_code": ["P001", "P002", "P003"],
+        "name": ["Alice", "Bob", "Charlie"]
+    })
+    # Oracle retorna colunas em UPPERCASE
+    oracle_df = pl.DataFrame({
+        "PERSON_CODE": ["P001", "P002", "P999"],
+        "STATUS": ["ACTIVE", "PENDING", "REVOKED"]
+    })
+
+    lookups = [{
+        "node_id": "oracle_source_1",
+        "alias": "lkp1",
+        "join_keys": [{"expr_key": "main1.person_code", "column": "lkp1.person_code"}],
+        "join_model": "inner",
+        "match_model": "unique"
+    }]
+
+    # Variável fantasma vinda do template residual de UI
+    variables = [{
+        "id": "v1",
+        "name": "var1",
+        "type": "String",
+        "expression": "row1.Title"
+    }]
+
+    # Saída com target duplicado "person_code" vindo de lkp1 e main1
+    outputs = [{
+        "name": "out1",
+        "catch_output_reject": False,
+        "catch_inner_join_reject": False,
+        "columns": [
+            {"target": "person_code", "expression": "main1.person_code"},
+            {"target": "person_code", "expression": "lkp1.person_code"},
+            {"target": "name", "expression": "main1.name"},
+            {"target": "status", "expression": "lkp1.STATUS"}
+        ]
+    }, {
+        "name": "reject_inner",
+        "catch_inner_join_reject": True,
+        "columns": [
+            {"target": "person_code", "expression": "main1.person_code"},
+            {"target": "name", "expression": "main1.name"}
+        ]
+    }]
+
+    res = runner.execute_tmap_transform(
+        main_df=main_df,
+        lookups=lookups,
+        lookup_dfs={"oracle_source_1": oracle_df},
+        variables=variables,
+        outputs=outputs,
+        main_alias="main1",
+        main_node_id="postgres_source_1"
+    )
+
+    out1 = res["out1"]
+    reject_inner = res["reject_inner"]
+
+    # 1. Deve processar sem erro de Binder ("main1.person_code")
+    # 2. P001 e P002 deram match no inner join
+    assert out1.height == 2
+    assert set(out1["name"].to_list()) == {"Alice", "Bob"}
+    # 3. Coluna person_code deve ser desambiguada e única (sem duplicata)
+    assert "person_code" in out1.columns
+    assert len([c for c in out1.columns if c == "person_code"]) == 1
+    assert set(out1["person_code"].to_list()) == {"P001", "P002"}
+
+    # 4. Reject Inner deve capturar P003 (Charlie, que não existe no Oracle)
+    assert reject_inner.height == 1
+    assert reject_inner["person_code"][0] == "P003"
+    assert reject_inner["name"][0] == "Charlie"
+
+
+def test_tmap_chained_intermediate_variables(runner):
+    """Testa variáveis intermediárias encadeadas (var2 usa Var.var1) com cast de tipos."""
+    main_df = pl.DataFrame({
+        "unit_price": [10.0, 25.0],
+        "quantity": [3, 2]
+    })
+
+    variables = [
+        {"name": "subtotal", "type": "Double", "expression": "main.unit_price * main.quantity"},
+        {"name": "tax", "type": "Double", "expression": "Var.subtotal * 0.1"},
+        {"name": "total", "type": "Double", "expression": "Var.subtotal + Var.tax"},
+        {"name": "formatted", "type": "String", "expression": "'Total: $' || Var.total"}
+    ]
+
+    outputs = [{
+        "name": "sales_out",
+        "columns": [
+            {"target": "total_amount", "expression": "Var.total"},
+            {"target": "display_text", "expression": "Var.formatted"}
+        ]
+    }]
+
+    res = runner.execute_tmap_transform(
+        main_df=main_df,
+        lookups=[],
+        lookup_dfs={},
+        variables=variables,
+        outputs=outputs,
+        main_alias="main"
+    )
+
+    sales_df = res["sales_out"]
+    assert sales_df.height == 2
+    assert sales_df["total_amount"][0] == pytest.approx(33.0)
+    assert sales_df["total_amount"][1] == pytest.approx(55.0)
+    assert sales_df["display_text"][0] == "Total: $33.0"
+

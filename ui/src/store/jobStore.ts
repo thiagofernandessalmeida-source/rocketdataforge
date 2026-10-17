@@ -451,6 +451,45 @@ export function inferPipelineEdges(nodes: Node<CanvasNodeData>[]): Edge[] {
 const STORAGE_KEY = "rdf_studio_v2";
 
 /**
+ * Substitui recursivamente referências a IDs antigos por novos IDs (ex: {{old_id.col}}, {old_id.col}, lookups.node_id, etc.)
+ */
+export function remapNodeReferences<T = any>(obj: T, idMap: Record<string, string>): T {
+  if (!obj || Object.keys(idMap).length === 0) return obj;
+
+  if (typeof obj === "string") {
+    let result: string = obj;
+    for (const [oldId, newId] of Object.entries(idMap)) {
+      result = result.split(`{{${oldId}.`).join(`{{${newId}.`);
+      result = result.split(`{${oldId}.`).join(`{${newId}.`);
+      result = result.replace(new RegExp(`\\{\\{\\s*${oldId}\\.`, "g"), `{{${newId}.`);
+    }
+    return result as unknown as T;
+  }
+
+  if (Array.isArray(obj)) {
+    return obj.map((item) => remapNodeReferences(item, idMap)) as any;
+  }
+
+  if (typeof obj === "object") {
+    const copy: any = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (
+        (k === "node_id" || k === "targetId" || k === "main_input_id" || k === "upstream_id") &&
+        typeof v === "string" &&
+        idMap[v]
+      ) {
+        copy[k] = idMap[v];
+      } else {
+        copy[k] = remapNodeReferences(v, idMap);
+      }
+    }
+    return copy as any;
+  }
+
+  return obj;
+}
+
+/**
  * Garante que todos os nós em todas as células de um Job possuam IDs únicos globais.
  * Se múltiplos nós possuírem o mesmo ID (por exemplo, criados em células distintas em versões anteriores),
  * desambigua gerando novos IDs únicos e ajustando as arestas conectadas da célula.
@@ -498,15 +537,25 @@ export function healDuplicateNodeIdsAcrossCells(cells: CanvasCellData[]): {
       };
     });
 
-    // Se houve renomeação, atualiza as arestas desta célula
+    // Se houve renomeação, atualiza as arestas e dados dos nós desta célula
+    const hasRenames = Object.keys(idMap).length > 0;
+    const finalNodes = hasRenames
+      ? newNodes.map((n) => ({
+          ...n,
+          data: remapNodeReferences(n.data, idMap),
+        }))
+      : newNodes;
+
     const newEdges = (cell.edges || []).map((edge) => {
       const newSource = idMap[edge.source] || edge.source;
       const newTarget = idMap[edge.target] || edge.target;
-      if (newSource !== edge.source || newTarget !== edge.target) {
+      const remappedData = hasRenames ? remapNodeReferences(edge.data, idMap) : edge.data;
+      if (newSource !== edge.source || newTarget !== edge.target || hasRenames) {
         return {
           ...edge,
           source: newSource,
           target: newTarget,
+          data: remappedData,
         };
       }
       return edge;
@@ -514,7 +563,7 @@ export function healDuplicateNodeIdsAcrossCells(cells: CanvasCellData[]): {
 
     return {
       ...cell,
-      nodes: newNodes,
+      nodes: finalNodes,
       edges: newEdges,
     };
   });
@@ -1526,29 +1575,52 @@ print("Dados publicados com sucesso via context.write_output!")
     const newName = `Cópia de ${sourceCell.name}`.slice(0, 50);
     const maxOrder = existingCells.reduce((max, c) => Math.max(max, c.order || 0), 0);
 
-    // Deep clone nodes and edges with id mapping
+    // Deep clone nodes and edges with id mapping and template token interpolation remapping
     const idMap: Record<string, string> = {};
-    const clonedNodes = (sourceCell.nodes || []).map((n) => {
+    const clonedNodesRaw = (sourceCell.nodes || []).map((n) => {
       const uniqueSuffix = Date.now().toString(36) + Math.random().toString(36).substr(2, 4);
       const newNId = `${n.id}_${uniqueSuffix}`;
       idMap[n.id] = newNId;
-      return {
-        ...n,
-        id: newNId,
-        position: { x: n.position.x + 30, y: n.position.y + 30 },
-      };
+      return { n, newNId };
     });
-
-    const clonedEdges = (sourceCell.edges || []).map((e) => ({
-      ...e,
-      id: `edge_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
-      source: idMap[e.source] || e.source,
-      target: idMap[e.target] || e.target,
-    }));
 
     const isPython = sourceCell.cellType === "PYTHON";
     const prefix = isPython ? "python-cell" : "canvas-cell";
     const newId = `${prefix}-${String(nextIndex).padStart(2, "0")}`;
+
+    const clonedNodes = clonedNodesRaw.map(({ n, newNId }) => {
+      const deepData = JSON.parse(JSON.stringify(n.data || {}));
+      const remappedData = remapNodeReferences(deepData, idMap);
+      return {
+        ...n,
+        id: newNId,
+        position: { x: n.position.x + 30, y: n.position.y + 30 },
+        data: {
+          ...remappedData,
+          cellId: newId,
+        },
+      };
+    });
+
+    const clonedEdges = (sourceCell.edges || []).map((e) => {
+      const deepData = JSON.parse(JSON.stringify(e.data || {}));
+      const remappedData = remapNodeReferences(deepData, idMap);
+      return {
+        ...e,
+        id: `edge_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+        source: idMap[e.source] || e.source,
+        target: idMap[e.target] || e.target,
+        data: remappedData,
+      };
+    });
+
+    const clonedNodeSchemas: Record<string, SchemaColumn[]> = {};
+    if (sourceCell.nodeSchemas) {
+      for (const [oldId, schema] of Object.entries(sourceCell.nodeSchemas)) {
+        const mappedId = idMap[oldId] || oldId;
+        clonedNodeSchemas[mappedId] = JSON.parse(JSON.stringify(schema));
+      }
+    }
 
     const newCell: CanvasCellData = {
       id: newId,
@@ -1562,7 +1634,7 @@ print("Dados publicados com sucesso via context.write_output!")
       nodes: clonedNodes,
       edges: clonedEdges,
       viewport: sourceCell.viewport ? { ...sourceCell.viewport } : undefined,
-      nodeSchemas: sourceCell.nodeSchemas ? { ...sourceCell.nodeSchemas } : {},
+      nodeSchemas: clonedNodeSchemas,
       status: "idle",
       is_active: sourceCell.is_active !== undefined ? sourceCell.is_active : true,
       is_minimized: false,

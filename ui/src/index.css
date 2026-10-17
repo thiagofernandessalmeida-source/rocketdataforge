@@ -3835,6 +3835,12 @@ html, body {
   border-color: var(--accent-cyan);
 }
 
+.out-cell-input.input-duplicate-warning {
+  border-color: #f59e0b !important;
+  color: #fbbf24 !important;
+  background: rgba(245, 158, 11, 0.08) !important;
+}
+
 .expr-font {
   font-family: var(--font-mono);
 }

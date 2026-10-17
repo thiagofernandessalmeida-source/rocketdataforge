@@ -304,6 +304,24 @@ class ExecutionWorker:
                 prefix, col = "", parts[0].strip()
                 col_lookup = col
 
+            # Suporte a nós clonados (canvas-cell duplication):
+            # Se prefix não bater exato, aceita se upstream_id começar com f"{prefix}_"
+            prefix_match = (
+                not prefix
+                or prefix == clean_upstream
+                or clean_upstream.startswith(f"{prefix}_")
+                or prefix.startswith(clean_upstream)
+                or prefix in ("row", "main", "main1", "input")
+            )
+
+            if prefix_match:
+                if col_lookup in exact_map:
+                    return True, row_dict[exact_map[col_lookup]]
+                if col_lookup.lower() in lower_map:
+                    return True, row_dict[lower_map[col_lookup.lower()]]
+                if col_lookup.lower() in short_map:
+                    return True, row_dict[short_map[col_lookup.lower()]]
+
             if col_lookup in exact_map:
                 return True, row_dict[exact_map[col_lookup]]
             if col_lookup.lower() in lower_map:
@@ -380,6 +398,12 @@ class ExecutionWorker:
                 f"{{row.{col}}}",
                 f"{{{col}}}",
             ]
+            if "_" in clean_upstream:
+                base_clean = clean_upstream.rsplit("_", 1)[0]
+                patterns.extend([
+                    f"{{{{{base_clean}.{col}}}}}",
+                    f"{{{base_clean}.{col}}}",
+                ])
 
             for pat in patterns:
                 if f"'{pat}'" in res:
@@ -1011,6 +1035,8 @@ class ExecutionWorker:
         variables = cfg.get("variables", [])
         outputs = cfg.get("outputs", [])
 
+        main_alias = cfg.get("main_alias") or cfg.get("raw_config", {}).get("main_alias") or "main"
+
         # Executa transformação avançada com DuckDB
         results = self.duckdb_runner.execute_tmap_transform(
             main_df=main_df,
@@ -1018,7 +1044,7 @@ class ExecutionWorker:
             lookup_dfs=lookup_dfs,
             variables=variables,
             outputs=outputs,
-            main_alias=cfg.get("main_alias", "row1"),
+            main_alias=main_alias,
             main_node_id=main_id
         )
 
@@ -1033,6 +1059,15 @@ class ExecutionWorker:
             node_buffers[f"{phys_op.id}.{out_name}"] = [out_df]
             if first_df.is_empty():
                 first_df = out_df
+
+        # Associa os buffers de saída também aos respectivos targetId das portas/arestas (conforme especificação 3.5)
+        for out in outputs:
+            out_name = out.get("name") or out.get("id") or ""
+            target_id = out.get("targetId") or out.get("target_id") or ""
+            if out_name and out_name in results and target_id:
+                out_df = results[out_name]
+                node_buffers[f"{phys_op.id}:{target_id}"] = [out_df]
+                node_buffers[f"{phys_op.id}.{target_id}"] = [out_df]
 
         # Default fallback
         node_buffers[phys_op.id] = [first_df]

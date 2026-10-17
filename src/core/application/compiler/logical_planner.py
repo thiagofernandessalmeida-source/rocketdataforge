@@ -89,6 +89,18 @@ class LogicalPlanner:
         for node_id in validation_report.topological_order:
             node = draft.nodes[node_id]
 
+            # Para tMap, tenta inferir main_alias se não estiver explícito no config
+            if node.component_type in ("core.tmap", "transform.tmap", "processor.tmap", "tmap"):
+                if not node.config.get("main_alias"):
+                    for edge in draft.edges.values():
+                        if edge.to_port.node_id == node_id and edge.to_port.port_name in ("main", "main_in", "in", ""):
+                            flow_alias = getattr(edge, "data", {}).get("flowName") if hasattr(edge, "data") and isinstance(edge.data, dict) else None
+                            from_port = edge.from_port.port_name
+                            inferred = flow_alias or (from_port if from_port not in ("output", "out", "dataset", "main", "main_out") else None)
+                            if inferred:
+                                node.config["main_alias"] = inferred
+                                break
+
             # Descobre quais nós e portas alimentam as portas deste nó
             input_operator_ids = [
                 f"{edge.from_port.node_id}:{edge.from_port.port_name}"
@@ -188,13 +200,17 @@ class LogicalPlanner:
 
         # tMap Transform
         if component_type in ("core.tmap", "transform.tmap", "processor.tmap", "tmap"):
+            main_id = cfg.get("main_input_id") or (input_ids[0] if input_ids else "")
+            main_alias = cfg.get("main_alias") or "main"
             return LogicalTMap(
                 id=node_id,
-                main_input_id=input_ids[0] if input_ids else "",
+                main_input_id=main_id,
+                main_alias=str(main_alias).strip() or "main",
                 lookups=cfg.get("lookups", []),
                 variables=cfg.get("variables", []),
                 outputs=cfg.get("outputs", []),
-                input_ids=input_ids
+                input_ids=input_ids,
+                raw_config=cfg
             )
 
         if component_type == "core.filter":
@@ -364,16 +380,6 @@ class LogicalPlanner:
                 raw_config=cfg
             )
 
-        # Transformações tMap
-        if component_type in ("core.tmap", "transform.tmap"):
-            return LogicalTMap(
-                id=node_id,
-                main_input_id=cfg.get("main_input_id") or (input_ids[0] if input_ids else ""),
-                lookups=cfg.get("lookups", []),
-                variables=cfg.get("variables", []),
-                outputs=cfg.get("outputs", []),
-                input_ids=input_ids
-            )
 
         # Controle / Sincronização (Barrier / Wait All)
         if component_type in ("control.sync", "control.barrier"):

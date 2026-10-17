@@ -269,3 +269,61 @@ def test_duckdb_sink_uses_custom_table_name(tmp_path):
     assert "consultant_index" in tables
     assert "output_table" not in tables
 
+
+def test_worker_interpolate_tokens_cloned_node_fallback():
+    """Testa se {{postgres_source_1.person_code}} é resolvido quando o nó clonado tem id postgres_source_1_mv9ry0l6hi5f
+
+    e as colunas no dataset estão em UPPERCASE vindo do conector.
+    """
+    worker = ExecutionWorker()
+    row = {"PERSON_CODE": "P12345", "NAME": "Alice"}
+    cloned_upstream_id = "postgres_source_1_mv9ry0l6hi5f"
+
+    # Token com prefixo do nó original antes da clonagem
+    query = "SELECT * FROM consultants WHERE code = {{postgres_source_1.person_code}} AND name = '{{postgres_source_1.name}}'"
+    interpolated = worker._interpolate_tokens(query, row, upstream_id=cloned_upstream_id, is_sql=True)
+
+    assert "code = 'P12345'" in interpolated
+    assert "name = 'Alice'" in interpolated
+
+
+def test_worker_tmap_execution_with_target_id_buffers():
+    """Testa se o ExecutionWorker roteia os buffers do tMap tanto por out_name quanto por targetId."""
+    worker = ExecutionWorker()
+    node_buffers = {
+        "src_main": [pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})]
+    }
+
+    phys_op = PhysicalOperator(
+        id="tmap_1",
+        operator_type="tmap",
+        engine="duckdb",
+        input_ids=["src_main"],
+        config={
+            "main_input_id": "src_main",
+            "main_alias": "main1",
+            "outputs": [
+                {
+                    "name": "out1",
+                    "targetId": "sink_table_4",
+                    "columns": [
+                        {"target": "id", "expression": "main1.id"},
+                        {"target": "val", "expression": "main1.val"}
+                    ]
+                }
+            ]
+        }
+    )
+
+    execution = Execution(id="exec-tmap", pipeline_version_id="ver-1.0.0", correlation_id="corr-tmap")
+    task = execution.add_task("tmap_1")
+
+    worker._execute_tmap_node(phys_op, phys_op.config, None, task, node_buffers)
+
+    # Verifica se os buffers foram mapeados para todas as portas esperadas
+    assert "tmap_1" in node_buffers
+    assert "tmap_1:out1" in node_buffers
+    assert "tmap_1:sink_table_4" in node_buffers
+    assert node_buffers["tmap_1:sink_table_4"][0].height == 2
+
+
