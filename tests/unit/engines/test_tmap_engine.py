@@ -630,3 +630,200 @@ def test_tmap_ghost_variable_elimination_and_duplicate_target_prevention(runner)
     assert clean_out["val"].to_list() == [100, 200]
     assert clean_out["doubled"].to_list() == [20, 40]
 
+
+def test_tmap_case_insensitive_postgres_oracle_joins(runner):
+    """Valida resolução case-insensitive em ON clauses entre Postgres (lowercase) e Oracle (UPPERCASE)."""
+    # Postgres Main: lowercase
+    postgres_df = pl.DataFrame({
+        "cod_cliente": [101, 102, 103],
+        "nome": ["Ana Silva", "Bruno Costa", "Carlos Dias"]
+    })
+
+    # Oracle Lookup: UPPERCASE
+    oracle_df = pl.DataFrame({
+        "COD_CLIENTE": [101, 102],
+        "CIDADE": ["Sao Paulo", "Belo Horizonte"]
+    })
+
+    # Caso 1: Expressões com prefixos em cases cruzados
+    lookups_cruzados = [{
+        "node_id": "oracle_ds",
+        "alias": "ora",
+        "left_keys": ["main.COD_CLIENTE"],   # user escreveu em UPPER
+        "right_keys": ["ora.cod_cliente"],   # user escreveu em lower
+        "match_model": "all",
+        "join_model": "left_outer"
+    }]
+
+    outputs = [{
+        "name": "out_harmonizado",
+        "columns": [
+            {"name": "cliente", "expression": "main.nome"},
+            {"name": "cidade", "expression": "ora.CIDADE"}
+        ]
+    }]
+
+    res1 = runner.execute_tmap_transform(
+        main_df=postgres_df,
+        lookups=lookups_cruzados,
+        lookup_dfs={"oracle_ds": oracle_df},
+        variables=[],
+        outputs=outputs
+    )
+    df1 = res1["out_harmonizado"]
+    assert df1.height == 3
+    assert df1.filter(pl.col("cliente") == "Ana Silva")["cidade"][0] == "Sao Paulo"
+    assert df1.filter(pl.col("cliente") == "Carlos Dias")["cidade"][0] is None
+
+    # Caso 2: Chaves diretas sem prefixo (sem dot)
+    lookups_diretos = [{
+        "node_id": "oracle_ds",
+        "alias": "ora",
+        "left_keys": ["COD_CLIENTE"],
+        "right_keys": ["cod_cliente"],
+        "match_model": "all",
+        "join_model": "left_outer"
+    }]
+    res2 = runner.execute_tmap_transform(
+        main_df=postgres_df,
+        lookups=lookups_diretos,
+        lookup_dfs={"oracle_ds": oracle_df},
+        variables=[],
+        outputs=outputs
+    )
+    df2 = res2["out_harmonizado"]
+    assert df2.height == 3
+    assert df2.filter(pl.col("cliente") == "Bruno Costa")["cidade"][0] == "Belo Horizonte"
+
+
+def test_tmap_coalesce_duplicate_target_custom_aliases(runner):
+    """Valida consolidação via COALESCE quando colunas são mapeadas de Main e Lookup com aliases arbitrários (ex: pg_src e oracle_ref)."""
+    main_df = pl.DataFrame({
+        "id": [1, 2, 3],
+        "email": ["user1@empresa.com", None, "user3@empresa.com"]
+    })
+    lookup_df = pl.DataFrame({
+        "id": [1, 2, 3],
+        "email_secundario": ["backup1@gmail.com", "backup2@gmail.com", "backup3@gmail.com"]
+    })
+
+    outputs = [{
+        "name": "contatos",
+        "columns": [
+            {"target": "email_final", "expression": "pg_src.email"},
+            {"target": "email_final", "expression": "oracle_ref.email_secundario"}
+        ]
+    }]
+
+    res = runner.execute_tmap_transform(
+        main_df=main_df,
+        lookups=[{
+            "node_id": "oracle_ref_id",
+            "alias": "oracle_ref",
+            "left_keys": ["pg_src.id"],
+            "right_keys": ["oracle_ref.id"],
+            "match_model": "unique"
+        }],
+        lookup_dfs={"oracle_ref_id": lookup_df},
+        variables=[],
+        outputs=outputs,
+        main_alias="pg_src"
+    )
+
+    out = res["contatos"]
+    assert out.columns == ["email_final"]
+    assert out.height == 3
+    # id 1 tem email no main -> mantem user1@empresa.com
+    # id 2 tem None no main -> pega backup2@gmail.com do lookup
+    # id 3 tem email no main -> mantem user3@empresa.com
+    assert out["email_final"].to_list() == ["user1@empresa.com", "backup2@gmail.com", "user3@empresa.com"]
+
+
+def test_tmap_orphan_template_variable_cleanup(runner):
+    """Valida que variáveis órfãs de templates antigos (como row1.Title) não quebram a compilação SQL quando não utilizadas."""
+    main_df = pl.DataFrame({
+        "id": [1, 2],
+        "customer_name": ["Alice", "Bob"]
+    })
+
+    # Variável órfã que referencia um campo 'Title' que NÃO existe no main_df
+    variables = [
+        {"name": "Title", "expression": "row1.Title", "type": "String"},
+        {"name": "orphan_legacy_var", "expression": "row99.LegacyField + 10", "type": "Integer"}
+    ]
+
+    # Saída usa campos válidos e possui um target chamado 'title'
+    outputs = [{
+        "name": "clientes_formatados",
+        "columns": [
+            {"name": "id", "expression": "main.id"},
+            {"name": "title", "expression": "'Dr(a). ' || main.customer_name"}
+        ]
+    }]
+
+    res = runner.execute_tmap_transform(
+        main_df=main_df,
+        lookups=[],
+        lookup_dfs={},
+        variables=variables,
+        outputs=outputs
+    )
+
+    out = res["clientes_formatados"]
+    assert out.height == 2
+    assert out["title"].to_list() == ["Dr(a). Alice", "Dr(a). Bob"]
+
+
+def test_tmap_execution_with_duckdb_sink_persistence(tmp_path, runner):
+    """Valida execução completa do tMap com lookup e persistência em DuckDB Sink em disco."""
+    import duckdb
+
+    main_df = pl.DataFrame({
+        "order_id": [1001, 1002],
+        "prod_id": [10, 20],
+        "qty": [2, 5]
+    })
+    lookup_df = pl.DataFrame({
+        "prod_id": [10, 20],
+        "unit_price": [15.5, 30.0]
+    })
+
+    lookups = [{
+        "node_id": "lkp_prods",
+        "alias": "prods",
+        "left_keys": ["main.prod_id"],
+        "right_keys": ["prods.prod_id"],
+        "match_model": "unique"
+    }]
+
+    outputs = [{
+        "name": "faturamento",
+        "columns": [
+            {"name": "order_id", "expression": "main.order_id"},
+            {"name": "total", "expression": "main.qty * prods.unit_price"}
+        ]
+    }]
+
+    res = runner.execute_tmap_transform(
+        main_df=main_df,
+        lookups=lookups,
+        lookup_dfs={"lkp_prods": lookup_df},
+        variables=[],
+        outputs=outputs
+    )
+
+    out_df = res["faturamento"]
+    assert out_df.height == 2
+    assert out_df["total"].to_list() == [31.0, 150.0]
+
+    # Persiste no DuckDB Sink em disco
+    db_file = str(tmp_path / "faturamento_sink.duckdb")
+    con = duckdb.connect(db_file)
+    con.register("df_arrow", out_df.to_arrow())
+    con.execute("CREATE TABLE tbl_faturamento AS SELECT * FROM df_arrow;")
+    saved_count = con.execute("SELECT COUNT(*) FROM tbl_faturamento").fetchone()[0]
+    con.close()
+
+    assert saved_count == 2
+
+

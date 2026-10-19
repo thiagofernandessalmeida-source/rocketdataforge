@@ -117,9 +117,10 @@ class WorkspaceManager:
 
         return ws_path
 
-    def get_workspace_info(self, workspace_path: Optional[str] = None) -> Dict[str, Any]:
+    def get_workspace_info(self, workspace_path: Optional[str] = None, path: Optional[str] = None, **kwargs: Any) -> Dict[str, Any]:
         """Retorna informações detalhadas do workspace."""
-        ws_path = self.ensure_workspace_structure(workspace_path)
+        target_path = path or workspace_path or kwargs.get("workspace_path") or kwargs.get("path")
+        ws_path = self.ensure_workspace_structure(target_path)
         meta_file = os.path.join(ws_path, "workspace.json")
         name = os.path.basename(ws_path)
 
@@ -180,14 +181,25 @@ class WorkspaceManager:
             "recentWorkspaces": recent,
         }
 
-    def set_active_workspace(self, workspace_path: str, name: Optional[str] = None) -> Dict[str, Any]:
+    def set_active_workspace(
+        self,
+        workspace_path: Optional[str] = None,
+        path: Optional[str] = None,
+        name: Optional[str] = None,
+        **kwargs: Any
+    ) -> Dict[str, Any]:
         """Altera o workspace ativo e o salva no histórico de recentes."""
-        clean_path = str(workspace_path).strip().strip('"\'')
+        target_path = path or workspace_path or kwargs.get("workspace_path") or kwargs.get("path")
+        if not target_path or not str(target_path).strip():
+            raise ValueError("Caminho do workspace é obrigatório.")
+
+        clean_path = str(target_path).strip().strip('"\'')
         abs_path = os.path.abspath(clean_path)
         self.ensure_workspace_structure(abs_path)
 
-        if name:
-            clean_name = str(name).strip().strip('"\'')
+        resolved_name = name or kwargs.get("name")
+        if resolved_name:
+            clean_name = str(resolved_name).strip().strip('"\'')
             meta_file = os.path.join(abs_path, "workspace.json")
             try:
                 meta = {}

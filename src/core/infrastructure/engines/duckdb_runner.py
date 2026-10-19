@@ -601,6 +601,7 @@ class DuckDBRunner:
 
         # ─── 2. Processa cada Lookup com Views, Joins, Filtros e Match Models ───
         inner_join_checks = []
+        all_lookup_aliases: Set[str] = set()
 
         for idx, lk in enumerate(lookups):
             node_id = lk.get("node_id") or lk.get("id") or ""
@@ -620,6 +621,8 @@ class DuckDBRunner:
                 lk_aliases.add(re.sub(r'[^a-zA-Z0-9_]', '_', str(node_id).strip()).lower())
             if lk.get("label"):
                 lk_aliases.add(str(lk.get("label")).lower())
+
+            all_lookup_aliases.update(lk_aliases)
 
             for la in lk_aliases:
                 alias_map[la] = {"table_ref": "_tmap_working", "columns": lk_col_map}
@@ -664,11 +667,33 @@ class DuckDBRunner:
                 clean_left = clean_raw_left.strip('"').strip("'")
                 if "_tmap_working." not in t_left:
                     if "." not in clean_left:
-                        t_left = f'_tmap_working."{clean_left}"'
+                        clean_lower = clean_left.lower()
+                        matched = False
+                        for alias_name, alias_info in alias_map.items():
+                            c_map = alias_info.get("columns", {})
+                            if clean_lower in c_map:
+                                t_left = f'_tmap_working."{alias_name}.{clean_lower}"'
+                                matched = True
+                                break
+                        if not matched:
+                            t_left = f'_tmap_working."{clean_left}"'
                     else:
                         prefix_left, col_left = clean_left.split(".", 1)
-                        if prefix_left.lower() in alias_map:
-                            t_left = f'_tmap_working."{prefix_left.lower()}.{col_left.lower()}"'
+                        clean_col_left = col_left.strip('"').strip("'")
+                        prefix_lower = prefix_left.lower()
+                        clean_col_lower = clean_col_left.lower()
+                        if prefix_lower in alias_map:
+                            t_left = f'_tmap_working."{prefix_lower}.{clean_col_lower}"'
+                        else:
+                            matched = False
+                            for alias_name, alias_info in alias_map.items():
+                                c_map = alias_info.get("columns", {})
+                                if clean_col_lower in c_map:
+                                    t_left = f'_tmap_working."{alias_name}.{clean_col_lower}"'
+                                    matched = True
+                                    break
+                            if not matched:
+                                t_left = f'_tmap_working."{clean_left}"'
 
                 clean_raw_right = re.sub(r'^\{\{?|\}\}?$', '', raw_right).strip().strip('"').strip("'")
                 if "." in clean_raw_right:
@@ -746,13 +771,22 @@ class DuckDBRunner:
             all_refs_parts.append(str(lk.get("filter_expression") or ""))
         all_refs_text = " ".join(all_refs_parts)
 
+        # Identifica colunas de entrada para evitar falsos positivos de variáveis com mesmo nome de coluna
+        known_input_cols_lower = {c.lower() for c in main_df.columns}
+        for lk_df in lookup_dfs.values():
+            known_input_cols_lower.update(c.lower() for c in lk_df.columns)
+
         needed_var_names = set()
         for v in variables:
             v_name = v.get("name")
-            if v_name and (
-                re.search(rf'\bVar\.{re.escape(v_name)}\b', all_refs_text, re.IGNORECASE) or
-                re.search(rf'\b{re.escape(v_name)}\b', all_refs_text, re.IGNORECASE)
-            ):
+            if not v_name:
+                continue
+            is_referenced_as_var = bool(re.search(rf'\bVar\.{re.escape(v_name)}\b', all_refs_text, re.IGNORECASE))
+            is_referenced_directly = (
+                v_name.lower() not in known_input_cols_lower and
+                bool(re.search(rf'(?<![\.\w]){re.escape(v_name)}\b', all_refs_text, re.IGNORECASE))
+            )
+            if is_referenced_as_var or is_referenced_directly:
                 needed_var_names.add(v_name)
 
         changed = True
@@ -765,8 +799,12 @@ class DuckDBRunner:
                     for other_v in variables:
                         other_name = other_v.get("name")
                         if other_name and other_name != v_name and other_name not in needed_var_names:
-                            if re.search(rf'\bVar\.{re.escape(other_name)}\b', v_expr, re.IGNORECASE) or \
-                               re.search(rf'\b{re.escape(other_name)}\b', v_expr, re.IGNORECASE):
+                            is_ref_var = bool(re.search(rf'\bVar\.{re.escape(other_name)}\b', v_expr, re.IGNORECASE))
+                            is_ref_direct = (
+                                other_name.lower() not in known_input_cols_lower and
+                                bool(re.search(rf'(?<![\.\w]){re.escape(other_name)}\b', v_expr, re.IGNORECASE))
+                            )
+                            if is_ref_var or is_ref_direct:
                                 needed_var_names.add(other_name)
                                 changed = True
 
@@ -816,9 +854,19 @@ class DuckDBRunner:
                     conn.execute("DROP TABLE _tmap_working;")
                     conn.execute(f"ALTER TABLE _tmap_var_step_{v_idx} RENAME TO _tmap_working;")
                 except Exception as e:
-                    logger.warning(f"Erro ao avaliar variável '{var_name}': {e}. Criando coluna NULL.")
-                    conn.execute(f'ALTER TABLE _tmap_working ADD COLUMN "Var.{var_name}" VARCHAR;')
-                    conn.execute(f'ALTER TABLE _tmap_working ADD COLUMN "{var_name}" VARCHAR;')
+                    logger.warning(f"Erro ao avaliar variável '{var_name}': {e}. Criando coluna NULL de fallback.")
+                    existing_cols_lower = {r[0].lower() for r in conn.execute("DESCRIBE _tmap_working").fetchall()}
+                    var_col_name = f"Var.{var_name}"
+                    if var_col_name.lower() not in existing_cols_lower:
+                        try:
+                            conn.execute(f'ALTER TABLE _tmap_working ADD COLUMN "{var_col_name}" VARCHAR;')
+                        except Exception:
+                            pass
+                    if var_name.lower() not in existing_cols_lower:
+                        try:
+                            conn.execute(f'ALTER TABLE _tmap_working ADD COLUMN "{var_name}" VARCHAR;')
+                        except Exception:
+                            pass
 
         # ─── 4. Processa Tabelas de Saída, Rejeições e Deduplicação Defensiva ───
         results: Dict[str, pl.DataFrame] = {}
@@ -879,16 +927,44 @@ class DuckDBRunner:
                         # Coluna duplicada detectada!
                         prev_entry = seen_targets[target_lower]
                         prev_expr = prev_entry["raw_expr"]
-                        # Se uma for de lookup e outra de main (ou vice-versa):
+                        prev_idx = prev_entry["index"]
+
+                        def detect_flow_type(expr_str: str) -> str:
+                            s_low = expr_str.lower()
+                            for ma in main_aliases:
+                                if re.search(rf'\b{re.escape(ma)}\.', s_low):
+                                    return "main"
+                            for la in all_lookup_aliases:
+                                if re.search(rf'\b{re.escape(la)}\.', s_low):
+                                    return "lookup"
+                            if "lkp" in s_low or re.search(r'\brow[2-9]\b', s_low):
+                                return "lookup"
+                            for c_m in main_df.columns:
+                                if re.search(rf'\b{re.escape(c_m.lower())}\b', s_low):
+                                    return "main"
+                            return "unknown"
+
+                        flow_prev = detect_flow_type(prev_expr)
+                        flow_curr = detect_flow_type(raw_expr)
+
                         is_lkp_main_pair = (
+                            (flow_prev == "main" and flow_curr == "lookup") or
+                            (flow_prev == "lookup" and flow_curr == "main") or
+                            (flow_prev == "lookup" and flow_curr == "lookup") or
                             ("lkp" in raw_expr.lower() and ("main" in prev_expr.lower() or "row1" in prev_expr.lower())) or
                             ("lkp" in prev_expr.lower() and ("main" in raw_expr.lower() or "row1" in raw_expr.lower()))
                         )
                         if is_lkp_main_pair:
                             t_expr_curr = self.compile_tmap_expression(raw_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
-                            t_expr_prev = self.compile_tmap_expression(prev_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
-                            prev_idx = prev_entry["index"]
-                            select_items[prev_idx] = f'COALESCE(({t_expr_prev}), ({t_expr_curr})) AS "{target_name}"'
+                            prev_compiled = prev_entry.get("compiled_expr")
+                            if not prev_compiled:
+                                prev_compiled = self.compile_tmap_expression(prev_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
+
+                            consolidated_sql = f'COALESCE(({prev_compiled}), ({t_expr_curr}))'
+
+                            select_items[prev_idx] = f'{consolidated_sql} AS "{target_name}"'
+                            prev_entry["compiled_expr"] = consolidated_sql
+                            prev_entry["raw_expr"] = f"COALESCE({prev_expr}, {raw_expr})"
                             logger.warning(
                                 f"Coluna de saída duplicada '{target_name}' no output '{out_name}' consolidada com COALESCE({prev_expr}, {raw_expr})."
                             )
@@ -901,14 +977,14 @@ class DuckDBRunner:
                                 new_target = f"{target_name}_{counter}"
                             t_expr = self.compile_tmap_expression(raw_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
                             select_items.append(f'({t_expr}) AS "{new_target}"')
-                            seen_targets[new_target.lower()] = {"raw_expr": raw_expr, "index": len(select_items) - 1}
+                            seen_targets[new_target.lower()] = {"raw_expr": raw_expr, "index": len(select_items) - 1, "compiled_expr": t_expr}
                             logger.warning(
                                 f"Coluna de saída duplicada '{target_name}' no output '{out_name}' renomeada defensivamente para '{new_target}'."
                             )
                     else:
                         t_expr = self.compile_tmap_expression(raw_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
                         select_items.append(f'({t_expr}) AS "{target_name}"')
-                        seen_targets[target_lower] = {"raw_expr": raw_expr, "index": len(select_items) - 1}
+                        seen_targets[target_lower] = {"raw_expr": raw_expr, "index": len(select_items) - 1, "compiled_expr": t_expr}
 
                 select_sql = ", ".join(select_items)
             else:
@@ -920,7 +996,8 @@ class DuckDBRunner:
                     orig_main_cols = [f'_tmap_working."{c}" AS "{c}"' for c in main_df.columns if not c.startswith("_tmap")]
                     select_sql = ", ".join(orig_main_cols) if orig_main_cols else "*"
 
-            query = f"SELECT {select_sql} FROM _tmap_working{where_sql};"
+            order_sql = " ORDER BY _tmap_main_idx ASC"
+            query = f"SELECT {select_sql} FROM _tmap_working{where_sql}{order_sql};"
             try:
                 out_df = self.execute_query_to_polars(query, conn=conn)
             except Exception as e:

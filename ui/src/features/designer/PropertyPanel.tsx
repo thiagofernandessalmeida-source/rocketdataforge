@@ -406,10 +406,6 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
     if (selectedNode) {
       setEditingNodeId(selectedNode.id);
       setIsRenamingId(false);
-      const selCt = selectedNode.data?.componentType || "";
-      if (selCt === "core.tmap" || selCt === "transform.tmap") {
-        setShowTMapModal(true);
-      }
     }
   }, [selectedNode?.id]);
 

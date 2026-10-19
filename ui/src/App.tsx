@@ -2216,13 +2216,7 @@ export const App: React.FC = () => {
                 <MultiCanvasContainer
                   job={activeJob}
                   onSelectNode={(node) => {
-                    if (isTMapNode(node)) {
-                      setTmapModalNode(node);
-                      setSelectedNode(null);
-                      setFloatingNode(null);
-                    } else {
-                      setSelectedNode(node);
-                    }
+                    setSelectedNode(node);
                   }}
                   onDoubleClickNode={(node) => {
                     if (isTMapNode(node)) {
@@ -2250,13 +2244,7 @@ export const App: React.FC = () => {
                     setNodes={setNodes}
                     setEdges={setEdges}
                     onSelectNode={(node) => {
-                      if (isTMapNode(node)) {
-                        setTmapModalNode(node);
-                        setSelectedNode(null);
-                        setFloatingNode(null);
-                      } else {
-                        setSelectedNode(node);
-                      }
+                      setSelectedNode(node);
                     }}
                     onDoubleClickNode={(node) => {
                       if (isTMapNode(node)) {

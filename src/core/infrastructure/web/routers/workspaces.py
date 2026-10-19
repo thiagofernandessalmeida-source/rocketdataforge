@@ -149,7 +149,7 @@ def get_current_local_workspace():
 @router.post("/workspaces/local/select")
 def select_local_workspace(payload: dict):
     """Seleciona ou cria um workspace no caminho especificado."""
-    path = payload.get("path")
+    path = payload.get("path") or payload.get("workspace_path")
     if not path or not str(path).strip():
         raise HTTPException(status_code=400, detail="Caminho do workspace é obrigatório.")
     clean_path = str(path).strip().strip('"\'')

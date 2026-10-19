@@ -76,3 +76,55 @@ def test_workspace_manager_switch_and_sync():
         assert len(loaded["jobs"]) == 1
         assert loaded["jobs"][0]["name"] == "ETL Vendas"
         assert len(loaded["connections"]) == 1
+
+
+def test_workspace_manager_set_active_workspace_keyword_arguments():
+    """Valida que set_active_workspace aceita path, workspace_path e kwargs sem erro de unexpected keyword argument."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        mgr = WorkspaceManager(config_dir=tmpdir)
+
+        # 1. Chamada com path explicitamente nomeado (conforme rota FastAPI)
+        path_test1 = os.path.join(tmpdir, "WsPathNamed")
+        ws1 = mgr.set_active_workspace(path=path_test1, name="WsPathNamed")
+        assert ws1["name"] == "WsPathNamed"
+        assert os.path.isdir(path_test1)
+
+        # 2. Chamada com workspace_path explicitamente nomeado
+        path_test2 = os.path.join(tmpdir, "WsWorkspacePathNamed")
+        ws2 = mgr.set_active_workspace(workspace_path=path_test2, name="WsWorkspacePathNamed")
+        assert ws2["name"] == "WsWorkspacePathNamed"
+        assert os.path.isdir(path_test2)
+
+        # 3. Chamada via **kwargs
+        path_test3 = os.path.join(tmpdir, "WsKwargs")
+        kwargs_dict = {"path": path_test3, "name": "WsKwargs"}
+        ws3 = mgr.set_active_workspace(**kwargs_dict)
+        assert ws3["name"] == "WsKwargs"
+        assert os.path.isdir(path_test3)
+
+
+def test_workspace_manager_api_select_workspace():
+    """Valida via API FastAPI que a rota /workspaces/local/select carrega os metadados sem exceções."""
+    from fastapi.testclient import TestClient
+    from src.core.infrastructure.web.main import app
+
+    client = TestClient(app)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target_ws = os.path.join(tmpdir, "harmonizacao_brasil_test")
+
+        # Payload com 'path'
+        resp = client.post("/api/v1/workspaces/local/select", json={"path": target_ws, "name": "Harmonizacao Test"})
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["name"] == "Harmonizacao Test"
+        assert os.path.isdir(data["path"])
+        assert "jobsDir" in data
+        assert "dataDir" in data
+
+        # Payload com 'workspace_path'
+        target_ws2 = os.path.join(tmpdir, "harmonizacao_brasil_test2")
+        resp2 = client.post("/api/v1/workspaces/local/select", json={"workspace_path": target_ws2, "name": "Harmonizacao Test 2"})
+        assert resp2.status_code == 200, resp2.text
+        data2 = resp2.json()
+        assert data2["name"] == "Harmonizacao Test 2"
+        assert os.path.isdir(data2["path"])
