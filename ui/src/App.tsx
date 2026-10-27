@@ -43,6 +43,8 @@ import {
   WorkspaceInfo,
   fetchCurrentWorkspaceInfo,
   hydrateFromActiveWorkspace,
+  sanitizeNode,
+  sanitizeEdge,
 } from "./store/jobStore";
 import { useJobStore } from "./store/useJobStore";
 import { telemetryStore } from "./store/telemetryStore";
@@ -1954,12 +1956,16 @@ export const App: React.FC = () => {
         exportedAt: new Date().toISOString(),
         job: {
           ...job,
-          nodes: currentNodes,
-          edges: currentEdges,
+          nodes: currentNodes.map(sanitizeNode),
+          edges: currentEdges.map(sanitizeEdge),
         },
-        nodes: currentNodes,
-        edges: currentEdges,
-        cells: job.cells || [],
+        nodes: currentNodes.map(sanitizeNode),
+        edges: currentEdges.map(sanitizeEdge),
+        cells: (job.cells || []).map((c: any) => ({
+          ...c,
+          nodes: (c.nodes || []).map(sanitizeNode),
+          edges: (c.edges || []).map(sanitizeEdge),
+        })),
         nodeSchemas: job.nodeSchemas || {},
         connections: globalConnections,
         contextVariables: contextVars,

@@ -2,6 +2,7 @@ import React, { useState, useCallback, useRef, useEffect } from "react";
 import { Node } from "reactflow";
 import { CanvasNodeData } from "../../types";
 import { SchemaEditor, SchemaEditorModal } from "./SchemaEditor";
+import { ImportSchemaModal } from "./ImportSchemaModal";
 import { TMapModal, TMapConfig } from "./TMapModal";
 import { api } from "../../api/client";
 import {
@@ -395,6 +396,7 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
 }) => {
   const [showVarHint, setShowVarHint] = useState(false);
   const [showSchemaModal, setShowSchemaModal] = useState(false);
+  const [showImportSchemaModal, setShowImportSchemaModal] = useState(false);
   const [showTMapModal, setShowTMapModal] = useState(false);
   const [activeTab, setActiveTab] = useState<"config" | "schema" | "documentation">("config");
   const [editingNodeId, setEditingNodeId] = useState<string>("");
@@ -1754,6 +1756,16 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
 
         {activeTab === "schema" && (
           <div className="prop-content">
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => setShowImportSchemaModal(true)}
+                title="Importar schema de outro componente do Job"
+              >
+                <Layers size={12} style={{ marginRight: 5 }} /> Importar de outro componente
+              </button>
+            </div>
             <SchemaEditor
               schema={schema}
               onChange={handleSchemaChange}
@@ -1793,6 +1805,18 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
           </>
         )}
       </div>
+
+      {/* Import Schema Modal */}
+      {showImportSchemaModal && (
+        <ImportSchemaModal
+          isOpen={showImportSchemaModal}
+          onClose={() => setShowImportSchemaModal(false)}
+          onImport={(imported) => handleSchemaChange(imported)}
+          currentSchema={schema}
+          excludeNodeId={id}
+          title={`Importar Schema para: ${data.label || id}`}
+        />
+      )}
 
       {/* Schema Modal */}
       {showSchemaModal && (

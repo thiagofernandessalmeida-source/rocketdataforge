@@ -3,9 +3,19 @@ import {
   X, Plus, Trash2, Loader2, Wand2, ChevronUp, ChevronDown,
   Key, AlertCircle, Check, Table2, ArrowRight, ArrowLeft,
   ChevronsRight, ChevronsLeft, RefreshCw, Search, ArrowDownToLine,
-  ArrowUpFromLine, Layers, HelpCircle, CheckSquare, Square
+  ArrowUpFromLine, Layers, HelpCircle, CheckSquare, Square,
+  Copy, Clipboard, Sparkles
 } from "lucide-react";
 import { SchemaColumn, SchemaColumnType } from "../../store/jobStore";
+import {
+  copyColumnsToClipboard,
+  readColumnsFromClipboard,
+  resolveSchemaCollisions,
+  serializeSchemaColumns,
+  deserializeSchemaColumns,
+  SCHEMA_MIME_TYPE,
+} from "../../utils/schemaClipboard";
+import { ImportSchemaModal } from "./ImportSchemaModal";
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -172,6 +182,49 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
     setSelectedComponentKeys(new Set());
   };
 
+  // ─── Clipboard & Import Modal ───────────────────────────────
+  const [showImportModal, setShowImportModal] = useState(false);
+
+  const handleCopyColumns = async () => {
+    const colsToCopy =
+      selectedComponentKeys.size > 0
+        ? schema.filter((c) => selectedComponentKeys.has(c.id))
+        : schema;
+    if (colsToCopy.length === 0) return;
+    await copyColumnsToClipboard(colsToCopy);
+    setInferStatus({
+      type: "success",
+      message: `${colsToCopy.length} coluna(s) copiada(s) para a área de transferência.`,
+    });
+    setTimeout(() => setInferStatus(null), 3000);
+  };
+
+  const handlePasteColumns = async () => {
+    const pasted = await readColumnsFromClipboard();
+    if (pasted && pasted.length > 0) {
+      const merged = resolveSchemaCollisions(schema, pasted, "rename");
+      onChange(merged);
+      setInferStatus({
+        type: "success",
+        message: `${pasted.length} coluna(s) colada(s) com novos identificadores.`,
+      });
+      setTimeout(() => setInferStatus(null), 3000);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
+    if (tag === "input" || tag === "textarea") return;
+
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
+      e.preventDefault();
+      handleCopyColumns();
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
+      e.preventDefault();
+      handlePasteColumns();
+    }
+  };
+
   // ─── Two-Container Transfer Operations ───────
 
   // >> Import all columns from upstream (replace or sync)
@@ -271,7 +324,7 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
   // ─────────────────────────────────────────────────────────────
   if (hasUpstream) {
     return (
-      <div className="schema-two-container">
+      <div className="schema-two-container" tabIndex={0} onKeyDown={handleKeyDown}>
         {/* Top Sync & Info Bar */}
         <div className="schema-flow-bar">
           <div className="schema-flow-info">
@@ -281,6 +334,30 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
             </span>
           </div>
           <div className="schema-flow-actions">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setShowImportModal(true)}
+              title="Importar schema de outro componente do Job"
+            >
+              <Sparkles size={12} /> Importar
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={handleCopyColumns}
+              title="Copiar colunas selecionadas para o clipboard (Ctrl+C)"
+            >
+              <Copy size={12} /> Copiar
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={handlePasteColumns}
+              title="Colar colunas do clipboard (Ctrl+V)"
+            >
+              <Clipboard size={12} /> Colar
+            </button>
             <button
               type="button"
               className="btn btn-secondary schema-sync-btn"
@@ -790,6 +867,14 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
             </div>
           </div>
         </div>
+
+        <ImportSchemaModal
+          isOpen={showImportModal}
+          onClose={() => setShowImportModal(false)}
+          onImport={(imported) => onChange(imported)}
+          currentSchema={schema}
+          title="Importar Schema"
+        />
       </div>
     );
   }
@@ -798,7 +883,7 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
   // RENDER: SINGLE CONTAINER (When No Upstream Node is Available)
   // ─────────────────────────────────────────────────────────────
   return (
-    <div className="schema-editor">
+    <div className="schema-editor" tabIndex={0} onKeyDown={handleKeyDown}>
       {/* Header */}
       <div className="schema-editor-header">
         <div className="schema-editor-title">
@@ -807,6 +892,30 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
           <span className="schema-col-count">{schema.length}</span>
         </div>
         <div className="schema-editor-actions">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => setShowImportModal(true)}
+            title="Importar schema de outro componente"
+          >
+            <Sparkles size={12} /> Importar
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={handleCopyColumns}
+            title="Copiar colunas para área de transferência (Ctrl+C)"
+          >
+            <Copy size={12} /> Copiar
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={handlePasteColumns}
+            title="Colar colunas da área de transferência (Ctrl+V)"
+          >
+            <Clipboard size={12} /> Colar
+          </button>
           {canInfer && onInferRequest && (
             <button
               type="button"
@@ -1077,6 +1186,14 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
           </table>
         </div>
       )}
+
+      <ImportSchemaModal
+        isOpen={showImportModal}
+        onClose={() => setShowImportModal(false)}
+        onImport={(imported) => onChange(imported)}
+        currentSchema={schema}
+        title="Importar Schema"
+      />
     </div>
   );
 };

@@ -1,12 +1,19 @@
-import React, { useState, useMemo, useRef, useEffect } from "react";
+import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import {
   X, Check, Plus, Trash2, GitMerge, ArrowRight, ArrowLeft,
   Table2, Layers, Play, Wand2, Search, Maximize2, Minimize2,
   ChevronDown, ChevronUp, Key, Filter, HelpCircle, AlertCircle,
   Copy, RefreshCw, ChevronsRight, FileCode, CheckSquare, Sparkles,
-  Sliders, Link2, Info, Zap
+  Sliders, Link2, Info, Zap, Undo2, Redo2, Clipboard
 } from "lucide-react";
 import { SchemaColumn, SchemaColumnType } from "../../store/jobStore";
+import {
+  copyColumnsToClipboard,
+  readColumnsFromClipboard,
+  resolveSchemaCollisions,
+} from "../../utils/schemaClipboard";
+import { ImportSchemaModal } from "./ImportSchemaModal";
+import { getBaseApiUrl } from "../../api/client";
 
 // ─── Interfaces ────────────────────────────────────────────────
 
@@ -344,6 +351,218 @@ export const TMapModal: React.FC<TMapModalProps> = ({
 
   const activeOutput = outputs.find((o) => o.id === activeOutputId) || outputs[0];
 
+  // ─── Local Undo / Redo Stack (Isolado do Job global) ─────────
+  interface TMapSnapshot {
+    lookups: TMapLookupConfig[];
+    variables: TMapVariable[];
+    outputs: TMapOutputFlow[];
+  }
+
+  const [historyStack, setHistoryStack] = useState<TMapSnapshot[]>(() => [
+    {
+      lookups,
+      variables,
+      outputs,
+    },
+  ]);
+  const [historyIndex, setHistoryIndex] = useState<number>(0);
+  const isApplyingHistoryRef = useRef(false);
+
+  const pushHistorySnapshot = useCallback(
+    (newLookups: TMapLookupConfig[], newVars: TMapVariable[], newOuts: TMapOutputFlow[]) => {
+      if (isApplyingHistoryRef.current) return;
+      setHistoryStack((prev) => {
+        const sliced = prev.slice(0, historyIndex + 1);
+        const next = [...sliced, { lookups: newLookups, variables: newVars, outputs: newOuts }];
+        if (next.length > 50) next.shift();
+        return next;
+      });
+      setHistoryIndex((prev) => Math.min(prev + 1, 49));
+    },
+    [historyIndex]
+  );
+
+  const handleUndo = useCallback(() => {
+    if (historyIndex > 0) {
+      isApplyingHistoryRef.current = true;
+      const targetIdx = historyIndex - 1;
+      const snap = historyStack[targetIdx];
+      if (snap) {
+        setLookups(snap.lookups);
+        setVariables(snap.variables);
+        setOutputs(snap.outputs);
+        setHistoryIndex(targetIdx);
+      }
+      setTimeout(() => {
+        isApplyingHistoryRef.current = false;
+      }, 0);
+    }
+  }, [historyIndex, historyStack]);
+
+  const handleRedo = useCallback(() => {
+    if (historyIndex < historyStack.length - 1) {
+      isApplyingHistoryRef.current = true;
+      const targetIdx = historyIndex + 1;
+      const snap = historyStack[targetIdx];
+      if (snap) {
+        setLookups(snap.lookups);
+        setVariables(snap.variables);
+        setOutputs(snap.outputs);
+        setHistoryIndex(targetIdx);
+      }
+      setTimeout(() => {
+        isApplyingHistoryRef.current = false;
+      }, 0);
+    }
+  }, [historyIndex, historyStack]);
+
+  const handleModalKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      const isCtrlOrMeta = e.ctrlKey || e.metaKey;
+      if (!isCtrlOrMeta) return;
+
+      const key = e.key.toLowerCase();
+      if (key === "z") {
+        e.preventDefault();
+        e.stopPropagation(); // ISOLA DA HISTÓRIA GLOBAL DO CANVAS
+        if (e.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
+      } else if (key === "y") {
+        e.preventDefault();
+        e.stopPropagation(); // ISOLA DA HISTÓRIA GLOBAL DO CANVAS
+        handleRedo();
+      }
+    },
+    [handleUndo, handleRedo]
+  );
+
+  // ─── Clipboard & Schema Import Operations ─────────────────────
+  const [importModalOutputId, setImportModalOutputId] = useState<string | null>(null);
+
+  const handleCopyOutputColumns = async (outId: string) => {
+    const targetOut = outputs.find((o) => o.id === outId);
+    if (!targetOut || targetOut.columns.length === 0) return;
+    const asSchema: SchemaColumn[] = targetOut.columns.map((c) => ({
+      id: c.id,
+      name: c.target || c.expression || "col",
+      type: c.type || "String",
+      nullable: c.nullable ?? true,
+      length: c.length,
+      precision: c.precision,
+      comment: c.comment,
+    }));
+    await copyColumnsToClipboard(asSchema);
+  };
+
+  const handlePasteOutputColumns = async (outId: string) => {
+    const pasted = await readColumnsFromClipboard();
+    if (!pasted || pasted.length === 0) return;
+    const currentOut = outputs.find((o) => o.id === outId);
+    if (!currentOut) return;
+
+    const currentAsSchema: SchemaColumn[] = currentOut.columns.map((c) => ({
+      id: c.id,
+      name: c.target,
+      type: c.type || "String",
+      nullable: c.nullable ?? true,
+    }));
+
+    const merged = resolveSchemaCollisions(currentAsSchema, pasted, "rename");
+    const newCols: TMapOutputColumn[] = merged.map((col: SchemaColumn) => {
+      const existing = currentOut.columns.find((c) => c.id === col.id);
+      if (existing) return existing;
+      return {
+        id: col.id, // deserializeSchemaColumns já gerou novo UUID
+        target: col.name,
+        expression: col.name,
+        type: col.type,
+        nullable: col.nullable ?? true,
+      };
+    });
+
+    const updatedOutputs = outputs.map((o) => (o.id === outId ? { ...o, columns: newCols } : o));
+    setOutputs(updatedOutputs);
+    pushHistorySnapshot(lookups, variables, updatedOutputs);
+  };
+
+  const handleImportToOutput = (importedCols: SchemaColumn[]) => {
+    if (!importModalOutputId) return;
+    const targetOut = outputs.find((o) => o.id === importModalOutputId);
+    if (!targetOut) return;
+
+    const newCols: TMapOutputColumn[] = importedCols.map((col) => {
+      const existing = targetOut.columns.find(
+        (c) => c.target.toLowerCase() === col.name.toLowerCase()
+      );
+      if (existing) {
+        return {
+          ...existing,
+          type: col.type,
+          nullable: col.nullable,
+        };
+      }
+      return {
+        id: `col-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        target: col.name,
+        expression: col.name,
+        type: col.type,
+        nullable: col.nullable,
+      };
+    });
+
+    const updatedOutputs = outputs.map((o) =>
+      o.id === importModalOutputId ? { ...o, columns: newCols } : o
+    );
+    setOutputs(updatedOutputs);
+    pushHistorySnapshot(lookups, variables, updatedOutputs);
+    setImportModalOutputId(null);
+  };
+
+  // ─── Inline Expression Validation (POST /api/v1/tmap/validate-expression) ───
+  const [validationErrors, setValidationErrors] = useState<Record<string, string | null>>({});
+  const validationTimeouts = useRef<Record<string, any>>({});
+
+  const validateExpressionDebounced = useCallback((key: string, expr: string) => {
+    if (validationTimeouts.current[key]) {
+      clearTimeout(validationTimeouts.current[key]);
+    }
+
+    if (!expr || !expr.trim()) {
+      setValidationErrors((prev) => ({ ...prev, [key]: null }));
+      return;
+    }
+
+    validationTimeouts.current[key] = setTimeout(async () => {
+      try {
+        const baseUrl = getBaseApiUrl();
+        const endpoint = baseUrl.endsWith("/api/v1")
+          ? `${baseUrl}/tmap/validate-expression`
+          : "/api/v1/tmap/validate-expression";
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ expression: expr }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.valid === false) {
+            setValidationErrors((prev) => ({
+              ...prev,
+              [key]: data.error || "Expressão inválida",
+            }));
+          } else {
+            setValidationErrors((prev) => ({ ...prev, [key]: null }));
+          }
+        }
+      } catch (_) {
+        // Offline / mock fallback
+      }
+    }, 400);
+  }, []);
+
   // Lista unificada de nós e colunas a montante para a barra de sugestões (estilo Iterate)
   const upstreamSourcesForChips = useMemo(() => {
     if (availableUpstreamNodes && availableUpstreamNodes.length > 0) {
@@ -675,6 +894,8 @@ export const TMapModal: React.FC<TMapModalProps> = ({
       <div
         className={`modal-container data-mapper-modal ${isMaximized ? "maximized" : ""}`}
         onClick={(e) => e.stopPropagation()}
+        tabIndex={0}
+        onKeyDown={handleModalKeyDown}
       >
         {/* ─── Top Header ─── */}
         <div className="data-mapper-header">
@@ -702,6 +923,23 @@ export const TMapModal: React.FC<TMapModalProps> = ({
 
           {/* Top Actions */}
           <div className="data-mapper-actions">
+            <button
+              className="btn btn-secondary btn-sm"
+              title="Desfazer localmente no tMap (Ctrl+Z)"
+              onClick={handleUndo}
+              disabled={historyIndex <= 0}
+            >
+              <Undo2 size={13} />
+            </button>
+            <button
+              className="btn btn-secondary btn-sm"
+              title="Refazer localmente no tMap (Ctrl+Y)"
+              onClick={handleRedo}
+              disabled={historyIndex >= historyStack.length - 1}
+            >
+              <Redo2 size={13} />
+            </button>
+
             <button
               className="btn btn-secondary btn-sm"
               title="Mapear colunas automaticamente por correspondência de nome"
@@ -1282,7 +1520,22 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                   <div
                     key={out.id}
                     id={`output-card-${out.id}`}
+                    tabIndex={0}
                     className={`mapper-table-card output-stream ${out.id === activeOutputId ? "active-focus" : ""} ${out.is_reject ? "reject-card" : ""}`}
+                    onFocus={() => setActiveOutputId(out.id)}
+                    onKeyDown={(e) => {
+                      const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
+                      if (tag === "input" || tag === "textarea") return;
+                      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleCopyOutputColumns(out.id);
+                      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handlePasteOutputColumns(out.id);
+                      }
+                    }}
                   >
                     {/* Header */}
                     <div className="table-card-header output">
@@ -1308,6 +1561,27 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                       </div>
 
                       <div className="card-header-actions">
+                        <button
+                          className="icon-btn btn-xs"
+                          title="Importar schema de outro componente"
+                          onClick={() => setImportModalOutputId(out.id)}
+                        >
+                          <Layers size={12} />
+                        </button>
+                        <button
+                          className="icon-btn btn-xs"
+                          title="Copiar colunas desta saída (Ctrl+C)"
+                          onClick={() => handleCopyOutputColumns(out.id)}
+                        >
+                          <Copy size={12} />
+                        </button>
+                        <button
+                          className="icon-btn btn-xs"
+                          title="Colar colunas da área de transferência (Ctrl+V)"
+                          onClick={() => handlePasteOutputColumns(out.id)}
+                        >
+                          <Clipboard size={12} />
+                        </button>
                         <button
                           className="icon-btn btn-xs"
                           title="Propriedades e Filtro do Output"
@@ -1428,44 +1702,70 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                             out.columns.map((col, idx) => (
                               <tr key={col.id || idx}>
                                 <td>
-                                  <input
-                                  className="out-cell-input expr-font"
-                                  value={col.expression}
-                                  placeholder="row1.coluna"
-                                  onDragOver={(e) => {
-                                    e.preventDefault();
-                                    e.dataTransfer.dropEffect = "copy";
-                                  }}
-                                  onDrop={(e) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    const draggedExpr = e.dataTransfer.getData("text/plain");
-                                    if (draggedExpr) {
-                                      const newCols = [...out.columns];
-                                      const colBaseName = draggedExpr.split(".").pop() || col.target;
-                                      newCols[idx] = {
-                                        ...col,
-                                        expression: draggedExpr,
-                                        target: col.target.startsWith("col_") || !col.target.trim() ? colBaseName : col.target,
-                                      };
-                                      setOutputs(
-                                        outputs.map((item) =>
-                                          item.id === out.id ? { ...item, columns: newCols } : item
-                                        )
-                                      );
-                                    }
-                                  }}
-                                  onChange={(e) => {
-                                    const newCols = [...out.columns];
-                                    newCols[idx] = { ...col, expression: e.target.value };
-                                    setOutputs(
-                                      outputs.map((item) =>
-                                        item.id === out.id ? { ...item, columns: newCols } : item
-                                      )
-                                    );
-                                  }}
-                                />
-                              </td>
+                                  <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+                                    <input
+                                      className={`out-cell-input expr-font ${validationErrors[`${out.id}-${col.id}`] ? "input-expr-error" : ""}`}
+                                      value={col.expression}
+                                      placeholder="row1.coluna"
+                                      title={validationErrors[`${out.id}-${col.id}`] || undefined}
+                                      style={
+                                        validationErrors[`${out.id}-${col.id}`]
+                                          ? { borderColor: "#ef4444", backgroundColor: "rgba(239, 68, 68, 0.08)", paddingRight: 24 }
+                                          : undefined
+                                      }
+                                      onDragOver={(e) => {
+                                        e.preventDefault();
+                                        e.dataTransfer.dropEffect = "copy";
+                                      }}
+                                      onDrop={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        const draggedExpr = e.dataTransfer.getData("text/plain");
+                                        if (draggedExpr) {
+                                          const newCols = [...out.columns];
+                                          const colBaseName = draggedExpr.split(".").pop() || col.target;
+                                          newCols[idx] = {
+                                            ...col,
+                                            expression: draggedExpr,
+                                            target: col.target.startsWith("col_") || !col.target.trim() ? colBaseName : col.target,
+                                          };
+                                          setOutputs(
+                                            outputs.map((item) =>
+                                              item.id === out.id ? { ...item, columns: newCols } : item
+                                            )
+                                          );
+                                          validateExpressionDebounced(`${out.id}-${col.id}`, draggedExpr);
+                                        }
+                                      }}
+                                      onChange={(e) => {
+                                        const newCols = [...out.columns];
+                                        newCols[idx] = { ...col, expression: e.target.value };
+                                        setOutputs(
+                                          outputs.map((item) =>
+                                            item.id === out.id ? { ...item, columns: newCols } : item
+                                          )
+                                        );
+                                        validateExpressionDebounced(`${out.id}-${col.id}`, e.target.value);
+                                      }}
+                                    />
+                                    {validationErrors[`${out.id}-${col.id}`] && (
+                                      <span
+                                        className="validation-badge-error"
+                                        title={`Erro na expressão: ${validationErrors[`${out.id}-${col.id}`]}`}
+                                        style={{
+                                          position: "absolute",
+                                          right: 6,
+                                          color: "#ef4444",
+                                          display: "inline-flex",
+                                          alignItems: "center",
+                                          cursor: "help",
+                                        }}
+                                      >
+                                        <AlertCircle size={13} />
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
                               <td>
                                 {(() => {
                                   const isDuplicateTarget = Boolean(
@@ -1969,6 +2269,21 @@ export const TMapModal: React.FC<TMapModalProps> = ({
             </div>
           )}
         </div>
+
+        {importModalOutputId && (
+          <ImportSchemaModal
+            isOpen={Boolean(importModalOutputId)}
+            onClose={() => setImportModalOutputId(null)}
+            onImport={handleImportToOutput}
+            currentSchema={(outputs.find((o) => o.id === importModalOutputId)?.columns || []).map((c) => ({
+              id: c.id,
+              name: c.target,
+              type: c.type || "String",
+              nullable: c.nullable ?? true,
+            }))}
+            title={`Importar Schema para Saída: ${outputs.find((o) => o.id === importModalOutputId)?.name || importModalOutputId}`}
+          />
+        )}
       </div>
     </div>
   );

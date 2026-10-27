@@ -47,6 +47,7 @@ export interface CanvasProps {
   setEdges: React.Dispatch<React.SetStateAction<Edge[]>>;
   onSelectNode: (node: Node<CanvasNodeData> | null) => void;
   onDoubleClickNode?: (node: Node<CanvasNodeData>) => void;
+  onNodeDragStop?: (event: React.MouseEvent, node: Node) => void;
   allNodes?: Node<CanvasNodeData>[];
   cellId?: string;
 }
@@ -62,6 +63,7 @@ export const Canvas: React.FC<CanvasProps> = ({
   setEdges,
   onSelectNode,
   onDoubleClickNode,
+  onNodeDragStop,
   allNodes,
   cellId,
 }) => {
@@ -364,6 +366,8 @@ interface TMapOutputChoice {
         onPaneClick={onPaneClick}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
+        onNodeDragStop={onNodeDragStop}
+        deleteKeyCode={null}
         fitView
       >
         <Background

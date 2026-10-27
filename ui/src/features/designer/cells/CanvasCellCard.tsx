@@ -99,13 +99,21 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
   const [metricsTab, setMetricsTab] = useState<"metrics" | "logs">("metrics");
   const [logFilter, setLogFilter] = useState("");
 
-  // Sync internal nodes/edges when cell prop changes externally
+  // Sync internal nodes/edges when cell prop changes externally without cyclic updates
+  const lastSyncedNodesRef = useRef(cell.nodes);
   useEffect(() => {
-    setNodes(cell.nodes || []);
+    if (cell.nodes !== lastSyncedNodesRef.current) {
+      lastSyncedNodesRef.current = cell.nodes;
+      setNodes(cell.nodes || []);
+    }
   }, [cell.nodes, setNodes]);
 
+  const lastSyncedEdgesRef = useRef(cell.edges);
   useEffect(() => {
-    setEdges(cell.edges || []);
+    if (cell.edges !== lastSyncedEdgesRef.current) {
+      lastSyncedEdgesRef.current = cell.edges;
+      setEdges(cell.edges || []);
+    }
   }, [cell.edges, setEdges]);
 
   useEffect(() => {
@@ -135,12 +143,43 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
     return [...otherNodes, ...nodes];
   }, [allCells, cell.id, nodes]);
 
-  // Propagate graph changes to parent container com validação de consistência
+  // Propagação pura de mudanças no ReactFlow sem efeitos colaterais impuros no updater
   const handleNodesChange = useCallback(
     (changes: any) => {
       onNodesChange(changes);
+    },
+    [onNodesChange]
+  );
+
+  const handleEdgesChange = useCallback(
+    (changes: any) => {
+      onEdgesChange(changes);
+    },
+    [onEdgesChange]
+  );
+
+  // Persistência quando o arraste de nó for concluído (onNodeDragStop)
+  const handleNodeDragStop = useCallback(() => {
+    onUpdateGraph(cell.id, nodesRef.current, edgesRef.current);
+  }, [cell.id, onUpdateGraph]);
+
+  // Wrapper para setNodes puro: mutação do estado local isolada e notificação externa fora do updater
+  const handleSetNodes = useCallback(
+    (updater: React.SetStateAction<Node<CanvasNodeData>[]>) => {
       setNodes((currentNodes) => {
-        // Remove arestas que apontavam para nós deletados
+        const rawNext = typeof updater === "function" ? updater(currentNodes) : updater;
+        return rawNext.map((n) => ({
+          ...n,
+          data: {
+            ...n.data,
+            cellId: cell.id,
+          },
+        }));
+      });
+
+      // Notificação e higienização desacopladas da função pura de render
+      setTimeout(() => {
+        const currentNodes = nodesRef.current;
         const validNodeIds = new Set(currentNodes.map((n) => n.id));
         const currentEdges = edgesRef.current;
         const validEdges = currentEdges.filter(
@@ -150,61 +189,84 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
           setEdges(validEdges);
         }
         onUpdateGraph(cell.id, currentNodes, validEdges);
-        return currentNodes;
-      });
-    },
-    [onNodesChange, onUpdateGraph, cell.id, setNodes, setEdges]
-  );
-
-  const handleEdgesChange = useCallback(
-    (changes: any) => {
-      onEdgesChange(changes);
-      setEdges((currentEdges) => {
-        onUpdateGraph(cell.id, nodesRef.current, currentEdges);
-        return currentEdges;
-      });
-    },
-    [onEdgesChange, onUpdateGraph, cell.id, setEdges]
-  );
-
-  // Wrapper para setNodes que propaga adições e mudanças imediatas ao jobStore garantindo cellId
-  const handleSetNodes = useCallback(
-    (updater: React.SetStateAction<Node<CanvasNodeData>[]>) => {
-      setNodes((currentNodes) => {
-        const rawNext = typeof updater === "function" ? updater(currentNodes) : updater;
-        const nextNodes = rawNext.map((n) => ({
-          ...n,
-          data: {
-            ...n.data,
-            cellId: cell.id,
-          },
-        }));
-        const validNodeIds = new Set(nextNodes.map((n) => n.id));
-        const currentEdges = edgesRef.current;
-        const validEdges = currentEdges.filter(
-          (e) => validNodeIds.has(e.source) && validNodeIds.has(e.target)
-        );
-        if (validEdges.length !== currentEdges.length) {
-          setEdges(validEdges);
-        }
-        onUpdateGraph(cell.id, nextNodes, validEdges);
-        return nextNodes;
-      });
+      }, 0);
     },
     [cell.id, onUpdateGraph, setNodes, setEdges]
   );
 
-  // Wrapper para setEdges que propaga adições de arestas ao jobStore
+  // Wrapper para setEdges puro
   const handleSetEdges = useCallback(
     (updater: React.SetStateAction<Edge[]>) => {
       setEdges((currentEdges) => {
-        const nextEdges = typeof updater === "function" ? updater(currentEdges) : updater;
-        onUpdateGraph(cell.id, nodesRef.current, nextEdges);
-        return nextEdges;
+        return typeof updater === "function" ? updater(currentEdges) : updater;
       });
+
+      setTimeout(() => {
+        onUpdateGraph(cell.id, nodesRef.current, edgesRef.current);
+      }, 0);
     },
     [cell.id, onUpdateGraph, setEdges]
   );
+
+  // Handler de teclado para deleção atômica de nós e arestas (RF-01.3 & T-1.2)
+  // deleteKeyCode={null} no ReactFlow transfere o controle para este handleKeyDown quando isActive
+  useEffect(() => {
+    if (!isActive) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+
+      // Ignora se o elemento ativo pertencer a inputs de formulário, textareas ou instâncias Monaco
+      const activeEl = document.activeElement;
+      if (activeEl) {
+        const tagName = activeEl.tagName ? activeEl.tagName.toUpperCase() : "";
+        if (tagName === "INPUT" || tagName === "TEXTAREA" || tagName === "SELECT") {
+          return;
+        }
+        if ((activeEl as HTMLElement).isContentEditable) {
+          return;
+        }
+        if (activeEl.closest && activeEl.closest(".monaco-editor")) {
+          return;
+        }
+      }
+
+      const currentNodes = nodesRef.current;
+      const currentEdges = edgesRef.current;
+
+      const selectedNodeIds = new Set(
+        currentNodes.filter((n) => n.selected).map((n) => n.id)
+      );
+      const selectedEdgeIds = new Set(
+        currentEdges.filter((e) => e.selected).map((e) => e.id)
+      );
+
+      if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return;
+
+      e.preventDefault();
+
+      // Deleção atômica: deletar nó remove o nó e todas as arestas conectadas
+      const nextNodes = currentNodes.filter((n) => !selectedNodeIds.has(n.id));
+      const nextEdges = currentEdges.filter(
+        (e) =>
+          !selectedEdgeIds.has(e.id) &&
+          !selectedNodeIds.has(e.source) &&
+          !selectedNodeIds.has(e.target)
+      );
+
+      setNodes(nextNodes);
+      setEdges(nextEdges);
+      onUpdateGraph(cell.id, nextNodes, nextEdges);
+
+      if (selectedNodeIds.size > 0) {
+        onSelectNode(null);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isActive, cell.id, onUpdateGraph, onSelectNode, setNodes, setEdges]);
+
 
   // Auto-Layout Direcional (Horizontal 'LR' ou Vertical 'TB')
   const handleApplyAutoLayout = useCallback(
@@ -886,6 +948,7 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
               setEdges={handleSetEdges}
               onSelectNode={handleSelectNode}
               onDoubleClickNode={handleDoubleClickNode}
+              onNodeDragStop={handleNodeDragStop}
               allNodes={allJobNodes}
               cellId={cell.id}
             />

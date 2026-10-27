@@ -17,6 +17,7 @@ from src.core.infrastructure.web.routers import (
     git,
     pipelines,
     policies,
+    tmap,
     versions,
     workspaces,
 )
@@ -105,6 +106,7 @@ def create_app() -> FastAPI:
         git.router,
         policies.router,
         autodoc.router,
+        tmap.router,
     ]
 
     for r in api_routers:

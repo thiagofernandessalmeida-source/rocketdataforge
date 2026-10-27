@@ -6,7 +6,8 @@ from typing import Any, Dict, List, Optional
 
 import duckdb
 import polars as pl
-from src.core.domain.shared.exceptions import DomainError
+from src.core.domain.shared.exceptions import DomainError, TMapExecutionError
+from src.core.application.compiler.expressions.compiler import compile_expression
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +47,14 @@ class DuckDBRunner:
         """Executa consulta SQL e retorna o resultado como um DataFrame Polars."""
         active_conn = conn or self.get_connection()
         try:
-            arrow_table = active_conn.execute(query).arrow()
-            return pl.from_arrow(arrow_table)
+            return active_conn.execute(query).pl()
         except Exception as e:
-            raise DomainError(f"Erro ao executar consulta no DuckDB: {str(e)}", code="ERR_ENGINE_DUCKDB")
+            # Fallback for older duckdb or specific environments
+            try:
+                arrow_table = active_conn.execute(query).arrow()
+                return pl.from_arrow(arrow_table)
+            except Exception:
+                raise DomainError(f"Erro ao executar consulta no DuckDB: {str(e)}", code="ERR_ENGINE_DUCKDB")
 
     def execute_query_on_file(
         self,
@@ -441,7 +446,35 @@ class DuckDBRunner:
         vars_map: Optional[Dict[str, str]] = None,
         known_columns: Optional[List[str]] = None
     ) -> str:
-        """Transpila expressões tMap para DuckDB SQL com resolução case-insensitive de aliases e colunas."""
+        """Transpila expressões tMap para DuckDB SQL utilizando o motor AST dedicado."""
+        if not expr or not expr.strip():
+            return "NULL"
+
+        try:
+            return compile_expression(
+                expr,
+                alias_map=alias_map,
+                vars_map=vars_map,
+                known_columns=known_columns
+            )
+        except Exception as e:
+            logger.debug(f"AST compiler fallback for expression '{expr}': {e}")
+            return cls._legacy_compile_tmap_expression(
+                expr,
+                alias_map=alias_map,
+                vars_map=vars_map,
+                known_columns=known_columns
+            )
+
+    @classmethod
+    def _legacy_compile_tmap_expression(
+        cls,
+        expr: str,
+        alias_map: Optional[Dict[str, Dict[str, Any]]] = None,
+        vars_map: Optional[Dict[str, str]] = None,
+        known_columns: Optional[List[str]] = None
+    ) -> str:
+        """Transpila expressões tMap para DuckDB SQL com resolução case-insensitive de aliases e colunas (legado)."""
         if not expr or not expr.strip():
             return "NULL"
 
@@ -552,464 +585,498 @@ class DuckDBRunner:
                 known_cols.append(v_name)
 
         conn = duckdb.connect(":memory:")
+        conn.execute("SET enable_external_access = false;")
+        try:
 
-        # ─── 1. Criação das Views e Tabela de Trabalho do Fluxo Principal (Main) ───
-        main_alias_raw = kwargs.get("main_alias") or main_alias or "main"
-        main_alias_safe = re.sub(r'[^a-zA-Z0-9_]', '_', str(main_alias_raw).strip()) or "main"
+            # ─── 1. Criação das Views e Tabela de Trabalho do Fluxo Principal (Main) ───
+            main_alias_raw = kwargs.get("main_alias") or main_alias or "main"
+            main_alias_safe = re.sub(r'[^a-zA-Z0-9_]', '_', str(main_alias_raw).strip()) or "main"
 
-        conn.register("_main_raw", main_df.to_arrow())
-        conn.execute(f"""
-            CREATE TEMPORARY VIEW {main_alias_safe} AS 
-            SELECT *, ROW_NUMBER() OVER () as _tmap_main_idx 
-            FROM _main_raw;
-        """)
-        if main_alias_safe.lower() != "main":
-            conn.execute(f"CREATE TEMPORARY VIEW main AS SELECT * FROM {main_alias_safe};")
-        if main_alias_safe.lower() != "row1":
-            conn.execute(f"CREATE TEMPORARY VIEW row1 AS SELECT * FROM {main_alias_safe};")
+            conn.register("_main_raw", main_df.to_arrow())
+            conn.execute(f"""
+                CREATE TEMPORARY VIEW {main_alias_safe} AS 
+                SELECT *, ROW_NUMBER() OVER () as _tmap_main_idx 
+                FROM _main_raw;
+            """)
+            if main_alias_safe.lower() != "main":
+                conn.execute(f"CREATE TEMPORARY VIEW main AS SELECT * FROM {main_alias_safe};")
+            if main_alias_safe.lower() != "row1":
+                conn.execute(f"CREATE TEMPORARY VIEW row1 AS SELECT * FROM {main_alias_safe};")
 
-        # Monta alias_map e vars_map para resolução insensível a maiúsculas/minúsculas
-        alias_map: Dict[str, Dict[str, Any]] = {}
-        main_col_map = {c.lower(): c for c in main_df.columns}
+            # Monta alias_map e vars_map para resolução insensível a maiúsculas/minúsculas
+            alias_map: Dict[str, Dict[str, Any]] = {}
+            main_col_map = {c.lower(): c for c in main_df.columns}
 
-        main_aliases = {main_alias_safe.lower(), "main", "row1"}
-        main_node_id = kwargs.get("main_node_id") or kwargs.get("main_id")
-        if main_node_id:
-            main_aliases.add(str(main_node_id).lower())
-            main_aliases.add(re.sub(r'[^a-zA-Z0-9_]', '_', str(main_node_id).strip()).lower())
-
-        for ma in main_aliases:
-            alias_map[ma] = {"table_ref": "_tmap_working", "columns": main_col_map}
-
-        # Constrói tabela de trabalho inicial com colunas prefixadas e livres (suporte a UPPER/lower)
-        main_init_cols = []
-        for c in main_df.columns:
-            c_low = c.lower()
-            main_init_cols.append(f'"{c}" AS "{c}"')
-            if c_low != c:
-                main_init_cols.append(f'"{c}" AS "{c_low}"')
+            main_aliases = {main_alias_safe.lower(), "main", "row1"}
+            main_node_id = kwargs.get("main_node_id") or kwargs.get("main_id")
+            if main_node_id:
+                main_aliases.add(str(main_node_id).lower())
+                main_aliases.add(re.sub(r'[^a-zA-Z0-9_]', '_', str(main_node_id).strip()).lower())
 
             for ma in main_aliases:
-                main_init_cols.append(f'"{c}" AS "{ma}.{c}"')
+                alias_map[ma] = {"table_ref": "_tmap_working", "columns": main_col_map}
+
+            # Constrói tabela de trabalho inicial com colunas prefixadas e livres (suporte a UPPER/lower)
+            main_init_cols = []
+            for c in main_df.columns:
+                c_low = c.lower()
+                main_init_cols.append(f'"{c}" AS "{c}"')
                 if c_low != c:
-                    main_init_cols.append(f'"{c}" AS "{ma}.{c_low}"')
+                    main_init_cols.append(f'"{c}" AS "{c_low}"')
 
-        main_init_cols.append("_tmap_main_idx")
-        main_init_cols.append("ROW_NUMBER() OVER () as _step_0_row_id")
-        init_cols_sql = ", ".join(main_init_cols)
-        conn.execute(f"CREATE TEMPORARY TABLE _tmap_working AS SELECT {init_cols_sql} FROM {main_alias_safe};")
+                for ma in main_aliases:
+                    main_init_cols.append(f'"{c}" AS "{ma}.{c}"')
+                    if c_low != c:
+                        main_init_cols.append(f'"{c}" AS "{ma}.{c_low}"')
 
-        # ─── 2. Processa cada Lookup com Views, Joins, Filtros e Match Models ───
-        inner_join_checks = []
-        all_lookup_aliases: Set[str] = set()
+            main_init_cols.append("_tmap_main_idx")
+            main_init_cols.append("ROW_NUMBER() OVER () as _step_0_row_id")
+            init_cols_sql = ", ".join(main_init_cols)
+            conn.execute(f"CREATE TEMPORARY TABLE _tmap_working AS SELECT {init_cols_sql} FROM {main_alias_safe};")
 
-        for idx, lk in enumerate(lookups):
-            node_id = lk.get("node_id") or lk.get("id") or ""
-            raw_alias = lk.get("alias") or lk.get("label") or f"lkp{idx+1}"
-            safe_lk_alias = re.sub(r'[^a-zA-Z0-9_]', '_', str(raw_alias).strip()) or f"lkp{idx+1}"
-            lk_df = lookup_dfs.get(node_id, pl.DataFrame())
+            # ─── 2. Processa cada Lookup com Views, Joins, Filtros e Match Models ───
+            inner_join_checks = []
+            all_lookup_aliases: Set[str] = set()
 
-            if lk_df.height == 0:
-                continue
-
-            conn.register(f"_{safe_lk_alias}_raw", lk_df.to_arrow())
-            lk_col_map = {c.lower(): c for c in lk_df.columns}
-
-            lk_aliases = {safe_lk_alias.lower(), f"row{idx+2}".lower(), f"lkp{idx+1}".lower()}
-            if node_id:
-                lk_aliases.add(str(node_id).lower())
-                lk_aliases.add(re.sub(r'[^a-zA-Z0-9_]', '_', str(node_id).strip()).lower())
-            if lk.get("label"):
-                lk_aliases.add(str(lk.get("label")).lower())
-
-            all_lookup_aliases.update(lk_aliases)
-
-            for la in lk_aliases:
-                alias_map[la] = {"table_ref": "_tmap_working", "columns": lk_col_map}
-
-            # Filtro pré-join do Lookup
-            raw_lk_filter = (lk.get("lookup_filter") or lk.get("filter") or "").strip()
-            where_lk_sql = ""
-            if raw_lk_filter:
-                transpiled_filter = self.compile_tmap_expression(raw_lk_filter, alias_map=alias_map, known_columns=known_cols)
-                where_lk_sql = f"WHERE ({transpiled_filter})"
-
-            conn.execute(f"""
-                CREATE TEMPORARY VIEW _{safe_lk_alias}_prepared AS 
-                SELECT *, 
-                       ROW_NUMBER() OVER () as _lkp_row_order,
-                       1 as _lkp_{safe_lk_alias}_matched
-                FROM _{safe_lk_alias}_raw
-                {where_lk_sql};
-            """)
-            conn.execute(f"CREATE TEMPORARY VIEW {safe_lk_alias} AS SELECT * FROM _{safe_lk_alias}_prepared;")
-
-            # ─── Chaves de Junção (Left Keys / expr_key x Right Keys / column) ───
-            join_keys = lk.get("join_keys", [])
-            left_keys = lk.get("left_keys", [])
-            right_keys = lk.get("right_keys", [])
-
-            key_pairs = []
-            if join_keys:
-                for jk in join_keys:
-                    ek = jk.get("expr_key") or jk.get("left") or ""
-                    rc = jk.get("column") or jk.get("right") or ""
-                    if ek and rc:
-                        key_pairs.append((str(ek).strip(), str(rc).strip()))
-            elif left_keys and right_keys:
-                for lk_k, rk_k in zip(left_keys, right_keys):
-                    key_pairs.append((str(lk_k).strip(), str(rk_k).strip()))
-
-            join_clauses = []
-            for raw_left, raw_right in key_pairs:
-                clean_raw_left = re.sub(r'^\{\{?|\}\}?$', '', raw_left).strip()
-                t_left = self.compile_tmap_expression(clean_raw_left, alias_map=alias_map, known_columns=known_cols)
-                clean_left = clean_raw_left.strip('"').strip("'")
-                if "_tmap_working." not in t_left:
-                    if "." not in clean_left:
-                        clean_lower = clean_left.lower()
-                        matched = False
-                        for alias_name, alias_info in alias_map.items():
-                            c_map = alias_info.get("columns", {})
-                            if clean_lower in c_map:
-                                t_left = f'_tmap_working."{alias_name}.{clean_lower}"'
-                                matched = True
-                                break
-                        if not matched:
-                            t_left = f'_tmap_working."{clean_left}"'
+            for idx, lk in enumerate(lookups):
+                node_id = lk.get("node_id") or lk.get("id") or ""
+                raw_alias = lk.get("alias") or lk.get("label") or f"lkp{idx+1}"
+                safe_lk_alias = re.sub(r'[^a-zA-Z0-9_]', '_', str(raw_alias).strip()) or f"lkp{idx+1}"
+                lk_df = lookup_dfs.get(node_id, pl.DataFrame())
+                # Se o DataFrame for vazio e não possuir colunas, infere colunas das chaves de junção
+                if len(lk_df.columns) == 0:
+                    right_cols = []
+                    if lk.get("join_keys"):
+                        right_cols = [jk.get("column") or jk.get("right") for jk in lk.get("join_keys", []) if jk.get("column") or jk.get("right")]
+                    elif lk.get("right_keys"):
+                        right_cols = [k for k in lk.get("right_keys", []) if k]
+                    if right_cols:
+                        lk_df = pl.DataFrame({str(c): pl.Series([], dtype=pl.Utf8) for c in right_cols})
                     else:
-                        prefix_left, col_left = clean_left.split(".", 1)
-                        clean_col_left = col_left.strip('"').strip("'")
-                        prefix_lower = prefix_left.lower()
-                        clean_col_lower = clean_col_left.lower()
-                        if prefix_lower in alias_map:
-                            t_left = f'_tmap_working."{prefix_lower}.{clean_col_lower}"'
-                        else:
+                        lk_df = pl.DataFrame({"_dummy_empty": pl.Series([], dtype=pl.Utf8)})
+
+                conn.register(f"_{safe_lk_alias}_raw", lk_df.to_arrow())
+                lk_col_map = {c.lower(): c for c in lk_df.columns}
+
+                lk_aliases = {safe_lk_alias.lower(), f"row{idx+2}".lower(), f"lkp{idx+1}".lower()}
+                if node_id:
+                    lk_aliases.add(str(node_id).lower())
+                    lk_aliases.add(re.sub(r'[^a-zA-Z0-9_]', '_', str(node_id).strip()).lower())
+                if lk.get("label"):
+                    lk_aliases.add(str(lk.get("label")).lower())
+
+                all_lookup_aliases.update(lk_aliases)
+
+                for la in lk_aliases:
+                    alias_map[la] = {"table_ref": "_tmap_working", "columns": lk_col_map}
+
+                # Filtro pré-join do Lookup avaliado estritamente no escopo da respectiva tabela de lookup
+                raw_lk_filter = (lk.get("lookup_filter") or lk.get("filter") or "").strip()
+                where_lk_sql = ""
+                if raw_lk_filter:
+                    lk_filter_alias_map = {
+                        la: {"table_ref": f"_{safe_lk_alias}_raw", "columns": lk_col_map}
+                        for la in lk_aliases
+                    }
+                    lk_known_cols = list(lk_df.columns)
+                    transpiled_filter = self.compile_tmap_expression(
+                        raw_lk_filter,
+                        alias_map=lk_filter_alias_map,
+                        known_columns=lk_known_cols
+                    )
+                    where_lk_sql = f"WHERE ({transpiled_filter})"
+
+                conn.execute(f"""
+                    CREATE TEMPORARY VIEW _{safe_lk_alias}_prepared AS 
+                    SELECT *, 
+                           ROW_NUMBER() OVER () as _lkp_row_order,
+                           1 as _lkp_{safe_lk_alias}_matched
+                    FROM _{safe_lk_alias}_raw
+                    {where_lk_sql};
+                """)
+                conn.execute(f"CREATE TEMPORARY VIEW {safe_lk_alias} AS SELECT * FROM _{safe_lk_alias}_prepared;")
+
+                # ─── Chaves de Junção (Left Keys / expr_key x Right Keys / column) ───
+                join_keys = lk.get("join_keys", [])
+                left_keys = lk.get("left_keys", [])
+                right_keys = lk.get("right_keys", [])
+
+                key_pairs = []
+                if join_keys:
+                    for jk in join_keys:
+                        ek = jk.get("expr_key") or jk.get("left") or ""
+                        rc = jk.get("column") or jk.get("right") or ""
+                        if ek and rc:
+                            key_pairs.append((str(ek).strip(), str(rc).strip()))
+                elif left_keys and right_keys:
+                    for lk_k, rk_k in zip(left_keys, right_keys):
+                        key_pairs.append((str(lk_k).strip(), str(rk_k).strip()))
+
+                join_clauses = []
+                for raw_left, raw_right in key_pairs:
+                    clean_raw_left = re.sub(r'^\{\{?|\}\}?$', '', raw_left).strip()
+                    t_left = self.compile_tmap_expression(clean_raw_left, alias_map=alias_map, known_columns=known_cols)
+                    clean_left = clean_raw_left.strip('"').strip("'")
+                    if "_tmap_working." not in t_left:
+                        if "." not in clean_left:
+                            clean_lower = clean_left.lower()
                             matched = False
                             for alias_name, alias_info in alias_map.items():
                                 c_map = alias_info.get("columns", {})
-                                if clean_col_lower in c_map:
-                                    t_left = f'_tmap_working."{alias_name}.{clean_col_lower}"'
+                                if clean_lower in c_map:
+                                    t_left = f'_tmap_working."{alias_name}.{clean_lower}"'
                                     matched = True
                                     break
                             if not matched:
                                 t_left = f'_tmap_working."{clean_left}"'
+                        else:
+                            prefix_left, col_left = clean_left.split(".", 1)
+                            clean_col_left = col_left.strip('"').strip("'")
+                            prefix_lower = prefix_left.lower()
+                            clean_col_lower = clean_col_left.lower()
+                            if prefix_lower in alias_map:
+                                t_left = f'_tmap_working."{prefix_lower}.{clean_col_lower}"'
+                            else:
+                                matched = False
+                                for alias_name, alias_info in alias_map.items():
+                                    c_map = alias_info.get("columns", {})
+                                    if clean_col_lower in c_map:
+                                        t_left = f'_tmap_working."{alias_name}.{clean_col_lower}"'
+                                        matched = True
+                                        break
+                                if not matched:
+                                    t_left = f'_tmap_working."{clean_left}"'
 
-                clean_raw_right = re.sub(r'^\{\{?|\}\}?$', '', raw_right).strip().strip('"').strip("'")
-                if "." in clean_raw_right:
-                    col_right_name = clean_raw_right.split(".")[-1].strip().strip('"').strip("'")
-                else:
-                    col_right_name = clean_raw_right
+                    clean_raw_right = re.sub(r'^\{\{?|\}\}?$', '', raw_right).strip().strip('"').strip("'")
+                    if "." in clean_raw_right:
+                        col_right_name = clean_raw_right.split(".")[-1].strip().strip('"').strip("'")
+                    else:
+                        col_right_name = clean_raw_right
 
-                real_right_col = lk_col_map.get(col_right_name.lower(), col_right_name)
-                t_right = f'{safe_lk_alias}."{real_right_col}"'
+                    real_right_col = lk_col_map.get(col_right_name.lower(), col_right_name)
+                    t_right = f'{safe_lk_alias}."{real_right_col}"'
 
-                join_clauses.append(f"({t_left}) = ({t_right})")
+                    join_clauses.append(f"({t_left}) = ({t_right})")
 
-            # Join Filter no ON
-            raw_join_filter = (lk.get("join_filter") or lk.get("filter_expression") or "").strip()
-            if raw_join_filter:
-                t_join_filter = self.compile_tmap_expression(raw_join_filter, alias_map=alias_map, known_columns=known_cols)
-                join_clauses.append(f"({t_join_filter})")
+                # Join Filter no ON
+                raw_join_filter = (lk.get("join_filter") or lk.get("filter_expression") or "").strip()
+                if raw_join_filter:
+                    t_join_filter = self.compile_tmap_expression(raw_join_filter, alias_map=alias_map, known_columns=known_cols)
+                    join_clauses.append(f"({t_join_filter})")
 
-            join_cond = " AND ".join(join_clauses) if join_clauses else "1=1"
+                join_cond = " AND ".join(join_clauses) if join_clauses else "1=1"
 
-            # Match Model (all, first, unique/last)
-            match_model = str(lk.get("match_model") or "all").lower()
-            qualify_clause = ""
-            if "first" in match_model:
-                qualify_clause = f"QUALIFY ROW_NUMBER() OVER (PARTITION BY _tmap_working._step_{idx}_row_id ORDER BY {safe_lk_alias}._lkp_row_order ASC NULLS LAST) = 1"
-            elif "unique" in match_model or "last" in match_model:
-                qualify_clause = f"QUALIFY ROW_NUMBER() OVER (PARTITION BY _tmap_working._step_{idx}_row_id ORDER BY {safe_lk_alias}._lkp_row_order DESC NULLS LAST) = 1"
+                # Match Model (all, first, unique/last)
+                match_model = str(lk.get("match_model") or "all").lower()
+                qualify_clause = ""
+                if "first" in match_model:
+                    qualify_clause = f"QUALIFY ROW_NUMBER() OVER (PARTITION BY _tmap_working._step_{idx}_row_id ORDER BY {safe_lk_alias}._lkp_row_order ASC NULLS LAST) = 1"
+                elif "unique" in match_model or "last" in match_model:
+                    qualify_clause = f"QUALIFY ROW_NUMBER() OVER (PARTITION BY _tmap_working._step_{idx}_row_id ORDER BY {safe_lk_alias}._lkp_row_order DESC NULLS LAST) = 1"
 
-            # Projeção das colunas do lookup com namespace para evitar colisão
-            lk_proj_cols = []
-            for c in lk_df.columns:
-                c_low = c.lower()
-                for la in lk_aliases:
-                    lk_proj_cols.append(f'{safe_lk_alias}."{c}" AS "{la}.{c}"')
-                    if c_low != c:
-                        lk_proj_cols.append(f'{safe_lk_alias}."{c}" AS "{la}.{c_low}"')
+                # Projeção das colunas do lookup com namespace para evitar colisão
+                lk_proj_cols = []
+                for c in lk_df.columns:
+                    c_low = c.lower()
+                    for la in lk_aliases:
+                        lk_proj_cols.append(f'{safe_lk_alias}."{c}" AS "{la}.{c}"')
+                        if c_low != c:
+                            lk_proj_cols.append(f'{safe_lk_alias}."{c}" AS "{la}.{c_low}"')
 
-                if c not in main_df.columns and c_low not in [m.lower() for m in main_df.columns]:
-                    lk_proj_cols.append(f'{safe_lk_alias}."{c}" AS "{c}"')
-                    if c_low != c:
-                        lk_proj_cols.append(f'{safe_lk_alias}."{c}" AS "{c_low}"')
+                    if c not in main_df.columns and c_low not in [m.lower() for m in main_df.columns]:
+                        lk_proj_cols.append(f'{safe_lk_alias}."{c}" AS "{c}"')
+                        if c_low != c:
+                            lk_proj_cols.append(f'{safe_lk_alias}."{c}" AS "{c_low}"')
 
-            lk_proj_sql = (", " + ", ".join(lk_proj_cols)) if lk_proj_cols else ""
-            has_match_col = f"_has_match_{idx+1}"
-            lk_matched_indicator = f"_lkp_{safe_lk_alias}_matched"
+                lk_proj_sql = (", " + ", ".join(lk_proj_cols)) if lk_proj_cols else ""
+                has_match_col = f"_has_match_{idx+1}"
+                lk_matched_indicator = f"_lkp_{safe_lk_alias}_matched"
 
-            conn.execute(f"""
-                CREATE TEMPORARY TABLE _tmap_step_{idx+1} AS
-                SELECT 
-                    _tmap_working.*
-                    {lk_proj_sql},
-                    CASE WHEN {safe_lk_alias}._lkp_row_order IS NOT NULL THEN 1 ELSE 0 END AS {has_match_col},
-                    CASE WHEN {safe_lk_alias}._lkp_row_order IS NOT NULL THEN 1 ELSE NULL END AS {lk_matched_indicator},
-                    ROW_NUMBER() OVER () as _step_{idx+1}_row_id
-                FROM _tmap_working
-                LEFT JOIN _{safe_lk_alias}_prepared {safe_lk_alias}
-                    ON {join_cond}
-                {qualify_clause};
-            """)
-            conn.execute("DROP TABLE _tmap_working;")
-            conn.execute(f"ALTER TABLE _tmap_step_{idx+1} RENAME TO _tmap_working;")
+                conn.execute(f"""
+                    CREATE TEMPORARY TABLE _tmap_step_{idx+1} AS
+                    SELECT 
+                        _tmap_working.*
+                        {lk_proj_sql},
+                        CASE WHEN {safe_lk_alias}._lkp_row_order IS NOT NULL THEN 1 ELSE 0 END AS {has_match_col},
+                        CASE WHEN {safe_lk_alias}._lkp_row_order IS NOT NULL THEN 1 ELSE NULL END AS {lk_matched_indicator},
+                        ROW_NUMBER() OVER (ORDER BY _tmap_working._step_{idx}_row_id ASC, {safe_lk_alias}._lkp_row_order ASC NULLS FIRST) as _step_{idx+1}_row_id
+                    FROM _tmap_working
+                    LEFT JOIN _{safe_lk_alias}_prepared {safe_lk_alias}
+                        ON {join_cond}
+                    {qualify_clause};
+                """)
+                conn.execute("DROP TABLE _tmap_working;")
+                conn.execute(f"ALTER TABLE _tmap_step_{idx+1} RENAME TO _tmap_working;")
 
-            join_type_val = str(lk.get("join_type") or lk.get("join_model") or "left").lower()
-            if "inner" in join_type_val:
-                inner_join_checks.append(f"{lk_matched_indicator} IS NOT NULL")
+                join_type_val = str(lk.get("join_type") or lk.get("join_model") or "left").lower()
+                if "inner" in join_type_val:
+                    inner_join_checks.append(f"{lk_matched_indicator} IS NOT NULL")
 
-        # ─── 3. Lazy / Dead-Variable Elimination e Avaliação Topológica de Variáveis ───
-        all_refs_parts = []
-        for out in outputs:
-            all_refs_parts.append(str(out.get("filter_expression") or ""))
-            for col in out.get("columns", []):
-                all_refs_parts.append(str(col.get("expression") or ""))
-        for lk in lookups:
-            all_refs_parts.append(str(lk.get("join_filter") or ""))
-            all_refs_parts.append(str(lk.get("filter_expression") or ""))
-        all_refs_text = " ".join(all_refs_parts)
+            # ─── 3. Lazy / Dead-Variable Elimination e Avaliação Topológica de Variáveis ───
+            all_refs_parts = []
+            for out in outputs:
+                all_refs_parts.append(str(out.get("filter_expression") or ""))
+                for col in out.get("columns", []):
+                    all_refs_parts.append(str(col.get("expression") or ""))
+            for lk in lookups:
+                all_refs_parts.append(str(lk.get("join_filter") or ""))
+                all_refs_parts.append(str(lk.get("filter_expression") or ""))
+            all_refs_text = " ".join(all_refs_parts)
 
-        # Identifica colunas de entrada para evitar falsos positivos de variáveis com mesmo nome de coluna
-        known_input_cols_lower = {c.lower() for c in main_df.columns}
-        for lk_df in lookup_dfs.values():
-            known_input_cols_lower.update(c.lower() for c in lk_df.columns)
+            # Identifica colunas de entrada para evitar falsos positivos de variáveis com mesmo nome de coluna
+            known_input_cols_lower = {c.lower() for c in main_df.columns}
+            for lk_df in lookup_dfs.values():
+                known_input_cols_lower.update(c.lower() for c in lk_df.columns)
 
-        needed_var_names = set()
-        for v in variables:
-            v_name = v.get("name")
-            if not v_name:
-                continue
-            is_referenced_as_var = bool(re.search(rf'\bVar\.{re.escape(v_name)}\b', all_refs_text, re.IGNORECASE))
-            is_referenced_directly = (
-                v_name.lower() not in known_input_cols_lower and
-                bool(re.search(rf'(?<![\.\w]){re.escape(v_name)}\b', all_refs_text, re.IGNORECASE))
-            )
-            if is_referenced_as_var or is_referenced_directly:
-                needed_var_names.add(v_name)
-
-        changed = True
-        while changed:
-            changed = False
+            needed_var_names = set()
             for v in variables:
                 v_name = v.get("name")
-                v_expr = v.get("expression", "")
+                if not v_name:
+                    continue
+                is_referenced_as_var = bool(re.search(rf'\bVar\.{re.escape(v_name)}\b', all_refs_text, re.IGNORECASE))
+                is_referenced_directly = (
+                    v_name.lower() not in known_input_cols_lower and
+                    bool(re.search(rf'(?<![\.\w]){re.escape(v_name)}\b', all_refs_text, re.IGNORECASE))
+                )
+                if is_referenced_as_var or is_referenced_directly:
+                    needed_var_names.add(v_name)
+
+            changed = True
+            while changed:
+                changed = False
+                for v in variables:
+                    v_name = v.get("name")
+                    v_expr = v.get("expression", "")
+                    if v_name in needed_var_names:
+                        for other_v in variables:
+                            other_name = other_v.get("name")
+                            if other_name and other_name != v_name and other_name not in needed_var_names:
+                                is_ref_var = bool(re.search(rf'\bVar\.{re.escape(other_name)}\b', v_expr, re.IGNORECASE))
+                                is_ref_direct = (
+                                    other_name.lower() not in known_input_cols_lower and
+                                    bool(re.search(rf'(?<![\.\w]){re.escape(other_name)}\b', v_expr, re.IGNORECASE))
+                                )
+                                if is_ref_var or is_ref_direct:
+                                    needed_var_names.add(other_name)
+                                    changed = True
+
+            active_vars = []
+            for v in variables:
+                v_name = v.get("name")
                 if v_name in needed_var_names:
-                    for other_v in variables:
-                        other_name = other_v.get("name")
-                        if other_name and other_name != v_name and other_name not in needed_var_names:
-                            is_ref_var = bool(re.search(rf'\bVar\.{re.escape(other_name)}\b', v_expr, re.IGNORECASE))
-                            is_ref_direct = (
-                                other_name.lower() not in known_input_cols_lower and
-                                bool(re.search(rf'(?<![\.\w]){re.escape(other_name)}\b', v_expr, re.IGNORECASE))
-                            )
-                            if is_ref_var or is_ref_direct:
-                                needed_var_names.add(other_name)
-                                changed = True
-
-        active_vars = []
-        for v in variables:
-            v_name = v.get("name")
-            if v_name in needed_var_names:
-                active_vars.append(v)
-            else:
-                logger.warning(
-                    f"Variável intermediária '{v_name}' (expressão '{v.get('expression', '')}') "
-                    "não é utilizada em nenhuma saída ou filtro e foi descartada (Dead-Variable Elimination)."
-                )
-
-        vars_map = {v.get("name").lower(): v.get("name") for v in active_vars if v.get("name")}
-
-        for v_idx, var in enumerate(active_vars):
-            var_name = var.get("name")
-            var_expr = var.get("expression", "")
-            var_type = str(var.get("type", "String")).lower()
-            if var_name and var_expr:
-                transpiled_v = self.compile_tmap_expression(
-                    var_expr,
-                    alias_map=alias_map,
-                    vars_map=vars_map,
-                    known_columns=known_cols
-                )
-                cast_type = "VARCHAR"
-                if "int" in var_type:
-                    cast_type = "BIGINT"
-                elif "bool" in var_type:
-                    cast_type = "BOOLEAN"
-                elif any(t in var_type for t in ("float", "double", "decimal", "numeric")):
-                    cast_type = "DOUBLE"
-                elif "date" in var_type or "time" in var_type:
-                    cast_type = "TIMESTAMP"
-
-                v_sql = f"TRY_CAST(({transpiled_v}) AS {cast_type})"
-                try:
-                    conn.execute(f"""
-                        CREATE TEMPORARY TABLE _tmap_var_step_{v_idx} AS
-                        SELECT *, 
-                               ({v_sql}) AS "Var.{var_name}",
-                               ({v_sql}) AS "{var_name}"
-                        FROM _tmap_working;
-                    """)
-                    conn.execute("DROP TABLE _tmap_working;")
-                    conn.execute(f"ALTER TABLE _tmap_var_step_{v_idx} RENAME TO _tmap_working;")
-                except Exception as e:
-                    logger.warning(f"Erro ao avaliar variável '{var_name}': {e}. Criando coluna NULL de fallback.")
-                    existing_cols_lower = {r[0].lower() for r in conn.execute("DESCRIBE _tmap_working").fetchall()}
-                    var_col_name = f"Var.{var_name}"
-                    if var_col_name.lower() not in existing_cols_lower:
-                        try:
-                            conn.execute(f'ALTER TABLE _tmap_working ADD COLUMN "{var_col_name}" VARCHAR;')
-                        except Exception:
-                            pass
-                    if var_name.lower() not in existing_cols_lower:
-                        try:
-                            conn.execute(f'ALTER TABLE _tmap_working ADD COLUMN "{var_name}" VARCHAR;')
-                        except Exception:
-                            pass
-
-        # ─── 4. Processa Tabelas de Saída, Rejeições e Deduplicação Defensiva ───
-        results: Dict[str, pl.DataFrame] = {}
-        standard_filter_conditions: List[str] = []
-
-        # Primeiro passa pelas saídas normais para coletar os filtros padrão
-        for out in outputs:
-            is_catch_output = out.get("catch_output_reject", False)
-            is_catch_inner = out.get("catch_inner_join_reject", False) or out.get("catch_lookup_reject", False) or out.get("is_reject", False)
-            if not is_catch_output and not is_catch_inner:
-                f_expr = (out.get("filter_expression") or "").strip()
-                if f_expr:
-                    t_f_expr = self.compile_tmap_expression(f_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
-                    standard_filter_conditions.append(f"COALESCE(({t_f_expr}), FALSE)")
-
-        for idx, out in enumerate(outputs):
-            out_name = out.get("name") or out.get("id") or f"out_{idx+1}"
-            is_catch_output = out.get("catch_output_reject", False)
-            is_catch_inner = out.get("catch_inner_join_reject", False) or out.get("catch_lookup_reject", False) or out.get("is_reject", False)
-            filter_expr = (out.get("filter_expression") or "").strip()
-            cols = out.get("columns", [])
-
-            where_clauses = []
-            if is_catch_inner:
-                if inner_join_checks:
-                    where_clauses.append("NOT (" + " AND ".join(inner_join_checks) + ")")
+                    active_vars.append(v)
                 else:
-                    where_clauses.append("1=0")
-                if filter_expr:
-                    where_clauses.append(f"({self.compile_tmap_expression(filter_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)})")
-            elif is_catch_output:
-                if inner_join_checks:
-                    where_clauses.extend(inner_join_checks)
-                if standard_filter_conditions:
-                    where_clauses.append("NOT (" + " OR ".join(standard_filter_conditions) + ")")
-                else:
-                    where_clauses.append("1=0")
-                if filter_expr:
-                    where_clauses.append(f"({self.compile_tmap_expression(filter_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)})")
-            else:
-                if inner_join_checks:
-                    where_clauses.extend(inner_join_checks)
-                if filter_expr:
-                    where_clauses.append(f"({self.compile_tmap_expression(filter_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)})")
+                    logger.warning(
+                        f"Variável intermediária '{v_name}' (expressão '{v.get('expression', '')}') "
+                        "não é utilizada em nenhuma saída ou filtro e foi descartada (Dead-Variable Elimination)."
+                    )
 
-            where_sql = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+            vars_map = {v.get("name").lower(): v.get("name") for v in active_vars if v.get("name")}
 
-            # Constrói SELECT com Deduplicação Defensiva de Colunas
-            if cols:
-                select_items = []
-                seen_targets = {}
-                for c in cols:
-                    target_name = (c.get("name") or c.get("target") or "col").strip()
-                    raw_expr = (c.get("expression") or target_name).strip()
-                    target_lower = target_name.lower()
-
-                    if target_lower in seen_targets:
-                        # Coluna duplicada detectada!
-                        prev_entry = seen_targets[target_lower]
-                        prev_expr = prev_entry["raw_expr"]
-                        prev_idx = prev_entry["index"]
-
-                        def detect_flow_type(expr_str: str) -> str:
-                            s_low = expr_str.lower()
-                            for ma in main_aliases:
-                                if re.search(rf'\b{re.escape(ma)}\.', s_low):
-                                    return "main"
-                            for la in all_lookup_aliases:
-                                if re.search(rf'\b{re.escape(la)}\.', s_low):
-                                    return "lookup"
-                            if "lkp" in s_low or re.search(r'\brow[2-9]\b', s_low):
-                                return "lookup"
-                            for c_m in main_df.columns:
-                                if re.search(rf'\b{re.escape(c_m.lower())}\b', s_low):
-                                    return "main"
-                            return "unknown"
-
-                        flow_prev = detect_flow_type(prev_expr)
-                        flow_curr = detect_flow_type(raw_expr)
-
-                        is_lkp_main_pair = (
-                            (flow_prev == "main" and flow_curr == "lookup") or
-                            (flow_prev == "lookup" and flow_curr == "main") or
-                            (flow_prev == "lookup" and flow_curr == "lookup") or
-                            ("lkp" in raw_expr.lower() and ("main" in prev_expr.lower() or "row1" in prev_expr.lower())) or
-                            ("lkp" in prev_expr.lower() and ("main" in raw_expr.lower() or "row1" in raw_expr.lower()))
+            for v_idx, var in enumerate(active_vars):
+                var_name = var.get("name")
+                var_expr = var.get("expression", "")
+                var_type = str(var.get("type", "String")).lower()
+                if var_name and var_expr:
+                    try:
+                        transpiled_v = self.compile_tmap_expression(
+                            var_expr,
+                            alias_map=alias_map,
+                            vars_map=vars_map,
+                            known_columns=known_cols
                         )
-                        if is_lkp_main_pair:
-                            t_expr_curr = self.compile_tmap_expression(raw_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
-                            prev_compiled = prev_entry.get("compiled_expr")
-                            if not prev_compiled:
-                                prev_compiled = self.compile_tmap_expression(prev_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
+                    except Exception as e:
+                        tmap_node_id = kwargs.get("node_id") or kwargs.get("id") or "tMap"
+                        err_msg = (
+                            f"Falha na compilação da variável intermediária '{var_name}' "
+                            f"(expressão: '{var_expr}') no nó '{tmap_node_id}': {str(e)}"
+                        )
+                        logger.error(err_msg)
+                        raise TMapExecutionError(
+                            message=err_msg,
+                            node_id=str(tmap_node_id),
+                            var_name=str(var_name)
+                        ) from e
 
-                            consolidated_sql = f'COALESCE(({prev_compiled}), ({t_expr_curr}))'
+                    cast_type = "VARCHAR"
+                    if "int" in var_type:
+                        cast_type = "BIGINT"
+                    elif "bool" in var_type:
+                        cast_type = "BOOLEAN"
+                    elif any(t in var_type for t in ("float", "double", "decimal", "numeric")):
+                        cast_type = "DOUBLE"
+                    elif "date" in var_type or "time" in var_type:
+                        cast_type = "TIMESTAMP"
 
-                            select_items[prev_idx] = f'{consolidated_sql} AS "{target_name}"'
-                            prev_entry["compiled_expr"] = consolidated_sql
-                            prev_entry["raw_expr"] = f"COALESCE({prev_expr}, {raw_expr})"
-                            logger.warning(
-                                f"Coluna de saída duplicada '{target_name}' no output '{out_name}' consolidada com COALESCE({prev_expr}, {raw_expr})."
-                            )
-                        else:
-                            # Desambigua renomeando para target_1, target_2, ...
-                            counter = 1
-                            new_target = f"{target_name}_{counter}"
-                            while new_target.lower() in seen_targets:
-                                counter += 1
-                                new_target = f"{target_name}_{counter}"
-                            t_expr = self.compile_tmap_expression(raw_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
-                            select_items.append(f'({t_expr}) AS "{new_target}"')
-                            seen_targets[new_target.lower()] = {"raw_expr": raw_expr, "index": len(select_items) - 1, "compiled_expr": t_expr}
-                            logger.warning(
-                                f"Coluna de saída duplicada '{target_name}' no output '{out_name}' renomeada defensivamente para '{new_target}'."
-                            )
+                    v_sql = f"TRY_CAST(({transpiled_v}) AS {cast_type})"
+                    try:
+                        conn.execute(f"""
+                            CREATE TEMPORARY TABLE _tmap_var_step_{v_idx} AS
+                            SELECT *, 
+                                   ({v_sql}) AS "Var.{var_name}",
+                                   ({v_sql}) AS "{var_name}"
+                            FROM _tmap_working;
+                        """)
+                        conn.execute("DROP TABLE _tmap_working;")
+                        conn.execute(f"ALTER TABLE _tmap_var_step_{v_idx} RENAME TO _tmap_working;")
+                    except Exception as e:
+                        tmap_node_id = kwargs.get("node_id") or kwargs.get("id") or "tMap"
+                        err_msg = (
+                            f"Falha na avaliação da variável intermediária '{var_name}' "
+                            f"(expressão: '{var_expr}') no nó '{tmap_node_id}': {str(e)}"
+                        )
+                        logger.error(err_msg)
+                        raise TMapExecutionError(
+                            message=err_msg,
+                            node_id=str(tmap_node_id),
+                            var_name=str(var_name)
+                        ) from e
+
+            # ─── 4. Processa Tabelas de Saída, Rejeições e Deduplicação Defensiva ───
+            results: Dict[str, pl.DataFrame] = {}
+            standard_filter_conditions: List[str] = []
+
+            # Primeiro passa pelas saídas normais para coletar os filtros padrão
+            for out in outputs:
+                is_catch_output = out.get("catch_output_reject", False)
+                is_catch_inner = out.get("catch_inner_join_reject", False) or out.get("catch_lookup_reject", False) or out.get("is_reject", False)
+                if not is_catch_output and not is_catch_inner:
+                    f_expr = (out.get("filter_expression") or "").strip()
+                    if f_expr:
+                        t_f_expr = self.compile_tmap_expression(f_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
+                        standard_filter_conditions.append(f"COALESCE(({t_f_expr}), FALSE)")
+
+            for idx, out in enumerate(outputs):
+                out_name = out.get("name") or out.get("id") or f"out_{idx+1}"
+                is_catch_output = out.get("catch_output_reject", False)
+                is_catch_inner = out.get("catch_inner_join_reject", False) or out.get("catch_lookup_reject", False) or out.get("is_reject", False)
+                filter_expr = (out.get("filter_expression") or "").strip()
+                cols = out.get("columns", [])
+
+                where_clauses = []
+                if is_catch_inner:
+                    if inner_join_checks:
+                        where_clauses.append("NOT (" + " AND ".join(inner_join_checks) + ")")
                     else:
-                        t_expr = self.compile_tmap_expression(raw_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
-                        select_items.append(f'({t_expr}) AS "{target_name}"')
-                        seen_targets[target_lower] = {"raw_expr": raw_expr, "index": len(select_items) - 1, "compiled_expr": t_expr}
-
-                select_sql = ", ".join(select_items)
-            else:
-                table_cols = [r[0] for r in conn.execute("DESCRIBE _tmap_working").fetchall()]
-                clean_cols = [c for c in table_cols if not c.startswith("_") and "." not in c]
-                if clean_cols:
-                    select_sql = ", ".join([f'"{c}"' for c in clean_cols])
+                        where_clauses.append("1=0")
+                    if filter_expr:
+                        where_clauses.append(f"({self.compile_tmap_expression(filter_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)})")
+                elif is_catch_output:
+                    if inner_join_checks:
+                        where_clauses.extend(inner_join_checks)
+                    if standard_filter_conditions:
+                        where_clauses.append("NOT (" + " OR ".join(standard_filter_conditions) + ")")
+                    else:
+                        where_clauses.append("1=0")
+                    if filter_expr:
+                        where_clauses.append(f"({self.compile_tmap_expression(filter_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)})")
                 else:
-                    orig_main_cols = [f'_tmap_working."{c}" AS "{c}"' for c in main_df.columns if not c.startswith("_tmap")]
-                    select_sql = ", ".join(orig_main_cols) if orig_main_cols else "*"
+                    if inner_join_checks:
+                        where_clauses.extend(inner_join_checks)
+                    if filter_expr:
+                        where_clauses.append(f"({self.compile_tmap_expression(filter_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)})")
 
-            order_sql = " ORDER BY _tmap_main_idx ASC"
-            query = f"SELECT {select_sql} FROM _tmap_working{where_sql}{order_sql};"
-            try:
-                out_df = self.execute_query_to_polars(query, conn=conn)
-            except Exception as e:
-                raise DomainError(
-                    f"Falha na execução da saída '{out_name}' do Data Mapper (tMap): {str(e)} (Query: {query})",
-                    code="ERR_ENGINE_DUCKDB"
-                )
+                where_sql = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
-            results[out_name] = out_df
+                # Constrói SELECT com Deduplicação Defensiva de Colunas
+                if cols:
+                    select_items = []
+                    seen_targets = {}
+                    for c in cols:
+                        target_name = (c.get("name") or c.get("target") or "col").strip()
+                        raw_expr = (c.get("expression") or target_name).strip()
+                        target_lower = target_name.lower()
 
-        conn.close()
-        return results
+                        if target_lower in seen_targets:
+                            # Coluna duplicada detectada!
+                            prev_entry = seen_targets[target_lower]
+                            prev_expr = prev_entry["raw_expr"]
+                            prev_idx = prev_entry["index"]
+
+                            def detect_flow_type(expr_str: str) -> str:
+                                s_low = expr_str.lower()
+                                for ma in main_aliases:
+                                    if re.search(rf'\b{re.escape(ma)}\.', s_low):
+                                        return "main"
+                                for la in all_lookup_aliases:
+                                    if re.search(rf'\b{re.escape(la)}\.', s_low):
+                                        return "lookup"
+                                if "lkp" in s_low or re.search(r'\brow[2-9]\b', s_low):
+                                    return "lookup"
+                                for c_m in main_df.columns:
+                                    if re.search(rf'\b{re.escape(c_m.lower())}\b', s_low):
+                                        return "main"
+                                return "unknown"
+
+                            flow_prev = detect_flow_type(prev_expr)
+                            flow_curr = detect_flow_type(raw_expr)
+
+                            is_lkp_main_pair = (
+                                (flow_prev == "main" and flow_curr == "lookup") or
+                                (flow_prev == "lookup" and flow_curr == "main") or
+                                (flow_prev == "lookup" and flow_curr == "lookup") or
+                                ("lkp" in raw_expr.lower() and ("main" in prev_expr.lower() or "row1" in prev_expr.lower())) or
+                                ("lkp" in prev_expr.lower() and ("main" in raw_expr.lower() or "row1" in raw_expr.lower()))
+                            )
+                            if is_lkp_main_pair:
+                                t_expr_curr = self.compile_tmap_expression(raw_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
+                                prev_compiled = prev_entry.get("compiled_expr")
+                                if not prev_compiled:
+                                    prev_compiled = self.compile_tmap_expression(prev_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
+
+                                consolidated_sql = f'COALESCE(({prev_compiled}), ({t_expr_curr}))'
+
+                                select_items[prev_idx] = f'{consolidated_sql} AS "{target_name}"'
+                                prev_entry["compiled_expr"] = consolidated_sql
+                                prev_entry["raw_expr"] = f"COALESCE({prev_expr}, {raw_expr})"
+                                logger.warning(
+                                    f"Coluna de saída duplicada '{target_name}' no output '{out_name}' consolidada com COALESCE({prev_expr}, {raw_expr})."
+                                )
+                            else:
+                                # Desambigua renomeando para target_1, target_2, ...
+                                counter = 1
+                                new_target = f"{target_name}_{counter}"
+                                while new_target.lower() in seen_targets:
+                                    counter += 1
+                                    new_target = f"{target_name}_{counter}"
+                                t_expr = self.compile_tmap_expression(raw_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
+                                select_items.append(f'({t_expr}) AS "{new_target}"')
+                                seen_targets[new_target.lower()] = {"raw_expr": raw_expr, "index": len(select_items) - 1, "compiled_expr": t_expr}
+                                logger.warning(
+                                    f"Coluna de saída duplicada '{target_name}' no output '{out_name}' renomeada defensivamente para '{new_target}'."
+                                )
+                        else:
+                            t_expr = self.compile_tmap_expression(raw_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
+                            select_items.append(f'({t_expr}) AS "{target_name}"')
+                            seen_targets[target_lower] = {"raw_expr": raw_expr, "index": len(select_items) - 1, "compiled_expr": t_expr}
+
+                    select_sql = ", ".join(select_items)
+                else:
+                    table_cols = [r[0] for r in conn.execute("DESCRIBE _tmap_working").fetchall()]
+                    clean_cols = [c for c in table_cols if not c.startswith("_") and "." not in c]
+                    if clean_cols:
+                        select_sql = ", ".join([f'"{c}"' for c in clean_cols])
+                    else:
+                        orig_main_cols = [f'_tmap_working."{c}" AS "{c}"' for c in main_df.columns if not c.startswith("_tmap")]
+                        select_sql = ", ".join(orig_main_cols) if orig_main_cols else "*"
+
+                last_step_id = f"_step_{len(lookups)}_row_id"
+                order_sql = f" ORDER BY _tmap_main_idx ASC, {last_step_id} ASC"
+                query = f"SELECT {select_sql} FROM _tmap_working{where_sql}{order_sql};"
+                try:
+                    out_df = self.execute_query_to_polars(query, conn=conn)
+                except Exception as e:
+                    raise DomainError(
+                        f"Falha na execução da saída '{out_name}' do Data Mapper (tMap): {str(e)} (Query: {query})",
+                        code="ERR_ENGINE_DUCKDB"
+                    )
+
+                results[out_name] = out_df
+
+            conn.close()
+            return results
+        finally:
+            conn.close()
 
     def close(self) -> None:
         """Fecha a conexão e libera recursos de memória."""

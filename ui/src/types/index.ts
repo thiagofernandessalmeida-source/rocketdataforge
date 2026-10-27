@@ -41,6 +41,7 @@ export interface CanvasNodeData {
     durationMs?: number;
   };
   cellId?: string;
+  layoutDirection?: "LR" | "TB";
 }
 
 export interface PipelineSummary {

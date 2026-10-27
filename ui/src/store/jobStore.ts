@@ -10,6 +10,19 @@ import { getBaseApiUrl } from "../api/client";
 export type JobStatus = "draft" | "saved" | "published";
 export type Environment = "dev" | "hml" | "prd";
 
+// ─── Ephemeral Property Sanitizers (RF-01.1 & T-1.3) ────────
+export const sanitizeNode = <T extends Record<string, any>>({
+  selected,
+  dragging,
+  measured,
+  ...node
+}: T): T => node as T;
+
+export const sanitizeEdge = <T extends Record<string, any>>({
+  selected,
+  ...edge
+}: T): T => edge as T;
+
 // ─── Multi-Canvas Cell Models ───────────────────────────────
 
 export type CellExecutionStatus = "idle" | "queued" | "running" | "success" | "failed" | "skipped" | "cancelled";
@@ -378,6 +391,10 @@ export function inferAndNormalizeNode(rawNode: any): Node<CanvasNodeData> {
     id,
     type: "genericNode",
     position: rawNode.position || { x: 0, y: 0 },
+    width: rawNode.width,
+    height: rawNode.height,
+    targetPosition: rawNode.targetPosition,
+    sourcePosition: rawNode.sourcePosition,
     data: {
       label: label || id,
       componentType,
@@ -386,6 +403,8 @@ export function inferAndNormalizeNode(rawNode: any): Node<CanvasNodeData> {
       ports,
       config,
       schema,
+      cellId: rawNode.data?.cellId || rawNode.cellId,
+      layoutDirection: rawNode.data?.layoutDirection || rawNode.layoutDirection,
       status: rawNode.data?.status,
       metrics: rawNode.data?.metrics,
     },
@@ -620,8 +639,16 @@ function loadState(): StoreState {
                   },
                 ]
           ).map((c: CanvasCellData) => {
+            const isV2OrHigher = Boolean(
+              j.schemaVersion && (j.schemaVersion.includes("v2") || j.schemaVersion >= "rdf.job/v2")
+            );
             const normNodes = (c.nodes || []).map(inferAndNormalizeNode);
-            const normEdges = (c.edges && c.edges.length > 0) ? c.edges : inferPipelineEdges(normNodes);
+            const normEdges =
+              c.edges && c.edges.length > 0
+                ? c.edges
+                : isV2OrHigher
+                ? []
+                : inferPipelineEdges(normNodes);
             return {
               ...c,
               nodes: normNodes,
@@ -1563,6 +1590,76 @@ print("Dados publicados com sucesso via context.write_output!")
     return true;
   },
 
+  deleteEdge(jobId: string, cellId: string, edgeId: string): boolean {
+    const job = state.jobs.find((j) => j.id === jobId);
+    if (!job) return false;
+
+    takeSnapshot(jobId, true);
+
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) => {
+          if (c.id !== cellId) return c;
+          const nextEdges = (c.edges || []).filter((e) => e.id !== edgeId);
+          return {
+            ...c,
+            edges: nextEdges,
+          };
+        });
+        const activeCell = updatedCells.find((c) => c.id === j.activeCellId);
+        return {
+          ...j,
+          cells: updatedCells,
+          nodes: activeCell ? activeCell.nodes : j.nodes,
+          edges: activeCell ? activeCell.edges : j.edges,
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+    return true;
+  },
+
+  deleteNode(jobId: string, cellId: string, nodeId: string): boolean {
+    const job = state.jobs.find((j) => j.id === jobId);
+    if (!job) return false;
+
+    takeSnapshot(jobId, true);
+
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) => {
+          if (c.id !== cellId) return c;
+          const nextNodes = (c.nodes || []).filter((n) => n.id !== nodeId);
+          const nextEdges = (c.edges || []).filter(
+            (e) => e.source !== nodeId && e.target !== nodeId
+          );
+          return {
+            ...c,
+            nodes: nextNodes,
+            edges: nextEdges,
+          };
+        });
+        const activeCell = updatedCells.find((c) => c.id === j.activeCellId);
+        return {
+          ...j,
+          cells: updatedCells,
+          nodes: activeCell ? activeCell.nodes : j.nodes,
+          edges: activeCell ? activeCell.edges : j.edges,
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+    return true;
+  },
+
   duplicateCell(jobId: string, cellId: string): CanvasCellData | null {
     const job = state.jobs.find((j) => j.id === jobId);
     if (!job) return null;
@@ -1929,10 +2026,27 @@ print("Dados publicados com sucesso via context.write_output!")
       ...state,
       jobs: state.jobs.map((j) => {
         if (j.id !== jobId) return j;
-        const targetCell = (j.cells || []).find((c) => c.id === cellId);
+        const updatedCells = (j.cells || []).map((c) => {
+          if (c.id !== cellId) {
+            return {
+              ...c,
+              nodes: (c.nodes || []).map(({ selected, dragging, measured, ...n }: any) => ({
+                ...n,
+                selected: false,
+              })),
+              edges: (c.edges || []).map(({ selected, ...e }: any) => ({
+                ...e,
+                selected: false,
+              })),
+            };
+          }
+          return c;
+        });
+        const targetCell = updatedCells.find((c) => c.id === cellId);
         return {
           ...j,
           activeCellId: cellId,
+          cells: updatedCells,
           nodes: targetCell ? targetCell.nodes : j.nodes,
           edges: targetCell ? targetCell.edges : j.edges,
         };
@@ -1950,24 +2064,30 @@ print("Dados publicados com sucesso via context.write_output!")
     viewport?: { x: number; y: number; zoom: number }
   ): void {
     takeSnapshot(jobId);
-    // Assegura que todos os nós tenham data.cellId registrado e higieniza arestas órfãs
-    const safeNodes = (nodes || []).map((n) => ({
-      ...n,
-      data: {
-        ...n.data,
-        cellId,
-      },
-    }));
+    // Assegura que todos os nós tenham data.cellId registrado e higieniza arestas órfãs e propriedades efêmeras
+    const safeNodes = (nodes || []).map((n) => {
+      const sanitized = sanitizeNode(n);
+      return {
+        ...sanitized,
+        data: {
+          ...sanitized.data,
+          cellId,
+        },
+      };
+    });
     const validNodeIds = new Set(safeNodes.map((n) => n.id));
     const safeEdges = (edges || [])
       .filter((e) => validNodeIds.has(e.source) && validNodeIds.has(e.target))
-      .map((e) => ({
-        ...e,
-        data: {
-          ...e.data,
-          cellId,
-        },
-      }));
+      .map((e) => {
+        const sanitized = sanitizeEdge(e);
+        return {
+          ...sanitized,
+          data: {
+            ...sanitized.data,
+            cellId,
+          },
+        };
+      });
 
     state = {
       ...state,
@@ -2079,10 +2199,14 @@ print("Dados publicados com sucesso via context.write_output!")
     const name = imported.name || rawJob.name || "Job Importado";
     const defaultFolderId = state.folders.find((f) => f.parentId === null)?.id ?? "folder-root";
     const folderId = targetFolderId || rawJob.folderId || defaultFolderId;
+    const schemaVersion = (imported as any).schemaVersion || (rawJob as any).schemaVersion || "";
+    const isV2OrHigher = Boolean(
+      schemaVersion && (schemaVersion.includes("v2") || schemaVersion >= "rdf.job/v2")
+    );
     const rawNodes = imported.nodes || rawJob.nodes || [];
     const normalizedNodes = rawNodes.map(inferAndNormalizeNode);
     let edges = imported.edges || rawJob.edges || [];
-    if (edges.length === 0 && normalizedNodes.length > 0) {
+    if (!isV2OrHigher && edges.length === 0 && normalizedNodes.length > 0) {
       edges = inferPipelineEdges(normalizedNodes);
     }
 
@@ -2095,7 +2219,12 @@ print("Dados publicados com sucesso via context.write_output!")
       Array.isArray(rawCells) && rawCells.length > 0
         ? rawCells.map((c: CanvasCellData) => {
             const normC = (c.nodes || []).map(inferAndNormalizeNode);
-            const edgeC = c.edges && c.edges.length > 0 ? c.edges : inferPipelineEdges(normC);
+            const edgeC =
+              c.edges && c.edges.length > 0
+                ? c.edges
+                : isV2OrHigher
+                ? []
+                : inferPipelineEdges(normC);
             return {
               ...c,
               nodes: normC,
