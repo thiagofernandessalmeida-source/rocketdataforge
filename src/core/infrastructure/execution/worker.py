@@ -158,6 +158,8 @@ class ExecutionWorker:
                             self._execute_scan_node(phys_op, cfg, plan, token, task, node_buffers)
                         elif op_type == "filter":
                             self._execute_filter_node(phys_op, cfg, token, task, node_buffers)
+                        elif op_type == "aggregate":
+                            self._execute_aggregate_node(phys_op, cfg, token, task, node_buffers)
                         elif op_type == "project":
                             self._execute_project_node(phys_op, cfg, token, task, node_buffers)
                         elif op_type == "join":
@@ -184,8 +186,42 @@ class ExecutionWorker:
                         )
                         time.sleep(retry_interval)
 
+                # Aplicação de Data Masking / PII nas saídas do nó (Spec 006 - Fase 2)
+                raw_cfg = cfg.get("raw_config") or {}
+                mask_rules_cfg = cfg.get("masking_rules") or raw_cfg.get("masking_rules")
+                if mask_rules_cfg:
+                    from src.core.application.security.masking import DataMasker, MaskingRule
+                    parsed_rules = []
+                    for r in mask_rules_cfg:
+                        if isinstance(r, MaskingRule):
+                            parsed_rules.append(r)
+                        elif isinstance(r, dict):
+                            parsed_rules.append(MaskingRule(
+                                column_name=r.get("column_name") or r.get("column") or r.get("name"),
+                                masking_type=r.get("masking_type") or r.get("type"),
+                                salt=r.get("salt") or r.get("masking_salt"),
+                                custom_value=r.get("custom_value")
+                            ))
+                    if parsed_rules:
+                        if node_id in node_buffers:
+                            node_buffers[node_id] = [
+                                DataMasker.apply_masking(ch, parsed_rules)
+                                for ch in node_buffers[node_id]
+                            ]
+                        for k in list(node_buffers.keys()):
+                            if k.startswith(f"{node_id}:") or k.startswith(f"{node_id}."):
+                                node_buffers[k] = [
+                                    DataMasker.apply_masking(ch, parsed_rules)
+                                    for ch in node_buffers[k]
+                                ]
+
                 task.complete(datetime.now(timezone.utc))
+                try:
+                    self._persist_node_preview(execution.id, node_id, node_buffers)
+                except Exception as prev_err:
+                    logger.debug(f"Falha não-bloqueante ao salvar preview para nó {node_id}: {prev_err}")
                 current_task = None
+
 
             execution.succeed()
 
@@ -947,9 +983,46 @@ class ExecutionWorker:
     ) -> None:
         input_id = phys_op.input_ids[0]
         input_chunks = self._get_node_chunks(input_id, node_buffers)
-        expression = cfg.get("predicate", "")
+        conditions_data = cfg.get("conditions", [])
 
+        if conditions_data:
+            from src.core.application.compiler.operators import FilterCondition, FilterOperator
+            conds = [
+                FilterCondition(
+                    column=c.get("column", ""),
+                    operator=c.get("operator", "=="),
+                    value=c.get("value")
+                )
+                for c in conditions_data
+            ]
+            op = FilterOperator(
+                id=phys_op.id,
+                conditions=conds,
+                logical_operator=cfg.get("logical_operator", "AND"),
+                predicate=cfg.get("predicate", "")
+            )
+            combined_input = pl.concat(input_chunks) if input_chunks else pl.DataFrame()
+            res = self.duckdb_runner.execute_filter(combined_input, op)
+            accepted = res["output"]
+            rejected = res["reject"]
+
+            task.record_progress(
+                rows_in_increment=combined_input.height,
+                rows_out_increment=accepted.height,
+                rejected_increment=rejected.height
+            )
+            node_buffers[phys_op.id] = [accepted]
+            node_buffers[f"{phys_op.id}:output"] = [accepted]
+            node_buffers[f"{phys_op.id}.output"] = [accepted]
+            node_buffers[f"{phys_op.id}:main"] = [accepted]
+            node_buffers[f"{phys_op.id}.main"] = [accepted]
+            node_buffers[f"{phys_op.id}:reject"] = [rejected]
+            node_buffers[f"{phys_op.id}.reject"] = [rejected]
+            return
+
+        expression = cfg.get("predicate") or cfg.get("filter_expression", "")
         output_chunks: List[pl.DataFrame] = []
+        reject_chunks: List[pl.DataFrame] = []
         for chunk in input_chunks:
             token.check_cancelled()
             accepted, rejected = self.polars_runner.execute_filter(chunk, expression, capture_rejects=True)
@@ -961,8 +1034,49 @@ class ExecutionWorker:
                 rejected_increment=rej_count
             )
             output_chunks.append(accepted)
+            if rejected is not None:
+                reject_chunks.append(rejected)
 
         node_buffers[phys_op.id] = output_chunks
+        node_buffers[f"{phys_op.id}:output"] = output_chunks
+        node_buffers[f"{phys_op.id}.output"] = output_chunks
+        node_buffers[f"{phys_op.id}:main"] = output_chunks
+        node_buffers[f"{phys_op.id}.main"] = output_chunks
+        node_buffers[f"{phys_op.id}:reject"] = reject_chunks
+        node_buffers[f"{phys_op.id}.reject"] = reject_chunks
+
+    def _execute_aggregate_node(
+        self, phys_op, cfg, token, task, node_buffers
+    ) -> None:
+        input_id = phys_op.input_ids[0]
+        input_chunks = self._get_node_chunks(input_id, node_buffers)
+        combined_input = pl.concat(input_chunks) if input_chunks else pl.DataFrame()
+
+        from src.core.application.compiler.operators import AggregateField, AggregateOperator
+        aggs = [
+            AggregateField(
+                column=a.get("column", "*"),
+                function=a.get("function", "COUNT"),
+                alias=a.get("alias"),
+                delimiter=a.get("delimiter", ", ")
+            )
+            for a in cfg.get("aggregations", [])
+        ]
+        op = AggregateOperator(
+            id=phys_op.id,
+            group_by=cfg.get("group_by", []),
+            aggregations=aggs
+        )
+        res_df = self.duckdb_runner.execute_aggregate(combined_input, op)
+        task.record_progress(
+            rows_in_increment=combined_input.height,
+            rows_out_increment=res_df.height
+        )
+        node_buffers[phys_op.id] = [res_df]
+        node_buffers[f"{phys_op.id}:main"] = [res_df]
+        node_buffers[f"{phys_op.id}:output"] = [res_df]
+        node_buffers[f"{phys_op.id}.main"] = [res_df]
+        node_buffers[f"{phys_op.id}.output"] = [res_df]
 
     def _execute_project_node(
         self, phys_op, cfg, token, task, node_buffers
@@ -1394,4 +1508,45 @@ class ExecutionWorker:
         node_buffers[phys_op.id] = upstream_chunks if upstream_chunks else [pl.DataFrame()]
         task.record_progress(rows_in_increment=0, rows_out_increment=0)
         logger.info(f"Nó de barreira '{phys_op.id}' sincronizado com sucesso ({len(inputs)} entradas conectadas).")
+
+    def _persist_node_preview(
+        self,
+        execution_id: str,
+        node_id: str,
+        node_buffers: Dict[str, List[pl.DataFrame]]
+    ) -> None:
+        """Armazena automaticamente o preview dos buffers de saída do nó no DuckDBRunner (RF-02.3)."""
+        saved_ports = set()
+        prefix = f"{node_id}:"
+        prefix_dot = f"{node_id}."
+        for key, chunks in list(node_buffers.items()):
+            if not chunks:
+                continue
+            if key == node_id:
+                port_name = "main"
+                if port_name not in saved_ports:
+                    try:
+                        df = pl.concat(chunks) if len(chunks) > 1 else chunks[0]
+                        self.duckdb_runner.store_node_preview(execution_id, node_id, port_name, df)
+                        saved_ports.add(port_name)
+                    except Exception as err:
+                        logger.debug(f"Não foi possível salvar preview para {node_id}:{port_name}: {err}")
+            elif key.startswith(prefix):
+                port_name = key[len(prefix):]
+                if port_name not in saved_ports:
+                    try:
+                        df = pl.concat(chunks) if len(chunks) > 1 else chunks[0]
+                        self.duckdb_runner.store_node_preview(execution_id, node_id, port_name, df)
+                        saved_ports.add(port_name)
+                    except Exception as err:
+                        logger.debug(f"Não foi possível salvar preview para {node_id}:{port_name}: {err}")
+            elif key.startswith(prefix_dot):
+                port_name = key[len(prefix_dot):]
+                if port_name not in saved_ports:
+                    try:
+                        df = pl.concat(chunks) if len(chunks) > 1 else chunks[0]
+                        self.duckdb_runner.store_node_preview(execution_id, node_id, port_name, df)
+                        saved_ports.add(port_name)
+                    except Exception as err:
+                        logger.debug(f"Não foi possível salvar preview para {node_id}:{port_name}: {err}")
 

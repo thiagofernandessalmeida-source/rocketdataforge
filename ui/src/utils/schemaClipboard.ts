@@ -40,9 +40,12 @@ export function serializeSchemaColumns(columns: SchemaColumn[]): SerializedSchem
       format: c.format,
       comment: c.comment,
       isPrimaryKey: !!c.isPrimaryKey,
-      defaultValue: c.defaultValue
+      defaultValue: c.defaultValue,
+      masking: c.masking,
+      maskingSalt: c.maskingSalt
     }))
   };
+
 
   const jsonStr = JSON.stringify(payload, null, 2);
 

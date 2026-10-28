@@ -11,6 +11,13 @@ class ExecutionResponse(BaseModel):
     correlation_id: str
 
 
+class PartialExecutionRequest(BaseModel):
+    target_node_id: str
+    pipeline_id: Optional[str] = None
+    version_id: Optional[str] = None
+    draft_definition: Optional[dict] = None
+
+
 class TaskRunDetail(BaseModel):
     node_id: str
     status: str
@@ -36,3 +43,16 @@ class LogEntry(BaseModel):
     execution_id: str
     node_id: Optional[str] = None
     message: str
+
+
+class NodePreviewResponse(BaseModel):
+    execution_id: str
+    node_id: str
+    port: str
+    available_ports: List[str] = Field(default_factory=list)
+    columns: List[str] = Field(default_factory=list)
+    rows: List[dict] = Field(default_factory=list)
+    total_rows: int
+    page: int = 1
+    page_size: int = 50
+    total_pages: int = 1

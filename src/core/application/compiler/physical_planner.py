@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
 from src.core.application.compiler.operators import (
+    AggregateOperator,
     LogicalBarrier,
     LogicalFilter,
     LogicalJoin,
@@ -95,8 +96,8 @@ class PhysicalPlanner:
 
     def _select_engine(self, op: Any, has_relational_join: bool) -> str:
         """Regra determinística de seleção de engine (ADR-010)."""
-        # Joins, DuckDB e tMap utilizam o motor DuckDB
-        if isinstance(op, LogicalJoin):
+        # Joins, Agregações, DuckDB e tMap utilizam o motor DuckDB
+        if isinstance(op, (LogicalJoin, AggregateOperator)) or getattr(op, "operator_type", None) == "aggregate":
             return "duckdb"
 
         if isinstance(op, LogicalBarrier) or getattr(op, "operator_type", None) == "barrier":

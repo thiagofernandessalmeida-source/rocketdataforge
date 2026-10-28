@@ -200,17 +200,64 @@ FILTER_TRANSFORM = ComponentDefinition(
     version=SemanticVersion(1, 0, 0),
     name="Filter",
     category="transform",
-    description="Filtra registros a partir de uma expressão booleana.",
+    description="Filtra registros a partir de predicados lógicos ou expressão booleana com suporte a porta reject.",
     ports=[
         PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET),
-        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, description="Registros aprovados"),
-        PortDefinition(name="reject", direction=PortDirection.OUTPUT, type=PortType.REJECT, required=False, description="Registros reprovados")
+        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, description="Registros aprovados (Output)"),
+        PortDefinition(name="reject", direction=PortDirection.OUTPUT, type=PortType.REJECT, required=False, description="Registros reprovados (Reject)")
     ],
     config_schema={
         "type": "object",
-        "required": ["expression"],
         "properties": {
-            "expression": {"type": "string", "description": "Expressão booleana (ex: status == 'ACTIVE')"}
+            "logical_operator": {"type": "string", "enum": ["AND", "OR"], "default": "AND"},
+            "conditions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["column", "operator"],
+                    "properties": {
+                        "column": {"type": "string"},
+                        "operator": {"type": "string", "enum": ["==", "!=", ">", "<", ">=", "<=", "LIKE", "NOT LIKE", "IN", "NOT IN", "IS NULL", "IS NOT NULL"]},
+                        "value": {}
+                    }
+                }
+            },
+            "expression": {"type": "string", "description": "Expressão booleana livre opcional"}
+        }
+    }
+)
+
+AGGREGATE_TRANSFORM = ComponentDefinition(
+    type_id="core.aggregate",
+    version=SemanticVersion(1, 0, 0),
+    name="Aggregate",
+    category="transform",
+    description="Agrupa registros e calcula funções analíticas (COUNT, SUM, AVG, MIN, MAX, STRING_AGG) via GROUP BY.",
+    ports=[
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET),
+        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, description="Registros agregados")
+    ],
+    config_schema={
+        "type": "object",
+        "properties": {
+            "group_by": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Colunas de agrupamento (GROUP BY)"
+            },
+            "aggregations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["column", "function"],
+                    "properties": {
+                        "column": {"type": "string"},
+                        "function": {"type": "string", "enum": ["COUNT", "COUNT_DISTINCT", "SUM", "AVG", "MIN", "MAX", "FIRST", "LAST", "STRING_AGG"]},
+                        "alias": {"type": "string"},
+                        "delimiter": {"type": "string", "default": ", "}
+                    }
+                }
+            }
         }
     }
 )
@@ -479,6 +526,7 @@ CATALOG_COMPONENTS: List[ComponentDefinition] = [
     TMAP_TRANSFORM,
     SELECT_TRANSFORM,
     FILTER_TRANSFORM,
+    AGGREGATE_TRANSFORM,
     JOIN_TRANSFORM,
     DATABASE_TARGET,
     FILE_TARGET,

@@ -150,3 +150,121 @@ export interface InferredSchema {
   dataset_name: string;
   fields: InferredField[];
 }
+
+export interface ColumnProfile {
+  column_name: string;
+  total_count: number;
+  null_count: number;
+  null_percentage: number;
+  distinct_count: number;
+  min_value: any;
+  max_value: any;
+  inferred_type: string;
+  sample_values?: any[];
+}
+
+export interface DatasetProfile {
+  row_count: number;
+  column_count: number;
+  columns: Record<string, ColumnProfile>;
+}
+
+export interface TypeMismatch {
+  column: string;
+  frozen_type: string;
+  current_type: string;
+}
+
+export interface SchemaDriftReport {
+  has_drift: boolean;
+  added_columns: string[];
+  removed_columns: string[];
+  type_mismatches: TypeMismatch[];
+  drift_summary: string;
+}
+
+export interface NodePreviewData {
+  execution_id: string;
+  node_id: string;
+  port: string;
+  available_ports: string[];
+  columns: string[];
+  rows: Record<string, any>[];
+  total_rows: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export interface LineageTransformationEdge {
+  source_node_id: string;
+  source_port: string;
+  source_column: string;
+  target_node_id: string;
+  target_port: string;
+  target_column: string;
+  transformation_type: "PASSTHROUGH" | "EXPRESSION" | "LOOKUP_MATCH";
+  expression?: string;
+}
+
+export interface ColumnLineageReport {
+  pipeline_id: string;
+  target_column?: string;
+  target_node_id?: string;
+  nodes: string[];
+  edges: LineageTransformationEdge[];
+}
+
+export interface ScheduleItem {
+  id: string;
+  pipeline_id: string;
+  name: string;
+  cron_expression?: string;
+  interval_seconds?: number;
+  concurrency_policy: "ALLOW" | "SKIP_IF_RUNNING" | "QUEUE";
+  enabled: boolean;
+  webhook_url?: string;
+  webhook_events?: string[];
+  created_at?: string;
+  last_run_at?: string;
+  next_run_at?: string;
+  last_status?: string;
+}
+
+export interface ScheduleCreateData {
+  pipeline_id: string;
+  name: string;
+  cron_expression?: string;
+  interval_seconds?: number;
+  concurrency_policy?: "ALLOW" | "SKIP_IF_RUNNING" | "QUEUE";
+  enabled?: boolean;
+  webhook_url?: string;
+  webhook_events?: string[];
+}
+
+export interface StandaloneCodeResult {
+  script_py: string;
+  requirements_txt: string;
+  env_example: string;
+  pipeline_name: string;
+  generated_at: string;
+}
+
+export interface AirflowDagResult {
+  dag_py: string;
+  dag_id: string;
+  schedule_interval: string;
+  generated_at: string;
+}
+
+export interface AirflowExportOptions {
+  dag_id?: string;
+  schedule_interval?: string;
+  start_date?: string;
+  owner?: string;
+  retries?: number;
+  retry_delay_minutes?: number;
+  catchup?: boolean;
+  tags?: string[];
+}
+

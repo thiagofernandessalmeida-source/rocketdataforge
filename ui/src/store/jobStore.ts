@@ -120,7 +120,10 @@ export interface SchemaColumn {
   comment?: string;
   isPrimaryKey?: boolean;
   defaultValue?: string;
+  masking?: string;
+  maskingSalt?: string;
 }
+
 
 // ─── Connections ─────────────────────────────────────────────
 

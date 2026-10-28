@@ -1,15 +1,76 @@
 import logging
 import os
 import re
+import tempfile
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 import duckdb
 import polars as pl
 from src.core.domain.shared.exceptions import DomainError, TMapExecutionError
 from src.core.application.compiler.expressions.compiler import compile_expression
+from src.core.infrastructure.execution.cancellation import (
+    register_active_connection,
+    unregister_active_connection,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def get_system_ram_bytes() -> int:
+    """Detecta a memória RAM física total do sistema em bytes."""
+    try:
+        import ctypes
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+        stat = MEMORYSTATUSEX()
+        stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            return int(stat.ullTotalPhys)
+    except Exception:
+        pass
+    try:
+        return int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
+    except Exception:
+        pass
+    return 8 * 1024 * 1024 * 1024  # 8GB padrão
+
+
+def resolve_default_max_memory() -> str:
+    """Resolve o limite de memória do DuckDB: RDF_DUCKDB_MAX_MEMORY ou 75% da RAM disponível."""
+    env_mem = os.getenv("RDF_DUCKDB_MAX_MEMORY")
+    if env_mem and env_mem.strip():
+        return env_mem.strip()
+    ram_bytes = get_system_ram_bytes()
+    mb = max(256, int((ram_bytes * 0.75) / (1024 * 1024)))
+    return f"{mb}MB"
+
+
+def resolve_default_temp_directory() -> str:
+    """Resolve o diretório scratch para spillover temporário do DuckDB."""
+    env_dir = os.getenv("RDF_DUCKDB_TEMP_DIRECTORY") or os.getenv("RDF_SCRATCH_DIR")
+    if env_dir:
+        os.makedirs(env_dir, exist_ok=True)
+        return env_dir
+    workspace_dir = os.getenv("RDF_WORKSPACE_DIR")
+    if workspace_dir and os.path.isdir(workspace_dir):
+        scratch = os.path.join(workspace_dir, "scratch", "duckdb")
+        os.makedirs(scratch, exist_ok=True)
+        return scratch
+    default_tmp = os.path.join(tempfile.gettempdir(), "rocketdataforge", "duckdb_scratch")
+    os.makedirs(default_tmp, exist_ok=True)
+    return default_tmp
 
 
 class DuckDBRunner:
@@ -17,24 +78,40 @@ class DuckDBRunner:
 
     def __init__(
         self,
-        memory_limit: str = "512MB",
+        memory_limit: Optional[str] = None,
         temp_directory: Optional[str] = None,
         database_path: Optional[str] = None
     ):
-        self.memory_limit = memory_limit
-        self.temp_directory = temp_directory
+        if memory_limit is not None:
+            self.memory_limit = memory_limit
+        else:
+            self.memory_limit = resolve_default_max_memory()
+
+        if temp_directory is not None:
+            self.temp_directory = temp_directory
+        else:
+            env_temp = os.getenv("RDF_DUCKDB_TEMP_DIRECTORY") or os.getenv("RDF_SCRATCH_DIR")
+            self.temp_directory = env_temp if env_temp else resolve_default_temp_directory()
+
+        if self.temp_directory:
+            os.makedirs(self.temp_directory, exist_ok=True)
+
         self.database_path = database_path
         self._conn: Optional[duckdb.DuckDBPyConnection] = None
         self._write_lock = threading.RLock()
+        self._preview_metadata: Dict[str, Dict[str, Any]] = {}
 
     def get_connection(self) -> duckdb.DuckDBPyConnection:
-        """Obtém ou inicializa a conexão com DuckDB com configurações de limite de memória."""
+        """Obtém ou inicializa a conexão com DuckDB com limites de memória, scratch e isolamento de segurança."""
         if self._conn is None:
             db_target = self.database_path or ":memory:"
             self._conn = duckdb.connect(db_target)
-            self._conn.execute(f"SET max_memory = '{self.memory_limit}';")
+            if self.memory_limit:
+                self._conn.execute(f"SET max_memory = '{self.memory_limit}';")
             if self.temp_directory:
-                self._conn.execute(f"SET temp_directory = '{self.temp_directory}';")
+                clean_temp = self.temp_directory.replace("\\", "/")
+                self._conn.execute(f"SET temp_directory = '{clean_temp}';")
+            self._conn.execute("SET enable_external_access = false;")
         return self._conn
 
     def register_dataframe(self, view_name: str, df: pl.DataFrame) -> None:
@@ -68,7 +145,12 @@ class DuckDBRunner:
         clean_path = file_path.replace("\\", "/")
         fmt = (format or format_hint).lower()
         effective_query = query if query is not None else custom_query
-        conn = self.get_connection()
+        file_conn = duckdb.connect(":memory:")
+        if self.memory_limit:
+            file_conn.execute(f"SET max_memory = '{self.memory_limit}';")
+        if self.temp_directory:
+            clean_temp = self.temp_directory.replace("\\", "/")
+            file_conn.execute(f"SET temp_directory = '{clean_temp}';")
 
         if fmt == "parquet" or clean_path.endswith(".parquet"):
             read_fn = f"read_parquet('{clean_path}')"
@@ -77,16 +159,18 @@ class DuckDBRunner:
         else:
             read_fn = f"read_csv_auto('{clean_path}')"
 
-        if effective_query and effective_query.strip():
-            # Cria view temporária 'source_data' e executa a query do usuário
-            try:
-                conn.execute(f"CREATE OR REPLACE TEMPORARY VIEW source_data AS SELECT * FROM {read_fn};")
-                conn.execute(f"CREATE OR REPLACE TEMPORARY VIEW this_table AS SELECT * FROM source_data;")
-                return self.execute_query_to_polars(effective_query, conn=conn)
-            except Exception as e:
-                raise DomainError(f"Erro ao executar query DuckDB no arquivo '{clean_path}': {str(e)}", code="ERR_ENGINE_DUCKDB")
-        else:
-            return self.execute_query_to_polars(f"SELECT * FROM {read_fn}", conn=conn)
+        try:
+            if effective_query and effective_query.strip():
+                # Cria view temporária 'source_data' e executa a query do usuário
+                file_conn.execute(f"CREATE OR REPLACE TEMPORARY VIEW source_data AS SELECT * FROM {read_fn};")
+                file_conn.execute(f"CREATE OR REPLACE TEMPORARY VIEW this_table AS SELECT * FROM source_data;")
+                return self.execute_query_to_polars(effective_query, conn=file_conn)
+            else:
+                return self.execute_query_to_polars(f"SELECT * FROM {read_fn}", conn=file_conn)
+        except Exception as e:
+            raise DomainError(f"Erro ao executar query DuckDB no arquivo '{clean_path}': {str(e)}", code="ERR_ENGINE_DUCKDB")
+        finally:
+            file_conn.close()
 
     def execute_query_on_database(self, database_path: str, query: str, read_only: bool = True, fetch_size: Optional[int] = None) -> pl.DataFrame:
         """Executa consulta em um banco de dados DuckDB (.duckdb ou :memory:)."""
@@ -155,6 +239,154 @@ class DuckDBRunner:
         view_name = f"cell_output_{clean_cell}"
         with self._write_lock:
             return self.execute_query_to_polars(f"SELECT * FROM {view_name};")
+
+    def store_node_preview(
+        self,
+        execution_id: str,
+        node_id: str,
+        port_name: str,
+        df: pl.DataFrame,
+        max_rows: int = 5000
+    ) -> str:
+        """Armazena até `max_rows` (padrão 5.000) de prévia de dados para inspeção interativa (RF-02.3, RNF-02)."""
+        if df is None:
+            df = pl.DataFrame()
+
+        capped_df = df.head(max_rows)
+        clean_exec = re.sub(r"[^a-zA-Z0-9_]", "_", execution_id)
+        clean_node = re.sub(r"[^a-zA-Z0-9_]", "_", node_id)
+        clean_port = re.sub(r"[^a-zA-Z0-9_]", "_", port_name)
+        table_name = f"_preview_{clean_exec}_{clean_node}_{clean_port}"
+
+        with self._write_lock:
+            conn = self.get_connection()
+            tmp_view = f"_tmp_view_{table_name}"
+            conn.register(tmp_view, capped_df.to_arrow())
+            conn.execute(f"CREATE OR REPLACE TEMPORARY TABLE {table_name} AS SELECT * FROM {tmp_view};")
+            conn.unregister(tmp_view)
+
+            cache_key = f"{execution_id}:{node_id}:{port_name}"
+            self._preview_metadata[cache_key] = {
+                "execution_id": execution_id,
+                "node_id": node_id,
+                "port_name": port_name,
+                "table_name": table_name,
+                "created_at": time.time(),
+                "total_rows": capped_df.height,
+                "columns": list(capped_df.columns),
+            }
+
+        return table_name
+
+    def get_node_preview(
+        self,
+        execution_id: str,
+        node_id: str,
+        port_name: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 50,
+        search: Optional[str] = None,
+        sort_by: Optional[str] = None,
+        sort_desc: bool = False,
+        ttl_seconds: float = 3600.0
+    ) -> Optional[Dict[str, Any]]:
+        """Recupera a prévia paginada de dados do nó/porta especificados, aplicando busca e ordenação."""
+        with self._write_lock:
+            matching_keys = [
+                k for k in self._preview_metadata.keys()
+                if k.startswith(f"{execution_id}:{node_id}:")
+            ]
+            if not matching_keys:
+                return None
+
+            available_ports = [self._preview_metadata[k]["port_name"] for k in matching_keys]
+
+            target_port = port_name
+            if not target_port:
+                for p in ("main", "output", "out", "out1"):
+                    if p in available_ports:
+                        target_port = p
+                        break
+                if not target_port:
+                    target_port = available_ports[0]
+
+            cache_key = f"{execution_id}:{node_id}:{target_port}"
+            meta = self._preview_metadata.get(cache_key)
+            if not meta:
+                return None
+
+            now = time.time()
+            if (now - meta["created_at"]) >= ttl_seconds:
+                self._drop_preview_table(meta["table_name"])
+                del self._preview_metadata[cache_key]
+                return None
+
+            conn = self.get_connection()
+            table_name = meta["table_name"]
+            columns = meta["columns"]
+
+            where_clause = ""
+            if search and search.strip():
+                clean_search = search.replace("'", "''")
+                conditions = [
+                    f"CAST(\"{col}\" AS VARCHAR) ILIKE '%{clean_search}%'"
+                    for col in columns
+                ]
+                if conditions:
+                    where_clause = f"WHERE {' OR '.join(conditions)}"
+
+            count_query = f"SELECT COUNT(*) AS total FROM {table_name} {where_clause};"
+            total_filtered = conn.execute(count_query).fetchone()[0]
+
+            order_clause = ""
+            if sort_by and sort_by in columns:
+                direction = "DESC" if sort_desc else "ASC"
+                order_clause = f"ORDER BY \"{sort_by}\" {direction}"
+
+            page = max(1, page)
+            page_size = max(1, page_size)
+            offset = (page - 1) * page_size
+            data_query = f"SELECT * FROM {table_name} {where_clause} {order_clause} LIMIT {page_size} OFFSET {offset};"
+
+            arrow_batch = conn.execute(data_query).arrow()
+            result_df = pl.from_arrow(arrow_batch)
+            rows = result_df.to_dicts()
+
+            total_pages = (total_filtered + page_size - 1) // page_size if total_filtered > 0 else 1
+
+            return {
+                "execution_id": execution_id,
+                "node_id": node_id,
+                "port": target_port,
+                "available_ports": available_ports,
+                "columns": columns,
+                "rows": rows,
+                "total_rows": total_filtered,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": total_pages,
+            }
+
+    def cleanup_expired_previews(self, ttl_seconds: float = 3600.0) -> int:
+        """Limpa tabelas e metadados de prévias cuja idade ultrapassa o TTL."""
+        with self._write_lock:
+            now = time.time()
+            expired_keys = [
+                k for k, meta in self._preview_metadata.items()
+                if (now - meta["created_at"]) >= ttl_seconds
+            ]
+            for k in expired_keys:
+                meta = self._preview_metadata.pop(k, None)
+                if meta:
+                    self._drop_preview_table(meta["table_name"])
+            return len(expired_keys)
+
+    def _drop_preview_table(self, table_name: str) -> None:
+        try:
+            conn = self.get_connection()
+            conn.execute(f"DROP TABLE IF EXISTS {table_name};")
+        except Exception:
+            pass
 
     def write_to_duckdb(
         self,
@@ -319,6 +551,38 @@ class DuckDBRunner:
         """
 
         return self.execute_query_to_polars(query)
+
+    def execute_filter(
+        self,
+        input_df: pl.DataFrame,
+        operator: Any
+    ) -> Dict[str, pl.DataFrame]:
+        """Executa filtragem declarativa tFilterRow gerando streams de 'output' e 'reject'."""
+        view_name = f"_filter_in_{int(time.time() * 1000)}"
+        self.register_dataframe(view_name, input_df)
+
+        sql_out = operator.to_sql(view_name, port="output")
+        sql_rej = operator.to_sql(view_name, port="reject")
+
+        df_out = self.execute_query_to_polars(sql_out)
+        df_rej = self.execute_query_to_polars(sql_rej)
+
+        return {
+            "output": df_out,
+            "reject": df_rej
+        }
+
+    def execute_aggregate(
+        self,
+        input_df: pl.DataFrame,
+        operator: Any
+    ) -> pl.DataFrame:
+        """Executa agregação declarativa tAggregateRow com GROUP BY via DuckDB."""
+        view_name = f"_agg_in_{int(time.time() * 1000)}"
+        self.register_dataframe(view_name, input_df)
+
+        sql_agg = operator.to_sql(view_name)
+        return self.execute_query_to_polars(sql_agg)
 
     @staticmethod
     def transpile_expression(expr: str, known_columns: Optional[List[str]] = None) -> str:
@@ -585,7 +849,21 @@ class DuckDBRunner:
                 known_cols.append(v_name)
 
         conn = duckdb.connect(":memory:")
+        if self.memory_limit:
+            conn.execute(f"SET max_memory = '{self.memory_limit}';")
+        if self.temp_directory:
+            os.makedirs(self.temp_directory, exist_ok=True)
+            clean_temp = self.temp_directory.replace("\\", "/")
+            conn.execute(f"SET temp_directory = '{clean_temp}';")
         conn.execute("SET enable_external_access = false;")
+
+        exec_id = kwargs.get("execution_id")
+        cancellation_token = kwargs.get("cancellation_token")
+        if cancellation_token and hasattr(cancellation_token, "register_connection"):
+            cancellation_token.register_connection(conn)
+        if exec_id:
+            register_active_connection(exec_id, conn)
+
         try:
 
             # ─── 1. Criação das Views e Tabela de Trabalho do Fluxo Principal (Main) ───
@@ -1073,10 +1351,16 @@ class DuckDBRunner:
 
                 results[out_name] = out_df
 
-            conn.close()
             return results
         finally:
-            conn.close()
+            if exec_id:
+                unregister_active_connection(exec_id)
+            if cancellation_token and hasattr(cancellation_token, "register_connection"):
+                cancellation_token.register_connection(None)
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def close(self) -> None:
         """Fecha a conexão e libera recursos de memória."""

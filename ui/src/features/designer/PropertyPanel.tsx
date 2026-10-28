@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import { Node } from "reactflow";
-import { CanvasNodeData } from "../../types";
+import { CanvasNodeData, DatasetProfile, SchemaDriftReport, ColumnProfile } from "../../types";
 import { SchemaEditor, SchemaEditorModal } from "./SchemaEditor";
 import { ImportSchemaModal } from "./ImportSchemaModal";
 import { TMapModal, TMapConfig } from "./TMapModal";
@@ -24,6 +24,14 @@ import {
   BookOpen,
   ChevronRight,
   FileText,
+  Filter,
+  BarChart2,
+  Plus,
+  AlertTriangle,
+  AlertCircle,
+  RefreshCw,
+  Activity,
+  X,
 } from "lucide-react";
 import { ConnectionEntry, ContextVariable, SchemaColumn, Environment, QueryEntry, QueryDialect, ConnectionType } from "../../store/jobStore";
 import { SqlAutocompleteTextarea, AutocompleteSource } from "../../components/common/SqlAutocompleteTextarea";
@@ -378,6 +386,48 @@ export const TableActionsSection: React.FC<{
   );
 };
 
+// ─── Local Schema Drift Calculation Fallback ───────────────────
+export function computeLocalSchemaDrift(frozen: SchemaColumn[], current: SchemaColumn[]): SchemaDriftReport {
+  const frozenMap = new Map((frozen || []).map((c) => [c.name.toLowerCase().trim(), c]));
+  const currentMap = new Map((current || []).map((c) => [c.name.toLowerCase().trim(), c]));
+
+  const added: string[] = [];
+  const removed: string[] = [];
+  const mismatches: { column: string; frozen_type: string; current_type: string }[] = [];
+
+  for (const [name, col] of currentMap.entries()) {
+    if (!frozenMap.has(name)) {
+      added.push(col.name);
+    } else {
+      const fCol = frozenMap.get(name)!;
+      if (fCol.type.toLowerCase() !== col.type.toLowerCase()) {
+        mismatches.push({
+          column: col.name,
+          frozen_type: fCol.type,
+          current_type: col.type,
+        });
+      }
+    }
+  }
+
+  for (const [name, col] of frozenMap.entries()) {
+    if (!currentMap.has(name)) {
+      removed.push(col.name);
+    }
+  }
+
+  const hasDrift = added.length > 0 || removed.length > 0 || mismatches.length > 0;
+  return {
+    has_drift: hasDrift,
+    added_columns: added,
+    removed_columns: removed,
+    type_mismatches: mismatches,
+    drift_summary: hasDrift
+      ? `${added.length} adicionada(s), ${removed.length} removida(s), ${mismatches.length} tipos alterados`
+      : "Sem drift",
+  };
+}
+
 // ─── Main Panel Component ─────────────────────────────────────
 export const PropertyPanel: React.FC<PropertyPanelProps> = ({
   selectedNode,
@@ -404,10 +454,27 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
   const [inferringDirect, setInferringDirect] = useState(false);
   const [directInferMessage, setDirectInferMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
+  // Profiling & Schema Drift state (Fase 4 - Spec 004)
+  const [isProfiling, setIsProfiling] = useState(false);
+  const [profileData, setProfileData] = useState<DatasetProfile | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [showProfilingPanel, setShowProfilingPanel] = useState(false);
+
+  const [isCheckingDrift, setIsCheckingDrift] = useState(false);
+  const [driftReport, setDriftReport] = useState<SchemaDriftReport | null>(null);
+  const [pendingInferredSchema, setPendingInferredSchema] = useState<SchemaColumn[] | null>(null);
+  const [driftStatusMessage, setDriftStatusMessage] = useState<string | null>(null);
+
   useEffect(() => {
     if (selectedNode) {
       setEditingNodeId(selectedNode.id);
       setIsRenamingId(false);
+      setDriftReport(null);
+      setPendingInferredSchema(null);
+      setDriftStatusMessage(null);
+      setProfileData(null);
+      setProfileError(null);
+      setShowProfilingPanel(false);
     }
   }, [selectedNode?.id]);
 
@@ -580,8 +647,8 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
   const schema: SchemaColumn[] = (data as any).schema || [];
   const ct = data.componentType || "";
 
-  // ─── Inferência Real de Schema (BUG 1 FIX) ────────────────────
-  const handleInferSchema = async (): Promise<SchemaColumn[]> => {
+  // ─── Inferência e Detecção de Schema Drift (Fase 4 - Spec 004) ───
+  const handleInferSchemaCandidate = async (): Promise<SchemaColumn[]> => {
     let pathOrQuery = (config.path || config.query || config.duckdb_query || "").trim();
     if (!pathOrQuery && config.table) {
       const ks = config.keyspace ? `${config.keyspace}.` : "";
@@ -620,7 +687,97 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
       nullable: f.nullable,
       physicalType: f.physical_type,
     }));
-    onUpdateSchema?.(id, mapped);
+    return mapped;
+  };
+
+  const handleCheckDrift = async (inferredCandidate?: SchemaColumn[]) => {
+    setIsCheckingDrift(true);
+    setDriftStatusMessage(null);
+    try {
+      let targetInferred = inferredCandidate;
+      if (!targetInferred) {
+        targetInferred = await handleInferSchemaCandidate();
+      }
+      if (!targetInferred || targetInferred.length === 0) {
+        setDriftStatusMessage("Nenhum dado retornado para comparação.");
+        return;
+      }
+
+      try {
+        const report = await api.detectSchemaDrift(schema, targetInferred);
+        setDriftReport(report);
+        if (report.has_drift) {
+          setPendingInferredSchema(targetInferred);
+        } else {
+          setPendingInferredSchema(null);
+          setDriftStatusMessage("✓ Schema em conformidade — nenhum schema drift detectado.");
+          setTimeout(() => setDriftStatusMessage(null), 4000);
+        }
+      } catch (_apiErr) {
+        const localReport = computeLocalSchemaDrift(schema, targetInferred);
+        setDriftReport(localReport);
+        if (localReport.has_drift) {
+          setPendingInferredSchema(targetInferred);
+        } else {
+          setPendingInferredSchema(null);
+          setDriftStatusMessage("✓ Schema em conformidade — nenhum schema drift detectado.");
+          setTimeout(() => setDriftStatusMessage(null), 4000);
+        }
+      }
+    } catch (err: any) {
+      setDriftStatusMessage(`Erro ao checar drift: ${err.message}`);
+    } finally {
+      setIsCheckingDrift(false);
+    }
+  };
+
+  const handleAcceptDriftSchema = () => {
+    if (pendingInferredSchema && pendingInferredSchema.length > 0) {
+      onUpdateSchema?.(id, pendingInferredSchema);
+    }
+    setDriftReport(null);
+    setPendingInferredSchema(null);
+  };
+
+  const handleDismissDrift = () => {
+    setDriftReport(null);
+    setPendingInferredSchema(null);
+  };
+
+  const handleRunProfiling = async () => {
+    setIsProfiling(true);
+    setProfileError(null);
+    try {
+      let pathOrQuery = (config.path || config.query || config.duckdb_query || "").trim();
+      if (!pathOrQuery && config.table) {
+        const ks = config.keyspace ? `${config.keyspace}.` : "";
+        pathOrQuery = `SELECT * FROM ${ks}${config.table}`;
+      }
+      const connEntry = connections.find(
+        (c) =>
+          c.name.toLowerCase().replace(/\s+/g, "_") === config.connection_ref ||
+          c.id === config.connection_ref ||
+          c.name.toLowerCase().trim() === String(config.connection_ref || "").toLowerCase().trim()
+      );
+      const connDetails = connEntry?.config ? { ...connEntry.config, type: connEntry.type } : undefined;
+      const res = await api.profileDataset(pathOrQuery, undefined, 1000, ct, connDetails);
+      setProfileData(res);
+      setShowProfilingPanel(true);
+    } catch (err: any) {
+      setProfileError(err.message || "Falha ao calcular profiling estatístico.");
+      setShowProfilingPanel(true);
+    } finally {
+      setIsProfiling(false);
+    }
+  };
+
+  const handleInferSchema = async (): Promise<SchemaColumn[]> => {
+    const mapped = await handleInferSchemaCandidate();
+    if (schema && schema.length > 0) {
+      await handleCheckDrift(mapped);
+    } else {
+      onUpdateSchema?.(id, mapped);
+    }
     return mapped;
   };
 
@@ -674,7 +831,8 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
   const isDuckDbInput = ct === "connector.db.duckdb" || ct === "core.duckdb.source";
   const isDuckDbOutput = ct === "connector.db.duckdb.output" || ct === "core.duckdb.target";
   const isTMap = ct === "core.tmap" || ct === "transform.tmap";
-  const isFilter = ct.includes("filter");
+  const isFilter = ct.includes("filter") || ct === "core.filter" || ct === "tFilterRow";
+  const isAggregate = ct.includes("aggregate") || ct === "core.aggregate" || ct === "tAggregateRow";
   const isSelect = ct.includes("select");
   const isJoin = ct.includes("join");
   const isFileTarget = ct.includes("file.target");
@@ -934,6 +1092,358 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                 </button>
                 <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginTop: 6 }}>
                   Lookups configurados: {(config.lookups || []).length} | Saídas: {(config.outputs || []).length}
+                </div>
+              </div>
+            )}
+
+            {/* ─── tFilterRow (Declarative Filter) ─── */}
+            {isFilter && (
+              <div
+                className="form-group"
+                style={{
+                  background: "rgba(59, 130, 246, 0.05)",
+                  border: "1px solid rgba(59, 130, 246, 0.25)",
+                  borderRadius: 8,
+                  padding: 12,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#3b82f6", fontWeight: 600, fontSize: "0.78rem" }}>
+                    <Filter size={14} color="#3b82f6" />
+                    <span>Regras do Filtro (tFilterRow)</span>
+                  </div>
+                  <span style={{ fontSize: "0.68rem", color: "var(--text-muted)" }}>
+                    Portas: <b style={{ color: "var(--status-success)" }}>output</b> / <b style={{ color: "#ef4444" }}>reject</b>
+                  </span>
+                </div>
+
+                <div className="form-group" style={{ marginBottom: 10 }}>
+                  <label className="form-label" style={{ fontSize: "0.7rem" }}>Combinação Lógica dos Predicados</label>
+                  <select
+                    className="form-select"
+                    style={{ fontSize: "0.75rem" }}
+                    value={config.logical_operator ?? "AND"}
+                    onChange={(e) => handleChange("logical_operator", e.target.value)}
+                  >
+                    <option value="AND">AND (Todas as condições devem ser satisfeitas)</option>
+                    <option value="OR">OR (Pelo menos uma condição deve ser satisfeita)</option>
+                  </select>
+                </div>
+
+                <div style={{ marginBottom: 8 }}>
+                  <label className="form-label" style={{ fontSize: "0.7rem", display: "flex", justifyContent: "space-between" }}>
+                    <span>Predicados Declarativos</span>
+                    <span>{(config.conditions || []).length} regra(s)</span>
+                  </label>
+                  
+                  {((config.conditions || []) as Array<{ column: string; operator: string; value: any }>).map((cond, idx) => (
+                    <div
+                      key={idx}
+                      style={{
+                        display: "flex",
+                        gap: 6,
+                        marginBottom: 6,
+                        alignItems: "center",
+                        background: "var(--bg-card)",
+                        padding: "6px 8px",
+                        borderRadius: 6,
+                        border: "1px solid var(--border-subtle)",
+                      }}
+                    >
+                      <input
+                        className="form-input"
+                        placeholder="Coluna"
+                        style={{ flex: 1.2, fontSize: "0.72rem", padding: "4px 6px" }}
+                        value={cond.column || ""}
+                        onChange={(e) => {
+                          const next = [...(config.conditions || [])];
+                          next[idx] = { ...cond, column: e.target.value };
+                          handleChange("conditions", next);
+                        }}
+                      />
+                      <select
+                        className="form-select"
+                        style={{ flex: 1, fontSize: "0.72rem", padding: "4px 6px" }}
+                        value={cond.operator || "=="}
+                        onChange={(e) => {
+                          const next = [...(config.conditions || [])];
+                          next[idx] = { ...cond, operator: e.target.value };
+                          handleChange("conditions", next);
+                        }}
+                      >
+                        <option value="==">== (Igual)</option>
+                        <option value="!=">!= (Diferente)</option>
+                        <option value=">">&gt; (Maior)</option>
+                        <option value="<">&lt; (Menor)</option>
+                        <option value=">=">&gt;= (Maior ou Igual)</option>
+                        <option value="<=">&lt;= (Menor ou Igual)</option>
+                        <option value="LIKE">LIKE (Padrão %)</option>
+                        <option value="NOT LIKE">NOT LIKE</option>
+                        <option value="IN">IN (Lista)</option>
+                        <option value="NOT IN">NOT IN</option>
+                        <option value="IS NULL">IS NULL</option>
+                        <option value="IS NOT NULL">IS NOT NULL</option>
+                      </select>
+                      {!["IS NULL", "IS NOT NULL"].includes(cond.operator) && (
+                        <input
+                          className="form-input"
+                          placeholder="Valor"
+                          style={{ flex: 1.2, fontSize: "0.72rem", padding: "4px 6px" }}
+                          value={cond.value !== undefined ? String(cond.value) : ""}
+                          onChange={(e) => {
+                            const next = [...(config.conditions || [])];
+                            next[idx] = { ...cond, value: e.target.value };
+                            handleChange("conditions", next);
+                          }}
+                        />
+                      )}
+                      <button
+                        type="button"
+                        className="btn btn-danger btn-xs"
+                        style={{ padding: "4px 6px" }}
+                        title="Remover predicado"
+                        onClick={() => {
+                          const next = (config.conditions || []).filter((_: any, i: number) => i !== idx);
+                          handleChange("conditions", next);
+                        }}
+                      >
+                        <Trash2 size={11} />
+                      </button>
+                    </div>
+                  ))}
+
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-xs"
+                    style={{ width: "100%", justifyContent: "center", marginTop: 4 }}
+                    onClick={() => {
+                      const next = [...(config.conditions || []), { column: "", operator: "==", value: "" }];
+                      handleChange("conditions", next);
+                    }}
+                  >
+                    <Plus size={12} /> Adicionar Condição
+                  </button>
+                </div>
+
+                <div style={{ marginTop: 10, borderTop: "1px dashed rgba(59, 130, 246, 0.2)", paddingTop: 8 }}>
+                  <label className="form-label" style={{ fontSize: "0.68rem", color: "var(--text-muted)" }}>
+                    Expressão Livre SQL / Polars (Opcional)
+                  </label>
+                  <DebouncedInput
+                    value={config.expression ?? ""}
+                    placeholder="Ex: status == 'ACTIVE' and age >= 18"
+                    onChange={(v) => handleChange("expression", v)}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* ─── tAggregateRow (Declarative Aggregate) ─── */}
+            {isAggregate && (
+              <div
+                className="form-group"
+                style={{
+                  background: "rgba(6, 182, 212, 0.05)",
+                  border: "1px solid rgba(6, 182, 212, 0.25)",
+                  borderRadius: 8,
+                  padding: 12,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#06b6d4", fontWeight: 600, fontSize: "0.78rem" }}>
+                    <BarChart2 size={14} color="#06b6d4" />
+                    <span>Agrupamento & Agregações (tAggregateRow)</span>
+                  </div>
+                </div>
+
+                {/* Chaves de Agrupamento */}
+                <div className="form-group" style={{ marginBottom: 12 }}>
+                  <label className="form-label" style={{ fontSize: "0.7rem", display: "flex", justifyContent: "space-between" }}>
+                    <span>Chaves de Agrupamento (GROUP BY)</span>
+                    <span>{(config.group_by || []).length} chave(s)</span>
+                  </label>
+                  
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 6 }}>
+                    {((config.group_by || []) as string[]).map((col, idx) => (
+                      <span
+                        key={idx}
+                        style={{
+                          background: "rgba(6, 182, 212, 0.15)",
+                          border: "1px solid rgba(6, 182, 212, 0.4)",
+                          color: "var(--text-primary)",
+                          borderRadius: 4,
+                          fontSize: "0.72rem",
+                          padding: "2px 6px",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                        }}
+                      >
+                        <code>{col}</code>
+                        <span
+                          style={{ cursor: "pointer", color: "var(--text-muted)", marginLeft: 2 }}
+                          onClick={() => {
+                            const next = (config.group_by || []).filter((_: any, i: number) => i !== idx);
+                            handleChange("group_by", next);
+                          }}
+                        >
+                          ✕
+                        </span>
+                      </span>
+                    ))}
+                    {(!config.group_by || config.group_by.length === 0) && (
+                      <span style={{ fontSize: "0.68rem", color: "var(--text-muted)", fontStyle: "italic" }}>
+                        Agregação global (sem GROUP BY)
+                      </span>
+                    )}
+                  </div>
+
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <input
+                      id="input-new-groupby-col"
+                      className="form-input"
+                      placeholder="Nome da coluna (ex: departamento)"
+                      style={{ flex: 1, fontSize: "0.72rem" }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          const val = (e.currentTarget.value || "").trim();
+                          if (val && !(config.group_by || []).includes(val)) {
+                            handleChange("group_by", [...(config.group_by || []), val]);
+                            e.currentTarget.value = "";
+                          }
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-xs"
+                      onClick={() => {
+                        const el = document.getElementById("input-new-groupby-col") as HTMLInputElement;
+                        if (el) {
+                          const val = (el.value || "").trim();
+                          if (val && !(config.group_by || []).includes(val)) {
+                            handleChange("group_by", [...(config.group_by || []), val]);
+                            el.value = "";
+                          }
+                        }
+                      }}
+                    >
+                      + Add
+                    </button>
+                  </div>
+                </div>
+
+                {/* Lista de Operações de Agregação */}
+                <div style={{ marginBottom: 8 }}>
+                  <label className="form-label" style={{ fontSize: "0.7rem", display: "flex", justifyContent: "space-between" }}>
+                    <span>Operações de Agregação</span>
+                    <span>{(config.aggregations || []).length} operação(ões)</span>
+                  </label>
+
+                  {((config.aggregations || []) as Array<{ column: string; function: string; alias?: string; delimiter?: string }>).map((agg, idx) => (
+                    <div
+                      key={idx}
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 4,
+                        marginBottom: 6,
+                        background: "var(--bg-card)",
+                        padding: "6px 8px",
+                        borderRadius: 6,
+                        border: "1px solid var(--border-subtle)",
+                      }}
+                    >
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <select
+                          className="form-select"
+                          style={{ flex: 1.1, fontSize: "0.72rem", padding: "4px 6px" }}
+                          value={agg.function || "COUNT"}
+                          onChange={(e) => {
+                            const next = [...(config.aggregations || [])];
+                            next[idx] = { ...agg, function: e.target.value };
+                            handleChange("aggregations", next);
+                          }}
+                        >
+                          <option value="COUNT">COUNT</option>
+                          <option value="COUNT_DISTINCT">COUNT DISTINCT</option>
+                          <option value="SUM">SUM</option>
+                          <option value="AVG">AVG</option>
+                          <option value="MIN">MIN</option>
+                          <option value="MAX">MAX</option>
+                          <option value="FIRST">FIRST</option>
+                          <option value="LAST">LAST</option>
+                          <option value="STRING_AGG">STRING_AGG</option>
+                        </select>
+                        <input
+                          className="form-input"
+                          placeholder="Coluna (* ou nome)"
+                          style={{ flex: 1.1, fontSize: "0.72rem", padding: "4px 6px" }}
+                          value={agg.column || ""}
+                          onChange={(e) => {
+                            const next = [...(config.aggregations || [])];
+                            next[idx] = { ...agg, column: e.target.value };
+                            handleChange("aggregations", next);
+                          }}
+                        />
+                        <input
+                          className="form-input"
+                          placeholder="Alias Saída"
+                          style={{ flex: 1.2, fontSize: "0.72rem", padding: "4px 6px" }}
+                          value={agg.alias || ""}
+                          onChange={(e) => {
+                            const next = [...(config.aggregations || [])];
+                            next[idx] = { ...agg, alias: e.target.value };
+                            handleChange("aggregations", next);
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-danger btn-xs"
+                          style={{ padding: "4px 6px" }}
+                          title="Remover operação"
+                          onClick={() => {
+                            const next = (config.aggregations || []).filter((_: any, i: number) => i !== idx);
+                            handleChange("aggregations", next);
+                          }}
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      </div>
+
+                      {agg.function === "STRING_AGG" && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
+                          <span style={{ fontSize: "0.68rem", color: "var(--text-muted)" }}>Delimitador:</span>
+                          <input
+                            className="form-input"
+                            style={{ width: 80, fontSize: "0.72rem", padding: "2px 6px" }}
+                            value={agg.delimiter ?? ", "}
+                            onChange={(e) => {
+                              const next = [...(config.aggregations || [])];
+                              next[idx] = { ...agg, delimiter: e.target.value };
+                              handleChange("aggregations", next);
+                            }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  ))}
+
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-xs"
+                    style={{ width: "100%", justifyContent: "center", marginTop: 4 }}
+                    onClick={() => {
+                      const next = [
+                        ...(config.aggregations || []),
+                        { column: "*", function: "COUNT", alias: "" }
+                      ];
+                      handleChange("aggregations", next);
+                    }}
+                  >
+                    <Plus size={12} /> Adicionar Agregação
+                  </button>
                 </div>
               </div>
             )}
@@ -1756,7 +2266,32 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
 
         {activeTab === "schema" && (
           <div className="prop-content">
-            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+            {/* Top Toolbar */}
+            <div style={{ display: "flex", gap: 6, justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => handleRunProfiling()}
+                  disabled={isProfiling}
+                  title="Calcular estatísticas de nulos, cardinalidade e min/max para este dataset"
+                >
+                  {isProfiling ? <Loader2 size={12} className="spin" style={{ marginRight: 5 }} /> : <BarChart2 size={12} style={{ marginRight: 5 }} />}
+                  Profiling Estatístico
+                </button>
+                {schema.length > 0 && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => handleCheckDrift()}
+                    disabled={isCheckingDrift}
+                    title="Comparar schema atual contra a fonte de dados (Schema Drift)"
+                  >
+                    {isCheckingDrift ? <Loader2 size={12} className="spin" style={{ marginRight: 5 }} /> : <RefreshCw size={12} style={{ marginRight: 5 }} />}
+                    Verificar Drift
+                  </button>
+                )}
+              </div>
               <button
                 type="button"
                 className="btn btn-secondary btn-sm"
@@ -1766,6 +2301,198 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                 <Layers size={12} style={{ marginRight: 5 }} /> Importar de outro componente
               </button>
             </div>
+
+            {/* Drift Status Notification */}
+            {driftStatusMessage && (
+              <div style={{ padding: "8px 10px", borderRadius: 6, background: "rgba(34, 197, 94, 0.12)", border: "1px solid rgba(34, 197, 94, 0.3)", color: "var(--status-success)", fontSize: "0.75rem", marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+                <span>{driftStatusMessage}</span>
+              </div>
+            )}
+
+            {/* Schema Drift Alert Banner */}
+            {driftReport && driftReport.has_drift && (
+              <div
+                className="schema-drift-alert"
+                style={{
+                  background: "rgba(245, 158, 11, 0.12)",
+                  border: "1px solid rgba(245, 158, 11, 0.4)",
+                  borderRadius: 8,
+                  padding: "12px",
+                  marginBottom: 12,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600, color: "var(--accent-warning, #f59e0b)", fontSize: "0.82rem" }}>
+                    <AlertTriangle size={15} />
+                    <span>⚠️ Schema Drift Detectado</span>
+                    <span style={{ fontSize: "0.65rem", padding: "1px 6px", borderRadius: 4, background: "rgba(245, 158, 11, 0.2)", border: "1px solid rgba(245, 158, 11, 0.4)" }}>
+                      schema_drift = true
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    onClick={handleDismissDrift}
+                    title="Fechar alerta de drift"
+                    style={{ padding: 2 }}
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+
+                <div style={{ fontSize: "0.74rem", color: "var(--text-secondary)", marginBottom: 10, lineHeight: 1.4 }}>
+                  O schema congelado deste componente difere da estrutura atual da fonte de dados:
+                </div>
+
+                {/* Structured Diff Items */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+                  {driftReport.added_columns && driftReport.added_columns.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: "0.7rem", fontWeight: 600, color: "#22c55e", marginBottom: 3 }}>
+                        + Colunas Adicionadas ({driftReport.added_columns.length}):
+                      </div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                        {driftReport.added_columns.map((col) => (
+                          <span key={col} style={{ fontSize: "0.68rem", padding: "2px 6px", borderRadius: 4, background: "rgba(34, 197, 94, 0.15)", border: "1px solid rgba(34, 197, 94, 0.3)", color: "#22c55e", fontFamily: "var(--font-mono)" }}>
+                            +{col}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {driftReport.removed_columns && driftReport.removed_columns.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: "0.7rem", fontWeight: 600, color: "#ef4444", marginBottom: 3 }}>
+                        - Colunas Removidas ({driftReport.removed_columns.length}):
+                      </div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                        {driftReport.removed_columns.map((col) => (
+                          <span key={col} style={{ fontSize: "0.68rem", padding: "2px 6px", borderRadius: 4, background: "rgba(239, 68, 68, 0.15)", border: "1px solid rgba(239, 68, 68, 0.3)", color: "#ef4444", fontFamily: "var(--font-mono)" }}>
+                            -{col}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {driftReport.type_mismatches && driftReport.type_mismatches.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: "0.7rem", fontWeight: 600, color: "#f59e0b", marginBottom: 3 }}>
+                        ≠ Tipos Incompatíveis ({driftReport.type_mismatches.length}):
+                      </div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                        {driftReport.type_mismatches.map((m) => (
+                          <span key={m.column} style={{ fontSize: "0.68rem", padding: "2px 6px", borderRadius: 4, background: "rgba(245, 158, 11, 0.15)", border: "1px solid rgba(245, 158, 11, 0.3)", color: "#f59e0b", fontFamily: "var(--font-mono)" }}>
+                            {m.column}: {m.frozen_type} ➔ {m.current_type}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={handleDismissDrift}
+                    style={{ fontSize: "0.72rem" }}
+                  >
+                    Ignorar
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    onClick={handleAcceptDriftSchema}
+                    style={{ fontSize: "0.72rem", background: "#22c55e", borderColor: "#22c55e" }}
+                  >
+                    <Check size={12} style={{ marginRight: 4 }} /> Aceitar Novo Schema (Atualizar)
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Statistical Profiling Panel */}
+            {showProfilingPanel && (
+              <div
+                className="data-profiling-panel"
+                style={{
+                  background: "var(--bg-card)",
+                  border: "1px solid var(--border-medium)",
+                  borderRadius: 8,
+                  padding: 12,
+                  marginBottom: 12,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600, fontSize: "0.82rem", color: "var(--accent-cyan)" }}>
+                    <Activity size={15} />
+                    <span>Profiling Estatístico de Dados</span>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    {profileData && (
+                      <span style={{ fontSize: "0.68rem", color: "var(--text-muted)", background: "var(--bg-surface)", padding: "2px 6px", borderRadius: 4 }}>
+                        {profileData.row_count} linhas | {profileData.column_count} colunas
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      onClick={() => setShowProfilingPanel(false)}
+                      title="Ocultar painel de profiling"
+                      style={{ padding: 2 }}
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                </div>
+
+                {profileError && (
+                  <div style={{ fontSize: "0.72rem", color: "var(--status-danger)", marginBottom: 8 }}>
+                    {profileError}
+                  </div>
+                )}
+
+                {profileData && profileData.columns && (
+                  <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--border-subtle)", borderRadius: 6 }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.72rem" }}>
+                      <thead>
+                        <tr style={{ background: "var(--bg-surface)", borderBottom: "1px solid var(--border-subtle)", color: "var(--text-muted)", textAlign: "left" }}>
+                          <th style={{ padding: "6px 8px" }}>Coluna</th>
+                          <th style={{ padding: "6px 8px" }}>Tipo</th>
+                          <th style={{ padding: "6px 8px" }}>Nulos</th>
+                          <th style={{ padding: "6px 8px" }}>Cardinalidade</th>
+                          <th style={{ padding: "6px 8px" }}>Mín / Máx</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Object.entries(profileData.columns).map(([colName, col]) => (
+                          <tr key={colName} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                            <td style={{ padding: "5px 8px", fontWeight: 600, fontFamily: "var(--font-mono)" }}>{col.column_name}</td>
+                            <td style={{ padding: "5px 8px" }}>
+                              <span style={{ fontSize: "0.65rem", padding: "1px 5px", borderRadius: 3, background: "rgba(0, 212, 255, 0.1)", color: "var(--accent-cyan)" }}>
+                                {col.inferred_type}
+                              </span>
+                            </td>
+                            <td style={{ padding: "5px 8px" }}>
+                              <span style={{ color: col.null_percentage > 0 ? "var(--status-warning, #f59e0b)" : "var(--status-success, #22c55e)" }}>
+                                {col.null_count} ({col.null_percentage.toFixed(1)}%)
+                              </span>
+                            </td>
+                            <td style={{ padding: "5px 8px" }}>{col.distinct_count}</td>
+                            <td style={{ padding: "5px 8px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: "0.68rem" }}>
+                              {col.min_value !== null && col.min_value !== undefined ? String(col.min_value) : "—"} / {col.max_value !== null && col.max_value !== undefined ? String(col.max_value) : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+
             <SchemaEditor
               schema={schema}
               onChange={handleSchemaChange}

@@ -18,6 +18,7 @@ import {
   Clock,
   Activity,
   Zap,
+  BarChart2,
 } from "lucide-react";
 
 function formatSpeed(rowsPerSec: number): string {
@@ -129,6 +130,7 @@ function getCategoryIcon(typeId?: string) {
   if (safeId.includes("database.source") || safeId.includes("connector.db")) return <Database size={15} color="#10b981" />;
   if (safeId.includes("file.source")) return <FileText size={15} color="#10b981" />;
   if (safeId.includes("filter")) return <Filter size={15} color="#3b82f6" />;
+  if (safeId.includes("aggregate")) return <BarChart2 size={15} color="#06b6d4" />;
   if (safeId.includes("select")) return <Layers size={15} color="#3b82f6" />;
   if (safeId.includes("join")) return <GitMerge size={15} color="#8b5cf6" />;
   if (safeId.includes("database.target") || safeId.includes(".output")) return <Database size={15} color="#f59e0b" />;

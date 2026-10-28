@@ -4,7 +4,7 @@ import {
   Key, AlertCircle, Check, Table2, ArrowRight, ArrowLeft,
   ChevronsRight, ChevronsLeft, RefreshCw, Search, ArrowDownToLine,
   ArrowUpFromLine, Layers, HelpCircle, CheckSquare, Square,
-  Copy, Clipboard, Sparkles
+  Copy, Clipboard, Sparkles, GitBranch, Shield
 } from "lucide-react";
 import { SchemaColumn, SchemaColumnType } from "../../store/jobStore";
 import {
@@ -33,7 +33,17 @@ export interface SchemaEditorProps {
   onOpenModal?: () => void;
 }
 
+export const MASKING_OPTIONS = [
+  { value: "NONE", label: "Nenhum (Sem Máscara)" },
+  { value: "MASK_HASH", label: "Hash SHA-256 (com Salt)" },
+  { value: "MASK_EMAIL", label: "E-mail (j***@domain.com)" },
+  { value: "MASK_CPF_CNPJ", label: "CPF / CNPJ (123.***.***-00)" },
+  { value: "MASK_NULL", label: "Definir como Nulo (NULL)" },
+  { value: "MASK_REDACT", label: "Redigir ([REDACTED])" },
+];
+
 const COLUMN_TYPES: SchemaColumnType[] = [
+
   "String", "Integer", "Long", "Float", "Double", "Decimal",
   "Boolean", "Date", "DateTime", "Timestamp", "Time",
   "Bytes", "JSON", "Array", "Object", "Unknown",
@@ -697,14 +707,38 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
 
                             {/* Column Name */}
                             <td>
-                              <input
-                                className="schema-cell-input name-input"
-                                value={col.name}
-                                placeholder="nome_coluna"
-                                autoFocus={editingCell?.colId === col.id && editingCell.field === "name"}
-                                onChange={(e) => updateColumn(col.id, "name", e.target.value)}
-                                onFocus={() => setEditingCell({ colId: col.id, field: "name" })}
-                              />
+                              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                <input
+                                  className="schema-cell-input name-input"
+                                  value={col.name}
+                                  placeholder="nome_coluna"
+                                  autoFocus={editingCell?.colId === col.id && editingCell.field === "name"}
+                                  onChange={(e) => updateColumn(col.id, "name", e.target.value)}
+                                  onFocus={() => setEditingCell({ colId: col.id, field: "name" })}
+                                />
+                                {col.masking && col.masking !== "NONE" && (
+                                  <span
+                                    className="schema-mask-badge"
+                                    title={`Proteção Ativa: ${col.masking}`}
+                                    style={{
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: 2,
+                                      background: "rgba(99, 102, 241, 0.15)",
+                                      color: "#818cf8",
+                                      borderRadius: 4,
+                                      padding: "1px 5px",
+                                      fontSize: "0.65rem",
+                                      fontWeight: 600,
+                                      whiteSpace: "nowrap",
+                                      border: "1px solid rgba(99, 102, 241, 0.3)"
+                                    }}
+                                  >
+                                    <Shield size={9} />
+                                    {col.masking.replace("MASK_", "")}
+                                  </span>
+                                )}
+                              </div>
                             </td>
 
                             {/* Type */}
@@ -844,6 +878,34 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
                                       placeholder="Descrição..."
                                       onChange={(e) => updateColumn(col.id, "comment", e.target.value)}
                                     />
+                                  </div>
+                                  <div className="schema-adv-group" style={{ borderLeft: "2px solid #6366f1", paddingLeft: 8 }}>
+                                    <label style={{ display: "flex", alignItems: "center", gap: 4, color: "#818cf8", fontWeight: 500 }}>
+                                      <Shield size={12} />
+                                      Proteção LGPD
+                                    </label>
+                                    <select
+                                      className="schema-cell-select masking-select"
+                                      style={{ width: 170 }}
+                                      value={col.masking || "NONE"}
+                                      onChange={(e) => updateColumn(col.id, "masking", e.target.value === "NONE" ? undefined : e.target.value)}
+                                    >
+                                      {MASKING_OPTIONS.map((opt) => (
+                                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                      ))}
+                                    </select>
+                                    {col.masking === "MASK_HASH" && (
+                                      <>
+                                        <label style={{ color: "#a5b4fc" }}>Salt:</label>
+                                        <input
+                                          className="schema-cell-input masking-salt-input"
+                                          style={{ width: 110 }}
+                                          value={col.maskingSalt ?? ""}
+                                          placeholder="Salt secreto..."
+                                          onChange={(e) => updateColumn(col.id, "maskingSalt", e.target.value)}
+                                        />
+                                      </>
+                                    )}
                                   </div>
                                 </div>
                               </td>
@@ -1028,14 +1090,38 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
 
                     {/* Column Name */}
                     <td>
-                      <input
-                        className="schema-cell-input name-input"
-                        value={col.name}
-                        placeholder="nome_coluna"
-                        autoFocus={editingCell?.colId === col.id && editingCell.field === "name"}
-                        onChange={(e) => updateColumn(col.id, "name", e.target.value)}
-                        onFocus={() => setEditingCell({ colId: col.id, field: "name" })}
-                      />
+                      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <input
+                          className="schema-cell-input name-input"
+                          value={col.name}
+                          placeholder="nome_coluna"
+                          autoFocus={editingCell?.colId === col.id && editingCell.field === "name"}
+                          onChange={(e) => updateColumn(col.id, "name", e.target.value)}
+                          onFocus={() => setEditingCell({ colId: col.id, field: "name" })}
+                        />
+                        {col.masking && col.masking !== "NONE" && (
+                          <span
+                            className="schema-mask-badge"
+                            title={`Proteção Ativa: ${col.masking}`}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 2,
+                              background: "rgba(99, 102, 241, 0.15)",
+                              color: "#818cf8",
+                              borderRadius: 4,
+                              padding: "1px 5px",
+                              fontSize: "0.65rem",
+                              fontWeight: 600,
+                              whiteSpace: "nowrap",
+                              border: "1px solid rgba(99, 102, 241, 0.3)"
+                            }}
+                          >
+                            <Shield size={9} />
+                            {col.masking.replace("MASK_", "")}
+                          </span>
+                        )}
+                      </div>
                     </td>
 
                     {/* Type */}
@@ -1104,14 +1190,31 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
 
                     {/* Actions */}
                     <td>
-                      <button
-                        type="button"
-                        className="icon-btn danger"
-                        onClick={() => removeColumn(col.id)}
-                        title="Remover coluna"
-                      >
-                        <Trash2 size={12} />
-                      </button>
+                      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <button
+                          type="button"
+                          className="icon-btn schema-lineage-btn"
+                          onClick={() => {
+                            window.dispatchEvent(
+                              new CustomEvent("rdf-inspect-lineage", {
+                                detail: { column: col.name }
+                              })
+                            );
+                          }}
+                          title={`Inspecionar Linhagem da Coluna '${col.name}'`}
+                          style={{ color: "#a855f7" }}
+                        >
+                          <GitBranch size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-btn danger"
+                          onClick={() => removeColumn(col.id)}
+                          title="Remover coluna"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
 
@@ -1175,6 +1278,34 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
                               placeholder="Descrição da coluna..."
                               onChange={(e) => updateColumn(col.id, "comment", e.target.value)}
                             />
+                          </div>
+                          <div className="schema-adv-group" style={{ borderLeft: "2px solid #6366f1", paddingLeft: 8 }}>
+                            <label style={{ display: "flex", alignItems: "center", gap: 4, color: "#818cf8", fontWeight: 500 }}>
+                              <Shield size={12} />
+                              Proteção LGPD
+                            </label>
+                            <select
+                              className="schema-cell-select masking-select"
+                              style={{ width: 170 }}
+                              value={col.masking || "NONE"}
+                              onChange={(e) => updateColumn(col.id, "masking", e.target.value === "NONE" ? undefined : e.target.value)}
+                            >
+                              {MASKING_OPTIONS.map((opt) => (
+                                <option key={opt.value} value={opt.value}>{opt.label}</option>
+                              ))}
+                            </select>
+                            {col.masking === "MASK_HASH" && (
+                              <>
+                                <label style={{ color: "#a5b4fc" }}>Salt:</label>
+                                <input
+                                  className="schema-cell-input masking-salt-input"
+                                  style={{ width: 110 }}
+                                  value={col.maskingSalt ?? ""}
+                                  placeholder="Salt secreto..."
+                                  onChange={(e) => updateColumn(col.id, "maskingSalt", e.target.value)}
+                                />
+                              </>
+                            )}
                           </div>
                         </div>
                       </td>

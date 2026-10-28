@@ -18,8 +18,13 @@ from src.core.infrastructure.security.secret_resolver import SecretResolver
 class PostgresConnector:
     """Conector para banco de dados PostgreSQL com integração ao SecretResolver."""
 
-    def __init__(self, secret_resolver: SecretResolver):
+    def __init__(self, secret_resolver: SecretResolver, pool_manager: Optional[Any] = None):
         self.secret_resolver = secret_resolver
+        if pool_manager is None:
+            from src.core.infrastructure.connectors.pool_manager import ConnectionPoolManager
+            self.pool_manager = ConnectionPoolManager.get_instance(secret_resolver=self.secret_resolver)
+        else:
+            self.pool_manager = pool_manager
 
     def build_dsn(self, connection: Connection) -> str:
         """Constrói a string de conexão (DSN) em tempo de execução sem persistir a senha.
@@ -101,8 +106,7 @@ class PostgresConnector:
         """
         start_time = time.time()
         try:
-            dsn = self.build_dsn(connection)
-            with psycopg2.connect(dsn, connect_timeout=5) as conn:
+            with self.pool_manager.get_postgres_connection(connection, timeout=5) as conn:
                 with conn.cursor() as cur:
                     cur.execute("SELECT 1;")
                     cur.fetchone()
@@ -129,9 +133,7 @@ class PostgresConnector:
     ):
         """Executa consulta com cursor de streaming do banco (Fetch Size), gerando DataFrames em chunks para evitar estouro de memória."""
         import polars as pl
-        dsn = self.build_dsn(connection)
-        conn = psycopg2.connect(dsn)
-        try:
+        with self.pool_manager.get_postgres_connection(connection) as conn:
             try:
                 with conn.cursor() as setup_cur:
                     setup_cur.execute("SET statement_timeout = 0;")
@@ -156,11 +158,6 @@ class PostgresConnector:
                 yield chunk_df
 
             cur.close()
-            conn.close()
-        except Exception:
-            if not conn.closed:
-                conn.close()
-            raise
 
     def stream_extract(
         self,
@@ -185,8 +182,7 @@ class PostgresConnector:
     ) -> int:
         """Executa gravação com suporte a ações DDL na tabela, DML nos dados e escrita em lotes (Batch Mode / Batch Size)."""
         import polars as pl
-        dsn = self.build_dsn(connection)
-        with psycopg2.connect(dsn) as conn:
+        with self.pool_manager.get_postgres_connection(connection) as conn:
             with conn.cursor() as cur:
                 # 1. Pre-Table Action
                 if is_first_chunk:

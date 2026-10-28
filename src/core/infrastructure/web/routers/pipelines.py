@@ -1,9 +1,13 @@
 """Endpoints para Gestão de Pipelines, Drafts, Validação e Publicação (TASK-022, TASK-024)."""
 
-from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from src.core.application.compiler.lineage.lineage_extractor import (
+    ColumnLineageGraph,
+    LineageExtractor,
+)
 from src.core.application.compiler.validator import GraphValidator
 from src.core.application.pipeline.exporter import PipelineExporter
 from src.core.domain.pipeline.draft import PipelineDraft as DomainDraft
@@ -315,6 +319,37 @@ def export_pipeline(
     )
 
 
+@router.get("/pipelines/{pipeline_id}/lineage")
+def get_pipeline_lineage(
+    pipeline_id: str,
+    column: Optional[str] = Query(None, description="Nome da coluna para filtrar a linhagem upstream"),
+    node_id: Optional[str] = Query(None, description="ID do nó alvo para filtrar a linhagem upstream"),
+    session: Session = Depends(get_db_session)
+):
+    """Retorna o grafo de linhagem campo a campo (Column-Level Data Lineage) do pipeline (RF-01.2)."""
+    repo = SqlAlchemyPipelineRepository(session)
+    res = repo.get_draft(pipeline_id)
+    if not res:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Pipeline '{pipeline_id}' não encontrado."
+        )
+
+    draft, _ = res
+    pipeline_dict = draft.to_canonical_dict()
+    spec = pipeline_dict.get("spec", {})
+
+    extractor = LineageExtractor()
+    graph = extractor.extract_pipeline_lineage(spec)
+
+    if column or node_id:
+        filtered_relations = graph.filter(target_node_id=node_id, target_column=column)
+        subgraph = ColumnLineageGraph(relations=filtered_relations)
+        return subgraph.to_dict()
+
+    return graph.to_dict()
+
+
 @router.post("/pipelines/cells/python/execute")
 def execute_python_cell(payload: dict):
     """Executa um script de célula Python isolado com suporte a state handoff."""
@@ -345,4 +380,94 @@ def execute_python_cell(payload: dict):
     runner = PythonCellRunner()
     result = runner.run(code=code, context=context)
     return result
+
+
+@router.post("/pipelines/{pipeline_id}/export/standalone")
+def export_pipeline_standalone(
+    pipeline_id: str,
+    payload: Optional[dict] = None,
+    session: Session = Depends(get_db_session)
+):
+    """Exporta o pipeline como código Python autônomo (DuckDB/Polars) e requirements.txt (RF-03.1)."""
+    from src.core.application.codegen.standalone_generator import StandaloneGenerator
+
+    draft_def = None
+    if payload and isinstance(payload, dict):
+        draft_def = payload.get("draft_definition") or payload
+
+    if not draft_def or not draft_def.get("spec", {}).get("nodes"):
+        repo = SqlAlchemyPipelineRepository(session)
+        res = repo.get_draft(pipeline_id)
+        if not res and pipeline_id not in ("temp", "draft", "current"):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Pipeline '{pipeline_id}' não encontrado."
+            )
+        if res:
+            draft, _ = res
+            draft_def = draft.to_canonical_dict()
+
+    if not draft_def:
+        draft_def = {"metadata": {"name": pipeline_id, "id": pipeline_id}, "spec": {"nodes": [], "edges": []}}
+
+    generator = StandaloneGenerator()
+    bundle = generator.generate(draft_def)
+
+    return {
+        "script_py": bundle.script_py,
+        "requirements_txt": bundle.requirements_txt,
+        "env_example": bundle.env_example,
+        "pipeline_name": bundle.pipeline_name,
+        "generated_at": bundle.generated_at
+    }
+
+
+@router.post("/pipelines/{pipeline_id}/export/airflow")
+def export_pipeline_airflow(
+    pipeline_id: str,
+    payload: Optional[dict] = None,
+    session: Session = Depends(get_db_session)
+):
+    """Exporta o pipeline como DAG do Apache Airflow (RF-03.2)."""
+    from src.core.application.codegen.airflow_generator import AirflowGenerator, AirflowOptions
+
+    payload = payload or {}
+    draft_def = payload.get("draft_definition")
+
+    if not draft_def or not draft_def.get("spec", {}).get("nodes"):
+        repo = SqlAlchemyPipelineRepository(session)
+        res = repo.get_draft(pipeline_id)
+        if not res and pipeline_id not in ("temp", "draft", "current"):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Pipeline '{pipeline_id}' não encontrado."
+            )
+        if res:
+            draft, _ = res
+            draft_def = draft.to_canonical_dict()
+
+    if not draft_def:
+        draft_def = {"metadata": {"name": pipeline_id, "id": pipeline_id}, "spec": {"nodes": [], "edges": []}}
+
+    options = AirflowOptions(
+        dag_id=payload.get("dag_id"),
+        schedule_interval=payload.get("schedule_interval", "0 0 * * *"),
+        start_date=payload.get("start_date", "2026-01-01"),
+        owner=payload.get("owner", "rocketdataforge"),
+        retries=payload.get("retries", 1),
+        retry_delay_minutes=payload.get("retry_delay_minutes", 5),
+        catchup=payload.get("catchup", False),
+        tags=payload.get("tags", ["rocketdataforge", "etl"])
+    )
+
+    generator = AirflowGenerator()
+    bundle = generator.generate(draft_def, options)
+
+    return {
+        "dag_py": bundle.dag_py,
+        "dag_id": bundle.dag_id,
+        "schedule_interval": bundle.schedule_interval,
+        "generated_at": bundle.generated_at
+    }
+
 

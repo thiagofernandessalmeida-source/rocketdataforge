@@ -1,5 +1,5 @@
-import React, { useState, useCallback, useRef } from "react";
-import { GitMerge, X, Plus, Check } from "lucide-react";
+import React, { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import { GitMerge, X, Plus, Check, Play, Table as TableIcon, GitBranch, Sliders, Eye, Clock, Code } from "lucide-react";
 import ReactFlow, {
   Background,
   Controls,
@@ -27,6 +27,11 @@ import {
   FLOW_CONFIG,
 } from "./utils/flowNaming";
 import { jobStore, generateRocketNodeId } from "../../store/jobStore";
+import { api } from "../../api/client";
+import { DataPreviewDrawer } from "./preview/DataPreviewDrawer";
+import { ScheduleModal } from "./scheduler/ScheduleModal";
+import { ExportCodegenModal } from "./codegen/ExportCodegenModal";
+
 
 const nodeTypes: NodeTypes = {
   genericNode: GenericNode,
@@ -88,6 +93,177 @@ interface TMapOutputChoice {
   const [selectedOutputChoice, setSelectedOutputChoice] = useState<string>("out1");
   const [isCreatingNewOutput, setIsCreatingNewOutput] = useState<boolean>(false);
   const [customOutputName, setCustomOutputName] = useState<string>("");
+
+  // ─── Menu de Contexto, Live Preview & Linhagem (Spec 005) ────────
+  const [nodeContextMenu, setNodeContextMenu] = useState<{
+    node: Node<CanvasNodeData>;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  const [previewDrawer, setPreviewDrawer] = useState<{
+    isOpen: boolean;
+    nodeId: string;
+    nodeLabel: string;
+    executionId?: string | null;
+  }>({
+    isOpen: false,
+    nodeId: "",
+    nodeLabel: "",
+    executionId: null,
+  });
+
+  const [isExecutingPartial, setIsExecutingPartial] = useState(false);
+
+  const [highlightedLineage, setHighlightedLineage] = useState<{
+    nodes: Set<string>;
+    edges: Set<string>;
+    targetColumn?: string;
+  } | null>(null);
+
+  const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+
+  const currentDraftDef = useMemo(() => ({
+    metadata: { name: cellId || "pipeline_main", id: cellId || "pipeline_main" },
+    spec: {
+      nodes: nodes.map((n) => ({
+        id: n.id,
+        component: { type: n.data?.componentType || "generic", version: "1.0.0" },
+        config: n.data?.config || {},
+      })),
+      edges: edges.map((e) => ({
+        from: e.source,
+        to: e.target,
+      })),
+    },
+  }), [nodes, edges, cellId]);
+
+
+  const handleRunToNode = useCallback(async (targetNodeId: string) => {
+    setIsExecutingPartial(true);
+    const targetNode = nodes.find((n) => n.id === targetNodeId);
+    try {
+      const draftDef = {
+        metadata: { name: "partial_exec_canvas" },
+        spec: {
+          nodes: nodes.map((n) => ({
+            id: n.id,
+            component: { type: n.data?.componentType || "generic", version: "1.0.0" },
+            config: n.data?.config || {},
+          })),
+          edges: edges.map((e) => ({
+            from: e.sourceHandle ? `${e.source}.${e.sourceHandle}` : `${e.source}.output`,
+            to: e.targetHandle ? `${e.target}.${e.targetHandle}` : `${e.target}.input`,
+          })),
+        },
+      };
+
+      const res = await api.executePartial({
+        target_node_id: targetNodeId,
+        draft_definition: draftDef,
+      });
+
+      setPreviewDrawer({
+        isOpen: true,
+        nodeId: targetNodeId,
+        nodeLabel: targetNode?.data?.label || targetNodeId,
+        executionId: res.execution_id,
+      });
+    } catch (err: any) {
+      console.error("Erro ao disparar execução parcial:", err);
+    } finally {
+      setIsExecutingPartial(false);
+    }
+  }, [nodes, edges]);
+
+  const handleInspectLineage = useCallback(async (nodeId: string, column?: string) => {
+    try {
+      const pipeId = (allNodes?.[0]?.data as any)?.pipelineId || cellId || "current_pipeline";
+      const report = await api.getColumnLineage(pipeId, column, nodeId);
+      if (report && report.nodes) {
+        const edgeKeys = new Set(
+          edges
+            .filter((e) => report.nodes.includes(e.source) && report.nodes.includes(e.target))
+            .map((e) => e.id)
+        );
+        setHighlightedLineage({
+          nodes: new Set(report.nodes),
+          edges: edgeKeys,
+          targetColumn: column || "todas as colunas",
+        });
+        return;
+      }
+    } catch (_) {}
+
+    // Fallback: travessia reversa upstream local
+    const upstream = new Set<string>([nodeId]);
+    const queue = [nodeId];
+    while (queue.length > 0) {
+      const curr = queue.shift()!;
+      const inEdges = edges.filter((e) => e.target === curr);
+      for (const e of inEdges) {
+        if (!upstream.has(e.source)) {
+          upstream.add(e.source);
+          queue.push(e.source);
+        }
+      }
+    }
+    const edgeKeys = new Set(
+      edges.filter((e) => upstream.has(e.source) && upstream.has(e.target)).map((e) => e.id)
+    );
+    setHighlightedLineage({
+      nodes: upstream,
+      edges: edgeKeys,
+      targetColumn: column || "todas as colunas",
+    });
+  }, [edges, allNodes, cellId]);
+
+  useEffect(() => {
+    const handleLineageEvent = (e: any) => {
+      const { nodeId, column } = e.detail || {};
+      if (nodeId) {
+        handleInspectLineage(nodeId, column);
+      }
+    };
+    window.addEventListener("rdf-inspect-lineage", handleLineageEvent);
+    return () => window.removeEventListener("rdf-inspect-lineage", handleLineageEvent);
+  }, [handleInspectLineage]);
+
+  const renderedNodes = useMemo(() => {
+    if (!highlightedLineage) return nodes;
+    return nodes.map((n) => {
+      const isHighlighted = highlightedLineage.nodes.has(n.id);
+      return {
+        ...n,
+        style: {
+          ...n.style,
+          opacity: isHighlighted ? 1 : 0.35,
+          boxShadow: isHighlighted ? "0 0 20px rgba(56, 189, 248, 0.75)" : undefined,
+          borderColor: isHighlighted ? "#38bdf8" : undefined,
+          transition: "all 0.3s ease",
+        },
+      };
+    });
+  }, [nodes, highlightedLineage]);
+
+  const renderedEdges = useMemo(() => {
+    if (!highlightedLineage) return edges;
+    return edges.map((e) => {
+      const isHighlighted = highlightedLineage.edges.has(e.id);
+      return {
+        ...e,
+        animated: isHighlighted ? true : e.animated,
+        style: {
+          ...e.style,
+          stroke: isHighlighted ? "#38bdf8" : "#334155",
+          strokeWidth: isHighlighted ? 3 : 1.5,
+          opacity: isHighlighted ? 1 : 0.25,
+          transition: "all 0.3s ease",
+        },
+      };
+    });
+  }, [edges, highlightedLineage]);
 
   const onConnect = useCallback(
     (params: Connection) => {
@@ -354,8 +530,8 @@ interface TMapOutputChoice {
   return (
     <div className="canvas-container" ref={reactFlowWrapper} id="pipeline-canvas">
       <ReactFlow
-        nodes={nodes}
-        edges={edges}
+        nodes={renderedNodes}
+        edges={renderedEdges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
@@ -364,6 +540,10 @@ interface TMapOutputChoice {
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
         onPaneClick={onPaneClick}
+        onNodeContextMenu={(event, node) => {
+          event.preventDefault();
+          setNodeContextMenu({ node: node as Node<CanvasNodeData>, x: event.clientX, y: event.clientY });
+        }}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         onNodeDragStop={onNodeDragStop}
@@ -523,6 +703,317 @@ interface TMapOutputChoice {
           </div>
         </div>
       )}
+
+      {/* ─── Banner de Destaque Visual de Linhagem (T-4.3) ─── */}
+      {highlightedLineage && (
+        <div
+          className="lineage-highlight-badge"
+          id="lineage-highlight-badge"
+          style={{
+            position: "absolute",
+            top: 14,
+            left: "50%",
+            transform: "translateX(-50%)",
+            background: "rgba(15, 23, 42, 0.95)",
+            border: "1px solid #38bdf8",
+            borderRadius: 20,
+            padding: "6px 18px",
+            boxShadow: "0 4px 24px rgba(56, 189, 248, 0.35)",
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            zIndex: 800,
+            backdropFilter: "blur(8px)",
+          }}
+        >
+          <GitBranch size={16} color="#38bdf8" />
+          <span style={{ fontSize: "0.82rem", color: "#f8fafc", fontWeight: 600 }}>
+            Linhagem Ativa:{" "}
+            <span style={{ color: "#38bdf8" }}>{highlightedLineage.targetColumn}</span> (
+            {highlightedLineage.nodes.size} nós ancestrais destacados)
+          </span>
+          <button
+            className="btn btn-xs"
+            onClick={() => setHighlightedLineage(null)}
+            style={{
+              background: "rgba(255, 255, 255, 0.12)",
+              border: "none",
+              color: "#94a3b8",
+              borderRadius: 10,
+              padding: "2px 8px",
+              cursor: "pointer",
+              fontSize: "0.72rem",
+              fontWeight: 600,
+            }}
+          >
+            Limpar Destaque
+          </button>
+        </div>
+      )}
+
+      {/* ─── Menu de Contexto do Nó (T-4.1) ───────────────── */}
+      {nodeContextMenu && (
+        <>
+          <div
+            className="ctx-overlay"
+            style={{ position: "fixed", inset: 0, zIndex: 998 }}
+            onClick={() => setNodeContextMenu(null)}
+          />
+          <div
+            className="rdf-node-context-menu"
+            id="rdf-node-context-menu"
+            style={{
+              position: "fixed",
+              top: nodeContextMenu.y,
+              left: nodeContextMenu.x,
+              background: "rgba(15, 23, 42, 0.97)",
+              border: "1px solid rgba(56, 189, 248, 0.25)",
+              borderRadius: 8,
+              boxShadow: "0 8px 30px rgba(0, 0, 0, 0.7)",
+              backdropFilter: "blur(12px)",
+              padding: "6px 0",
+              zIndex: 999,
+              minWidth: 230,
+              fontFamily: "Inter, sans-serif",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                padding: "6px 14px",
+                fontSize: "0.75rem",
+                color: "#64748b",
+                borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
+                marginBottom: 4,
+                fontWeight: 600,
+              }}
+            >
+              Componente: {nodeContextMenu.node.data?.label || nodeContextMenu.node.id}
+            </div>
+
+            {/* Ação 1: Executar até este nó (T-4.1) */}
+            <button
+              id="ctx-btn-run-to-node"
+              className="ctx-menu-item"
+              onClick={() => {
+                const targetId = nodeContextMenu.node.id;
+                setNodeContextMenu(null);
+                handleRunToNode(targetId);
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                width: "100%",
+                padding: "8px 14px",
+                border: "none",
+                background: "transparent",
+                color: "#10b981",
+                fontSize: "0.82rem",
+                fontWeight: 600,
+                cursor: "pointer",
+                textAlign: "left",
+                transition: "background 0.15s ease",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(16, 185, 129, 0.15)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              <Play size={14} fill="#10b981" />
+              <span>Executar até este nó</span>
+            </button>
+
+            {/* Ação 2: Visualizar Prévia de Dados (T-4.2) */}
+            <button
+              id="ctx-btn-preview-data"
+              className="ctx-menu-item"
+              onClick={() => {
+                const targetNode = nodeContextMenu.node;
+                setNodeContextMenu(null);
+                setPreviewDrawer({
+                  isOpen: true,
+                  nodeId: targetNode.id,
+                  nodeLabel: targetNode.data?.label || targetNode.id,
+                  executionId: (targetNode.data as any)?.lastExecutionId || null,
+                });
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                width: "100%",
+                padding: "8px 14px",
+                border: "none",
+                background: "transparent",
+                color: "#38bdf8",
+                fontSize: "0.82rem",
+                fontWeight: 500,
+                cursor: "pointer",
+                textAlign: "left",
+                transition: "background 0.15s ease",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(56, 189, 248, 0.12)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              <TableIcon size={14} />
+              <span>Visualizar Prévia de Dados</span>
+            </button>
+
+            {/* Ação 3: Inspecionar Linhagem (T-4.3) */}
+            <button
+              id="ctx-btn-inspect-lineage"
+              className="ctx-menu-item"
+              onClick={() => {
+                const targetId = nodeContextMenu.node.id;
+                setNodeContextMenu(null);
+                handleInspectLineage(targetId);
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                width: "100%",
+                padding: "8px 14px",
+                border: "none",
+                background: "transparent",
+                color: "#cbd5e1",
+                fontSize: "0.82rem",
+                fontWeight: 500,
+                cursor: "pointer",
+                textAlign: "left",
+                transition: "background 0.15s ease",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255, 255, 255, 0.08)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              <GitBranch size={14} color="#a855f7" />
+              <span>Inspecionar Linhagem (Upstream)</span>
+            </button>
+
+            {/* Ação 4: Configurar Propriedades */}
+            <button
+              className="ctx-menu-item"
+              onClick={() => {
+                const targetNode = nodeContextMenu.node;
+                setNodeContextMenu(null);
+                onDoubleClickNode?.(targetNode);
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                width: "100%",
+                padding: "8px 14px",
+                border: "none",
+                background: "transparent",
+                color: "#94a3b8",
+                fontSize: "0.82rem",
+                cursor: "pointer",
+                textAlign: "left",
+                borderTop: "1px solid rgba(255, 255, 255, 0.08)",
+                marginTop: 4,
+                transition: "background 0.15s ease",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255, 255, 255, 0.06)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              <Sliders size={14} />
+              <span>Configurar Propriedades</span>
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* ─── Botão de Exportação Autônoma (Spec 006 - Fase 3 / T-3.5) ─── */}
+      <button
+        type="button"
+        className="btn-export-codegen"
+        id="btn-export-codegen"
+        onClick={() => setIsExportModalOpen(true)}
+        title="Exportar como Código Autônomo (Python DuckDB/Polars ou Airflow DAG)"
+        style={{
+          position: "absolute",
+          top: 14,
+          right: 154,
+          background: "rgba(15, 23, 42, 0.92)",
+          border: "1px solid rgba(99, 102, 241, 0.4)",
+          borderRadius: 8,
+          padding: "6px 12px",
+          boxShadow: "0 4px 14px rgba(0, 0, 0, 0.4)",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          zIndex: 800,
+          color: "#a5b4fc",
+          cursor: "pointer",
+          fontSize: "0.8rem",
+          fontWeight: 500,
+          backdropFilter: "blur(6px)",
+        }}
+      >
+        <Code size={14} color="#818cf8" />
+        <span>Exportar Código</span>
+      </button>
+
+      {/* ─── Botão de Agendamentos e Automação Cron (Spec 006 - Fase 1) ─── */}
+      <button
+        type="button"
+        className="btn-open-schedules"
+        id="btn-open-schedules"
+        onClick={() => setIsScheduleModalOpen(true)}
+        title="Gerenciador de Agendamentos e Automação Cron"
+        style={{
+          position: "absolute",
+          top: 14,
+          right: 20,
+          background: "rgba(15, 23, 42, 0.92)",
+          border: "1px solid rgba(99, 102, 241, 0.4)",
+          borderRadius: 8,
+          padding: "6px 12px",
+          boxShadow: "0 4px 14px rgba(0, 0, 0, 0.4)",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          zIndex: 800,
+          color: "#a5b4fc",
+          cursor: "pointer",
+          fontSize: "0.8rem",
+          fontWeight: 500,
+          backdropFilter: "blur(6px)",
+        }}
+      >
+        <Clock size={14} color="#818cf8" />
+        <span>Agendamentos</span>
+      </button>
+
+      {/* ─── Modal de Agendamentos (T-1.4) ─── */}
+      <ScheduleModal
+        isOpen={isScheduleModalOpen}
+        onClose={() => setIsScheduleModalOpen(false)}
+        pipelineId={cellId || "pipeline_main"}
+        pipelineName="Pipeline Atual"
+      />
+
+      {/* ─── Modal de Exportação de Código Autônomo (T-3.5) ─── */}
+      <ExportCodegenModal
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        pipelineId={cellId || "pipeline_main"}
+        pipelineName="Pipeline Atual"
+        draftDefinition={currentDraftDef}
+      />
+
+      {/* ─── Gaveta de Prévia de Dados Virtualizada (T-4.2) ─── */}
+      <DataPreviewDrawer
+        isOpen={previewDrawer.isOpen}
+        onClose={() => setPreviewDrawer((prev) => ({ ...prev, isOpen: false }))}
+        executionId={previewDrawer.executionId}
+        nodeId={previewDrawer.nodeId}
+        nodeLabel={previewDrawer.nodeLabel}
+        pipelineId={cellId}
+        onRunToNode={handleRunToNode}
+        isExecuting={isExecutingPartial}
+      />
     </div>
   );
 };
+

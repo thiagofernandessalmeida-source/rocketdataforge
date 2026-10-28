@@ -1,8 +1,13 @@
+from collections import defaultdict, deque
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from src.core.application.compiler.operators import (
+    AggregateField,
+    AggregateOperator,
+    FilterCondition,
+    FilterOperator,
     LogicalBarrier,
     LogicalFilter,
     LogicalJoin,
@@ -13,10 +18,18 @@ from src.core.application.compiler.operators import (
     LogicalTMap,
 )
 from src.core.application.compiler.validator import ValidationReport
+from src.core.application.security.masking import (
+    MaskingRule,
+    build_masked_projection_sql,
+    extract_masking_rules,
+    get_sql_masking_expression,
+)
 from src.core.domain.pipeline.draft import PipelineDraft
 from src.core.domain.shared.exceptions import DomainValidationError
 
+
 TEMPLATE_TOKEN_REGEX = re.compile(
+
     r"\{\{\s*([a-zA-Z0-9_\-]+)\.([a-zA-Z0-9_]+)\s*\}\}"
     r"|\{\s*([a-zA-Z0-9_\-]+)\.([a-zA-Z0-9_]+)\s*\}"
     r"|\{\{\s*([a-zA-Z0-9_]+)\s*\}\}"
@@ -120,6 +133,126 @@ class LogicalPlanner:
             iterator_edges=list(getattr(validation_report, "iterator_edges", []))
         )
 
+    def find_upstream_ancestors(self, draft: PipelineDraft, target_node_id: str) -> Set[str]:
+        """Realiza travessia reversa (upstream BFS) a partir do nó alvo coletando todos os nós ancestrais obrigatórios."""
+        if target_node_id not in draft.nodes:
+            raise DomainValidationError(f"Nó alvo '{target_node_id}' não existe no pipeline")
+
+        ancestors: Set[str] = {target_node_id}
+        queue: deque[str] = deque([target_node_id])
+
+        # Mapeia arestas de entrada para cada nó (to_node -> list[from_node])
+        incoming: Dict[str, List[str]] = defaultdict(list)
+        for edge in draft.edges.values():
+            incoming[edge.to_port.node_id].append(edge.from_port.node_id)
+
+        while queue:
+            curr = queue.popleft()
+            for src in incoming[curr]:
+                if src not in ancestors:
+                    ancestors.add(src)
+                    queue.append(src)
+
+        return ancestors
+
+    def build_subdag(
+        self,
+        draft: PipelineDraft,
+        target_node_id: str,
+        validation_report: Optional[ValidationReport] = None
+    ) -> LogicalPlan:
+        """Realiza a poda de DAG (Sub-DAG Pruning) compilando apenas os nós a montante necessários (RF-02.2)."""
+        ancestors = self.find_upstream_ancestors(draft, target_node_id)
+
+        # Obtém a ordenação topológica do grafo
+        if validation_report and validation_report.is_valid:
+            full_order = validation_report.topological_order
+        else:
+            from src.core.application.compiler.validator import GraphValidator
+            report = GraphValidator().validate(draft)
+            if not report.is_valid:
+                # Se houver nós inválidos, mas eles estiverem FORA do sub-DAG de ancestrais, valida apenas o subgrafo
+                # Cria sub-draft isolado para validação
+                sub_draft = PipelineDraft(
+                    id=f"{draft.id}_sub_{target_node_id}",
+                    project_id=draft.project_id,
+                    name=f"{draft.name} (Sub-DAG {target_node_id})",
+                    revision=draft.revision
+                )
+                for nid in ancestors:
+                    sub_draft.nodes[nid] = draft.nodes[nid]
+                for eid, e in draft.edges.items():
+                    if e.from_port.node_id in ancestors and e.to_port.node_id in ancestors:
+                        sub_draft.edges[eid] = e
+                sub_report = GraphValidator().validate(sub_draft)
+                if not sub_report.is_valid:
+                    raise DomainValidationError(
+                        f"Não é possível podar sub-DAG inválido para o nó '{target_node_id}'. Erros: {sub_report.errors}"
+                    )
+                full_order = sub_report.topological_order
+            else:
+                full_order = report.topological_order
+
+        # Filtra a ordem topológica mantendo apenas os ancestrais obrigatórios
+        subdag_order = [n_id for n_id in full_order if n_id in ancestors]
+        if target_node_id not in subdag_order:
+            subdag_order.append(target_node_id)
+
+        operators: Dict[str, LogicalOperator] = {}
+
+        for node_id in subdag_order:
+            node = draft.nodes[node_id]
+
+            # Para tMap, tenta inferir main_alias se não estiver explícito no config
+            if node.component_type in ("core.tmap", "transform.tmap", "processor.tmap", "tmap"):
+                if not node.config.get("main_alias"):
+                    for edge in draft.edges.values():
+                        if edge.to_port.node_id == node_id and edge.to_port.port_name in ("main", "main_in", "in", ""):
+                            flow_alias = getattr(edge, "data", {}).get("flowName") if hasattr(edge, "data") and isinstance(edge.data, dict) else None
+                            from_port = edge.from_port.port_name
+                            inferred = flow_alias or (from_port if from_port not in ("output", "out", "dataset", "main", "main_out") else None)
+                            if inferred:
+                                node.config["main_alias"] = inferred
+                                break
+
+            # Descobre quais nós e portas alimentam este nó (restringido aos nós no sub-DAG)
+            input_operator_ids = [
+                f"{edge.from_port.node_id}:{edge.from_port.port_name}"
+                if (edge.from_port.port_name and edge.from_port.port_name not in ("main", "main_out", "dataset", "output", "out"))
+                else edge.from_port.node_id
+                for edge in draft.edges.values()
+                if edge.to_port.node_id == node_id and edge.from_port.node_id in ancestors
+            ]
+
+            op = self._map_node_to_operator(node_id, node.component_type, node.config, input_operator_ids)
+            operators[node_id] = op
+
+        return LogicalPlan(
+            pipeline_id=draft.id,
+            operators=operators,
+            execution_order=subdag_order,
+            iterator_edges=[
+                e.id for e in draft.edges.values()
+                if e.from_port.node_id in ancestors and e.to_port.node_id in ancestors and getattr(e, "is_iterator", False)
+            ]
+        )
+
+    def inject_sql_masking(self, query: str, rules: List[Dict[str, Any]]) -> str:
+        """Injeta funções SQL escalares de mascaramento em uma consulta ou projeção SQL."""
+        if not rules:
+            return query
+        mask_rules = [
+            MaskingRule(
+                column_name=r["column_name"],
+                masking_type=r["masking_type"],
+                salt=r.get("salt"),
+                custom_value=r.get("custom_value")
+            ) if isinstance(r, dict) else r
+            for r in rules
+        ]
+        cols = [r.column_name for r in mask_rules]
+        return f"SELECT {build_masked_projection_sql(cols, mask_rules)} FROM ({query}) AS _sub"
+
     def _map_node_to_operator(
         self,
         node_id: str,
@@ -128,9 +261,13 @@ class LogicalPlanner:
         input_ids: List[str]
     ) -> LogicalOperator:
         """Mapeia o tipo de componente e sua configuração para o operador algébrico correspondente."""
-        cfg = config or {}
+        cfg = dict(config or {})
+        extracted_rules = extract_masking_rules(cfg)
+        if extracted_rules:
+            cfg["masking_rules"] = extracted_rules
 
         # DuckDB Source Dedicado
+
         if component_type in ("connector.db.duckdb", "core.duckdb.source"):
             query = cfg.get("query") or ""
             tokens = extract_parameter_tokens(query)
@@ -213,10 +350,47 @@ class LogicalPlanner:
                 raw_config=cfg
             )
 
-        if component_type == "core.filter":
-            return LogicalFilter(
+        if component_type in ("core.filter", "transform.filter", "tFilterRow", "tfilterrow", "filter"):
+            conditions = []
+            for cond_data in cfg.get("conditions", []):
+                if isinstance(cond_data, dict):
+                    conditions.append(FilterCondition(
+                        column=cond_data.get("column", ""),
+                        operator=cond_data.get("operator", "=="),
+                        value=cond_data.get("value")
+                    ))
+                elif isinstance(cond_data, FilterCondition):
+                    conditions.append(cond_data)
+
+            return FilterOperator(
                 id=node_id,
-                predicate=cfg.get("expression", ""),
+                conditions=conditions,
+                logical_operator=cfg.get("logical_operator") or cfg.get("operator") or "AND",
+                predicate=cfg.get("expression") or cfg.get("predicate") or "",
+                input_ids=input_ids
+            )
+
+        if component_type in ("core.aggregate", "transform.aggregate", "tAggregateRow", "taggregaterow", "aggregate"):
+            group_by = cfg.get("group_by") or cfg.get("group_columns") or []
+            if isinstance(group_by, str):
+                group_by = [c.strip() for c in group_by.split(",") if c.strip()]
+
+            aggregations = []
+            for agg_data in (cfg.get("aggregations") or cfg.get("operations") or []):
+                if isinstance(agg_data, dict):
+                    aggregations.append(AggregateField(
+                        column=agg_data.get("column", "*"),
+                        function=agg_data.get("function", "COUNT"),
+                        alias=agg_data.get("alias"),
+                        delimiter=agg_data.get("delimiter", ", ")
+                    ))
+                elif isinstance(agg_data, AggregateField):
+                    aggregations.append(agg_data)
+
+            return AggregateOperator(
+                id=node_id,
+                group_by=list(group_by),
+                aggregations=aggregations,
                 input_ids=input_ids
             )
 

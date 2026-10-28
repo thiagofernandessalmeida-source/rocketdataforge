@@ -17,10 +17,12 @@ from src.core.infrastructure.web.routers import (
     git,
     pipelines,
     policies,
+    schedules,
     tmap,
     versions,
     workspaces,
 )
+
 
 
 def create_app() -> FastAPI:
@@ -95,7 +97,6 @@ def create_app() -> FastAPI:
     def health_check():
         return {"status": "healthy", "service": "RocketDataForge Control Plane"}
 
-    # Inclusão dos routers com prefixo canônico /api/v1 e sem prefixo para conveniência
     api_routers = [
         workspaces.router,
         connections.router,
@@ -107,13 +108,32 @@ def create_app() -> FastAPI:
         policies.router,
         autodoc.router,
         tmap.router,
+        schedules.router,
     ]
 
     for r in api_routers:
         app.include_router(r, prefix="/api/v1")
         app.include_router(r)
 
+    @app.on_event("startup")
+    def on_startup():
+        from src.core.infrastructure.scheduler.scheduler_service import SchedulerService
+        try:
+            SchedulerService.get_instance().start()
+        except Exception as e:
+            import logging
+            logging.getLogger("uvicorn.error").warning(f"Scheduler startup warning: {e}")
+
+    @app.on_event("shutdown")
+    def on_shutdown():
+        from src.core.infrastructure.scheduler.scheduler_service import SchedulerService
+        try:
+            SchedulerService.get_instance().shutdown(wait=False)
+        except Exception:
+            pass
+
     return app
+
 
 
 app = create_app()

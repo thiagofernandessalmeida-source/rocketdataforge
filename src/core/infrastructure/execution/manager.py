@@ -19,7 +19,7 @@ from src.core.application.compiler.validator import GraphValidator
 from src.core.domain.execution.execution import Execution
 from src.core.domain.execution.status import ExecutionStatus
 from src.core.domain.pipeline.version import PipelineVersion
-from src.core.infrastructure.execution.cancellation import CancellationToken
+from src.core.infrastructure.execution.cancellation import CancellationToken, interrupt_execution
 from src.core.infrastructure.execution.worker import ExecutionWorker
 from src.core.infrastructure.persistence.execution_repository import SqlAlchemyExecutionRepository
 from src.core.infrastructure.telemetry.otel_setup import (
@@ -85,8 +85,9 @@ class ExecutionManager:
             return self._tokens.get(execution_id)
 
     def cancel_execution(self, execution_id: str) -> bool:
-        """Aciona o cancelamento cooperativo para a execução informada."""
+        """Aciona o cancelamento cooperativo e interrupção de conexões ativas para a execução informada."""
         with self._lock:
+            interrupt_execution(execution_id)
             token = self._tokens.get(execution_id)
             if token is not None:
                 token.cancel()

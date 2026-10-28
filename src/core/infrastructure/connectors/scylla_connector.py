@@ -30,8 +30,13 @@ MURMUR3_MAX_TOKEN = 9223372036854775807
 class ScyllaConnector:
     """Conector para ScyllaDB e Apache Cassandra via driver CQL."""
 
-    def __init__(self, secret_resolver: SecretResolver):
+    def __init__(self, secret_resolver: SecretResolver, pool_manager: Optional[Any] = None):
         self.secret_resolver = secret_resolver
+        if pool_manager is None:
+            from src.core.infrastructure.connectors.pool_manager import ConnectionPoolManager
+            self.pool_manager = ConnectionPoolManager.get_instance(secret_resolver=self.secret_resolver)
+        else:
+            self.pool_manager = pool_manager
 
     def _create_cluster(
         self,
@@ -210,20 +215,9 @@ class ScyllaConnector:
 
             # 2. Se cassandra-driver estiver disponível, tenta handshake CQL
             try:
-                from cassandra.auth import PlainTextAuthProvider
-
-                raw_password = self.secret_resolver.resolve(connection.secret_ref)
-                user = connection.options.get("user") or connection.options.get("username", "")
-
-                auth_provider = None
-                if user and raw_password:
-                    auth_provider = PlainTextAuthProvider(username=user, password=raw_password)
-
-                cluster = self._create_cluster(hosts=hosts, port=port, auth_provider=auth_provider, connect_timeout=4)
-                session = cluster.connect()
-                if keyspace:
+                session = self.pool_manager.get_scylla_session(connection, connect_timeout=4)
+                if keyspace and hasattr(session, "set_keyspace"):
                     session.set_keyspace(keyspace)
-                cluster.shutdown()
                 latency = int((time.time() - start_time) * 1000)
                 return True, f"Conexão com ScyllaDB estabelecida com sucesso ({len(hosts)} nós, keyspace='{keyspace or 'default'}').", latency
             except ImportError:
@@ -250,11 +244,7 @@ class ScyllaConnector:
         user = connection.options.get("user") or connection.options.get("username", "")
 
         try:
-            from cassandra.auth import PlainTextAuthProvider
-
-            auth_provider = PlainTextAuthProvider(username=user, password=raw_password) if user and raw_password else None
-            cluster = self._create_cluster(hosts=hosts, port=port, auth_provider=auth_provider, connect_timeout=10)
-            session = cluster.connect(keyspace if keyspace else None)
+            session = self.pool_manager.get_scylla_session(connection, connect_timeout=10)
 
             raw_cql = query_or_table.strip()
             if not raw_cql.lower().startswith("select "):
@@ -302,7 +292,6 @@ class ScyllaConnector:
                         nullable=True
                     ))
 
-            cluster.shutdown()
             return fields
 
         except ImportError:
@@ -352,12 +341,9 @@ class ScyllaConnector:
         user = connection.options.get("user") or connection.options.get("username", "")
 
         try:
-            from cassandra.auth import PlainTextAuthProvider
             from cassandra.query import SimpleStatement
 
-            auth_provider = PlainTextAuthProvider(username=user, password=raw_password) if user and raw_password else None
-            cluster = self._create_cluster(hosts=hosts, port=port, auth_provider=auth_provider, connect_timeout=10)
-            session = cluster.connect(keyspace if keyspace else None)
+            session = self.pool_manager.get_scylla_session(connection, connect_timeout=timeout)
             cql_consistency = self._map_cql_consistency(consistency_level)
 
             clean_query = query.strip()
@@ -414,7 +400,6 @@ class ScyllaConnector:
                             break
 
                 if all_records:
-                    cluster.shutdown()
                     return pl.DataFrame(all_records)
 
             # ─── Execução Paginada Convencional (Fetch Size / Paging) ───
@@ -425,7 +410,6 @@ class ScyllaConnector:
             )
             rows = session.execute(stmt, timeout=timeout)
             data = [dict(row._asdict()) for row in rows]
-            cluster.shutdown()
             return pl.DataFrame(data) if data else pl.DataFrame()
 
         except ImportError:
@@ -457,14 +441,11 @@ class ScyllaConnector:
         user = connection.options.get("user") or connection.options.get("username", "")
 
         try:
-            from cassandra.auth import PlainTextAuthProvider
             from cassandra.cluster import BatchStatement
             from cassandra.query import BatchType
             from cassandra.concurrent import execute_concurrent_with_args
 
-            auth_provider = PlainTextAuthProvider(username=user, password=raw_password) if user and raw_password else None
-            cluster = self._create_cluster(hosts=hosts, port=port, auth_provider=auth_provider, connect_timeout=10)
-            session = cluster.connect(keyspace if keyspace else None)
+            session = self.pool_manager.get_scylla_session(connection, connect_timeout=timeout)
             cql_consistency = self._map_cql_consistency(consistency_level)
 
             target_table = f"{keyspace}.{table}" if (keyspace and "." not in table) else table
@@ -567,7 +548,6 @@ class ScyllaConnector:
                     session.execute(batch, timeout=timeout)
                     total_inserted += len(chunk)
 
-            cluster.shutdown()
             return total_inserted
 
         except ImportError:
