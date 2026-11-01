@@ -11,7 +11,9 @@ import {
   Settings,
   Share2,
   ShieldCheck,
-  Sparkles
+  Sparkles,
+  Layers,
+  Box,
 } from "lucide-react";
 import { api } from "../../../api/client";
 import {
@@ -26,6 +28,9 @@ interface ExportCodegenModalProps {
   pipelineId: string;
   pipelineName?: string;
   draftDefinition?: any;
+  jobDefinition?: any;
+  jobName?: string;
+  initialScope?: "cell" | "job";
 }
 
 export const ExportCodegenModal: React.FC<ExportCodegenModalProps> = ({
@@ -34,7 +39,13 @@ export const ExportCodegenModal: React.FC<ExportCodegenModalProps> = ({
   pipelineId,
   pipelineName = "Pipeline Atual",
   draftDefinition,
+  jobDefinition,
+  jobName = "Job Completo",
+  initialScope = "cell",
 }) => {
+  const [exportScope, setExportScope] = useState<"cell" | "job">(
+    initialScope || (jobDefinition ? "job" : "cell")
+  );
   const [activeTab, setActiveTab] = useState<"standalone" | "airflow">("standalone");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,7 +59,7 @@ export const ExportCodegenModal: React.FC<ExportCodegenModalProps> = ({
 
   // Opções Airflow
   const [airflowOptions, setAirflowOptions] = useState<AirflowExportOptions>({
-    dag_id: `${pipelineName.toLowerCase().replace(/[^a-z0-9_]/g, "_")}_dag`,
+    dag_id: `${(initialScope === "job" ? jobName : pipelineName).toLowerCase().replace(/[^a-z0-9_]/g, "_")}_dag`,
     schedule_interval: "0 2 * * *",
     start_date: "2026-01-01",
     owner: "data_engineering",
@@ -60,11 +71,35 @@ export const ExportCodegenModal: React.FC<ExportCodegenModalProps> = ({
 
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  const fetchStandalone = async () => {
+  // Reset or initialize on open
+  useEffect(() => {
+    if (isOpen) {
+      if (initialScope) {
+        setExportScope(initialScope);
+      } else if (jobDefinition && !draftDefinition) {
+        setExportScope("job");
+      }
+      setStandaloneResult(null);
+      setAirflowResult(null);
+    }
+  }, [isOpen, initialScope, jobDefinition, draftDefinition]);
+
+  useEffect(() => {
+    const baseName = exportScope === "job" ? (jobName || "job") : (pipelineName || "pipeline");
+    const safeName = baseName.toLowerCase().replace(/[^a-z0-9_]/g, "_");
+    setAirflowOptions((prev) => ({
+      ...prev,
+      dag_id: `${safeName}_${exportScope === "job" ? "job" : "cell"}_dag`,
+      tags: ["rocketdataforge", exportScope === "job" ? "multi_cell_job" : "cell_pipeline"],
+    }));
+  }, [exportScope, jobName, pipelineName]);
+
+  const fetchStandalone = async (scopeToUse = exportScope) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.exportStandaloneCode(pipelineId, draftDefinition);
+      const activeDef = scopeToUse === "job" ? (jobDefinition || draftDefinition) : draftDefinition;
+      const res = await api.exportStandaloneCode(pipelineId, activeDef, scopeToUse);
       setStandaloneResult(res);
     } catch (err: any) {
       setError(err.message || "Falha ao gerar código autônomo.");
@@ -73,11 +108,12 @@ export const ExportCodegenModal: React.FC<ExportCodegenModalProps> = ({
     }
   };
 
-  const fetchAirflow = async () => {
+  const fetchAirflow = async (scopeToUse = exportScope) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.exportAirflowDag(pipelineId, airflowOptions, draftDefinition);
+      const activeDef = scopeToUse === "job" ? (jobDefinition || draftDefinition) : draftDefinition;
+      const res = await api.exportAirflowDag(pipelineId, airflowOptions, activeDef, scopeToUse);
       setAirflowResult(res);
     } catch (err: any) {
       setError(err.message || "Falha ao gerar DAG do Airflow.");
@@ -88,13 +124,13 @@ export const ExportCodegenModal: React.FC<ExportCodegenModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
-      if (activeTab === "standalone" && !standaloneResult) {
-        fetchStandalone();
-      } else if (activeTab === "airflow" && !airflowResult) {
-        fetchAirflow();
+      if (activeTab === "standalone") {
+        fetchStandalone(exportScope);
+      } else if (activeTab === "airflow") {
+        fetchAirflow(exportScope);
       }
     }
-  }, [isOpen, activeTab]);
+  }, [isOpen, activeTab, exportScope]);
 
   if (!isOpen) return null;
 
@@ -114,6 +150,18 @@ export const ExportCodegenModal: React.FC<ExportCodegenModalProps> = ({
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  };
+
+  const getStandaloneDownloadFilename = () => {
+    const base = exportScope === "job" ? (jobName || "job") : (pipelineName || "pipeline");
+    const safe = base.toLowerCase().replace(/[^a-z0-9_]/g, "_");
+    if (standaloneSubTab === "script") {
+      return `${safe}_${exportScope === "job" ? "job" : "cell"}_standalone.py`;
+    }
+    if (standaloneSubTab === "requirements") {
+      return "requirements.txt";
+    }
+    return ".env.example";
   };
 
   return (
@@ -217,6 +265,95 @@ export const ExportCodegenModal: React.FC<ExportCodegenModalProps> = ({
           >
             <X size={20} />
           </button>
+        </div>
+
+        {/* ─── Seletor de Escopo: Célula Ativa vs Job Inteiro ─── */}
+        <div
+          style={{
+            padding: "10px 24px",
+            background: "rgba(30, 41, 59, 0.4)",
+            borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 16,
+            flexWrap: "wrap",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span
+              style={{
+                fontSize: "0.76rem",
+                fontWeight: 600,
+                color: "#94a3b8",
+                textTransform: "uppercase",
+                letterSpacing: "0.05em",
+              }}
+            >
+              Escopo:
+            </span>
+            <div
+              style={{
+                display: "inline-flex",
+                background: "rgba(15, 23, 42, 0.8)",
+                borderRadius: 8,
+                padding: 3,
+                border: "1px solid rgba(255, 255, 255, 0.1)",
+              }}
+            >
+              <button
+                type="button"
+                id="btn-scope-cell"
+                onClick={() => setExportScope("cell")}
+                style={{
+                  padding: "5px 14px",
+                  borderRadius: 6,
+                  border: "none",
+                  background: exportScope === "cell" ? "#6366f1" : "transparent",
+                  color: exportScope === "cell" ? "#ffffff" : "#94a3b8",
+                  fontSize: "0.78rem",
+                  fontWeight: exportScope === "cell" ? 600 : 500,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  transition: "all 0.2s ease",
+                }}
+              >
+                <Box size={13} />
+                <span>Célula Ativa ({pipelineName})</span>
+              </button>
+
+              <button
+                type="button"
+                id="btn-scope-job"
+                onClick={() => setExportScope("job")}
+                style={{
+                  padding: "5px 14px",
+                  borderRadius: 6,
+                  border: "none",
+                  background: exportScope === "job" ? "#6366f1" : "transparent",
+                  color: exportScope === "job" ? "#ffffff" : "#94a3b8",
+                  fontSize: "0.78rem",
+                  fontWeight: exportScope === "job" ? 600 : 500,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  transition: "all 0.2s ease",
+                }}
+              >
+                <Layers size={13} />
+                <span>Job Inteiro ({jobName || "Todas as Células"})</span>
+              </button>
+            </div>
+          </div>
+
+          <span style={{ fontSize: "0.75rem", color: "#64748b" }}>
+            {exportScope === "job"
+              ? "Orquestra todas as etapas (Canvas + Python) com DuckDB e pré-condições"
+              : "Gera o código executável apenas para o fluxo da célula ativa"}
+          </span>
         </div>
 
         {/* Abas Principais */}
@@ -407,13 +544,13 @@ export const ExportCodegenModal: React.FC<ExportCodegenModalProps> = ({
                     </button>
                     <button
                       onClick={() => {
-                        if (standaloneSubTab === "script") {
-                          handleDownload(standaloneResult.script_py, "pipeline_standalone.py");
-                        } else if (standaloneSubTab === "requirements") {
-                          handleDownload(standaloneResult.requirements_txt, "requirements.txt");
-                        } else {
-                          handleDownload(standaloneResult.env_example, ".env.example");
-                        }
+                        const content =
+                          standaloneSubTab === "script"
+                            ? standaloneResult.script_py
+                            : standaloneSubTab === "requirements"
+                            ? standaloneResult.requirements_txt
+                            : standaloneResult.env_example;
+                        handleDownload(content, getStandaloneDownloadFilename());
                       }}
                       className="btn-download-code"
                       style={{
@@ -548,7 +685,7 @@ export const ExportCodegenModal: React.FC<ExportCodegenModalProps> = ({
                 }}
               >
                 <button
-                  onClick={fetchAirflow}
+                  onClick={() => fetchAirflow(exportScope)}
                   style={{
                     padding: "6px 14px",
                     borderRadius: 6,

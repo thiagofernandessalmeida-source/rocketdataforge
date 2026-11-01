@@ -192,6 +192,7 @@ class GraphValidator:
         adj_list: Dict[str, List[str]] = {node_id: [] for node_id in draft.nodes}
         in_degree: Dict[str, int] = {node_id: 0 for node_id in draft.nodes}
         connected_to_ports: Set[str] = set()
+        seen_edge_signatures: Set[tuple] = set()
 
         for edge in draft.edges.values():
             from_node = edge.from_port.node_id
@@ -215,18 +216,39 @@ class GraphValidator:
                 in_degree[to_node] += 1
 
                 to_port_key = str(edge.to_port)
+                to_comp_type = (draft.nodes[to_node].component_type or "").lower()
                 is_control_port = (
                     edge.to_port.port_name == "trigger" or
                     edge.to_port.port_name.startswith("trigger") or
-                    draft.nodes[to_node].component_type in ("control.sync", "control.barrier")
+                    to_comp_type in ("control.sync", "control.barrier")
                 )
-                if not is_control_port and to_port_key in connected_to_ports:
-                    errors.append(ValidationErrorItem(
-                        code="ERR_DUPLICATE_PORT_CONNECTION",
-                        node_id=to_node,
-                        message=f"Porta de entrada '{to_port_key}' possui múltiplas conexões."
-                    ))
-                connected_to_ports.add(to_port_key)
+                is_multi_input = (
+                    is_control_port or
+                    to_comp_type in (
+                        "core.tmap", "transform.tmap", "processor.tmap", "tmap",
+                        "core.union", "transform.union", "union",
+                        "core.join", "transform.join", "join",
+                    ) or
+                    edge.to_port.port_name in ("lookup", "lookups", "lkp")
+                )
+                edge_sig = (from_node, edge.from_port.port_name, to_node, edge.to_port.port_name)
+
+                if is_multi_input:
+                    if edge_sig in seen_edge_signatures:
+                        errors.append(ValidationErrorItem(
+                            code="ERR_DUPLICATE_PORT_CONNECTION",
+                            node_id=to_node,
+                            message=f"Conexão duplicada entre '{edge.from_port}' e '{edge.to_port}'."
+                        ))
+                    seen_edge_signatures.add(edge_sig)
+                else:
+                    if to_port_key in connected_to_ports:
+                        errors.append(ValidationErrorItem(
+                            code="ERR_DUPLICATE_PORT_CONNECTION",
+                            node_id=to_node,
+                            message=f"Porta de entrada '{to_port_key}' possui múltiplas conexões."
+                        ))
+                    connected_to_ports.add(to_port_key)
 
         # Se já houver erros críticos de integridade de nós, interrompe antes de ordenar
         if errors:

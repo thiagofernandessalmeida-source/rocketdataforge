@@ -247,3 +247,79 @@ def test_export_endpoints_api():
     assert data_af["dag_id"] == "airflow_exported_dag"
     assert "0 12 * * *" in data_af["dag_py"]
 
+
+def test_standalone_codegen_entire_multi_cell_job(tmp_path):
+    """Valida geração e execução autônoma de um Job inteiro com múltiplas células (Canvas + Python)."""
+    # 1. Arquivos temporários
+    in_csv = tmp_path / "sales.csv"
+    pl.DataFrame({"sale_id": [1, 2, 3], "amount": [100.0, 250.0, 50.0]}).write_csv(in_csv)
+    out_parquet = tmp_path / "sales_out.parquet"
+
+    # 2. Definição do Job com 2 células (1 CANVAS + 1 PYTHON)
+    job_def = {
+        "metadata": {"name": "full_ecommerce_job", "id": "job_ecom_99"},
+        "spec": {
+            "cells": [
+                {
+                    "id": "cell-01-extract-load",
+                    "name": "Extract & Load Sales",
+                    "order": 1,
+                    "cell_type": "CANVAS",
+                    "nodes": [
+                        {
+                            "id": "csv_sales",
+                            "component": {"type": "core.file.source", "version": "1.0.0"},
+                            "config": {"path": str(in_csv).replace("\\", "/"), "format": "csv"}
+                        },
+                        {
+                            "id": "parquet_sink",
+                            "component": {"type": "core.file.target", "version": "1.0.0"},
+                            "config": {"path": str(out_parquet).replace("\\", "/"), "format": "parquet"}
+                        }
+                    ],
+                    "edges": [
+                        {"from": "csv_sales.output", "to": "parquet_sink.input"}
+                    ]
+                },
+                {
+                    "id": "cell-02-python-analysis",
+                    "name": "Python Summary Audit",
+                    "order": 2,
+                    "cell_type": "PYTHON",
+                    "code_snippet": "logger.info('Auditoria Python executada com sucesso!')",
+                    "preconditions": [
+                        {"target_cell_id": "cell-01-extract-load", "expected_status": "OK"}
+                    ]
+                }
+            ]
+        }
+    }
+
+    generator = StandaloneGenerator()
+    bundle = generator.generate(job_def, scope="job")
+
+    assert "def execute_cell_cell_01_extract_load" in bundle.script_py
+    assert "def execute_cell_cell_02_python_analysis" in bundle.script_py
+    assert "def run_job" in bundle.script_py
+    assert "Auditoria Python executada com sucesso!" in bundle.script_py
+
+    # Validação sintática AST
+    parsed = ast.parse(bundle.script_py)
+    assert parsed is not None
+
+    # Execução real do script gerado
+    script_path = tmp_path / "full_job.py"
+    script_path.write_text(bundle.script_py, encoding="utf-8")
+
+    run_res = subprocess.run(
+        [sys.executable, str(script_path)],
+        capture_output=True,
+        text=True,
+        timeout=15
+    )
+
+    assert run_res.returncode == 0, f"Erro na execução do Job gerado:\nSTDOUT: {run_res.stdout}\nSTDERR: {run_res.stderr}"
+    assert out_parquet.exists()
+    assert len(pl.read_parquet(out_parquet)) == 3
+
+

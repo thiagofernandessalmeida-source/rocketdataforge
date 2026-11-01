@@ -1133,12 +1133,21 @@ class ExecutionWorker:
             node_buffers[phys_op.id] = []
             return
 
-        main_id = cfg.get("main_input_id") or input_ids[0]
+        lookups = cfg.get("lookups", [])
+        lookup_node_ids = {
+            (lk.get("node_id") or lk.get("id") or "").split(":")[0].split(".")[0]
+            for lk in lookups
+            if isinstance(lk, dict)
+        }
+        candidate_mains = [
+            inp for inp in input_ids
+            if inp.split(":")[0].split(".")[0] not in lookup_node_ids
+        ]
+        main_id = cfg.get("main_input_id") or (candidate_mains[0] if candidate_mains else (input_ids[0] if input_ids else ""))
         main_chunks = self._get_node_chunks(main_id, node_buffers)
         main_df = pl.concat(main_chunks) if main_chunks else pl.DataFrame()
         initial_rows = main_df.height
 
-        lookups = cfg.get("lookups", [])
         lookup_dfs: Dict[str, pl.DataFrame] = {}
         for lk in lookups:
             lk_id = lk.get("node_id") or lk.get("id") or ""

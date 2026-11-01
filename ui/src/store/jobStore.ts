@@ -122,6 +122,9 @@ export interface SchemaColumn {
   defaultValue?: string;
   masking?: string;
   maskingSalt?: string;
+  origin?: string[];
+  computed?: boolean;
+  physicalType?: string;
 }
 
 

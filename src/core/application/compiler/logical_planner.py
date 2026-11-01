@@ -107,7 +107,10 @@ class LogicalPlanner:
                 if not node.config.get("main_alias"):
                     for edge in draft.edges.values():
                         if edge.to_port.node_id == node_id and edge.to_port.port_name in ("main", "main_in", "in", ""):
+                            flow_type = getattr(edge, "data", {}).get("flowType") if hasattr(edge, "data") and isinstance(edge.data, dict) else None
                             flow_alias = getattr(edge, "data", {}).get("flowName") if hasattr(edge, "data") and isinstance(edge.data, dict) else None
+                            if flow_type == "lkp" or (flow_alias and str(flow_alias).startswith("lkp")):
+                                continue
                             from_port = edge.from_port.port_name
                             inferred = flow_alias or (from_port if from_port not in ("output", "out", "dataset", "main", "main_out") else None)
                             if inferred:
@@ -208,7 +211,10 @@ class LogicalPlanner:
                 if not node.config.get("main_alias"):
                     for edge in draft.edges.values():
                         if edge.to_port.node_id == node_id and edge.to_port.port_name in ("main", "main_in", "in", ""):
+                            flow_type = getattr(edge, "data", {}).get("flowType") if hasattr(edge, "data") and isinstance(edge.data, dict) else None
                             flow_alias = getattr(edge, "data", {}).get("flowName") if hasattr(edge, "data") and isinstance(edge.data, dict) else None
+                            if flow_type == "lkp" or (flow_alias and str(flow_alias).startswith("lkp")):
+                                continue
                             from_port = edge.from_port.port_name
                             inferred = flow_alias or (from_port if from_port not in ("output", "out", "dataset", "main", "main_out") else None)
                             if inferred:
@@ -337,7 +343,17 @@ class LogicalPlanner:
 
         # tMap Transform
         if component_type in ("core.tmap", "transform.tmap", "processor.tmap", "tmap"):
-            main_id = cfg.get("main_input_id") or (input_ids[0] if input_ids else "")
+            lookups = cfg.get("lookups", []) or []
+            lookup_node_ids = {
+                (lk.get("node_id") or lk.get("id") or "").split(":")[0].split(".")[0]
+                for lk in lookups
+                if isinstance(lk, dict)
+            }
+            candidate_mains = [
+                inp for inp in input_ids
+                if inp.split(":")[0].split(".")[0] not in lookup_node_ids
+            ]
+            main_id = cfg.get("main_input_id") or (candidate_mains[0] if candidate_mains else (input_ids[0] if input_ids else ""))
             main_alias = cfg.get("main_alias") or "main"
             return LogicalTMap(
                 id=node_id,

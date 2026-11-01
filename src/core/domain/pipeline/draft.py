@@ -90,12 +90,35 @@ class PipelineDraft:
         if to_port.node_id not in self.nodes:
             raise DomainValidationError(f"Nó de destino '{to_port.node_id}' não existe no draft")
 
-        # Invariante: uma porta de entrada recebe no máximo uma conexão
+        # Invariante: uma porta de entrada recebe no máximo uma conexão,
+        # a menos que o componente de destino seja multi-input (ex: tMap, union, join, control sync)
+        target_node = self.nodes[to_port.node_id]
+        target_comp_type = (target_node.component_type or "").lower()
+        is_control_port = (
+            to_port.port_name == "trigger" or
+            to_port.port_name.startswith("trigger") or
+            target_comp_type in ("control.sync", "control.barrier")
+        )
+        is_multi_input = (
+            is_control_port or
+            target_comp_type in (
+                "core.tmap", "transform.tmap", "processor.tmap", "tmap",
+                "core.union", "transform.union", "union",
+                "core.join", "transform.join", "join",
+            ) or
+            to_port.port_name in ("lookup", "lookups", "lkp")
+        )
+
         for edge in self.edges.values():
             if edge.to_port == to_port:
-                raise DomainValidationError(
-                    f"A porta de entrada '{to_port}' já está conectada pela aresta '{edge.id}'"
-                )
+                if not is_multi_input:
+                    raise DomainValidationError(
+                        f"A porta de entrada '{to_port}' já está conectada pela aresta '{edge.id}'"
+                    )
+                elif edge.from_port == from_port:
+                    raise DomainValidationError(
+                        f"A conexão de '{from_port}' para '{to_port}' já existe no pipeline draft"
+                    )
 
         edge = Edge.create(from_port=from_port, to_port=to_port)
         if edge.id in self.edges:

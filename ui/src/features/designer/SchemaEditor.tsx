@@ -738,6 +738,49 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
                                     {col.masking.replace("MASK_", "")}
                                   </span>
                                 )}
+                                {col.origin && col.origin.length > 0 && (
+                                  <span
+                                    className="schema-origin-badge"
+                                    title={`Origem: ${col.origin.join(", ")}`}
+                                    style={{
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      background: "rgba(16, 185, 129, 0.15)",
+                                      color: "#34d399",
+                                      borderRadius: 4,
+                                      padding: "1px 5px",
+                                      fontSize: "0.62rem",
+                                      fontWeight: 500,
+                                      whiteSpace: "nowrap",
+                                      border: "1px solid rgba(16, 185, 129, 0.3)",
+                                      maxWidth: 160,
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                    }}
+                                  >
+                                    {col.origin[0].split(".").slice(-2).join(".")}
+                                    {col.origin.length > 1 ? ` (+${col.origin.length - 1})` : ""}
+                                  </span>
+                                )}
+                                {col.computed && (
+                                  <span
+                                    className="schema-computed-badge"
+                                    title="Coluna calculada / computada"
+                                    style={{
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      background: "rgba(139, 92, 246, 0.15)",
+                                      color: "#a78bfa",
+                                      borderRadius: 4,
+                                      padding: "1px 5px",
+                                      fontSize: "0.62rem",
+                                      fontWeight: 500,
+                                      border: "1px solid rgba(139, 92, 246, 0.3)",
+                                    }}
+                                  >
+                                    calc
+                                  </span>
+                                )}
                               </div>
                             </td>
 
@@ -1119,6 +1162,49 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
                           >
                             <Shield size={9} />
                             {col.masking.replace("MASK_", "")}
+                          </span>
+                        )}
+                        {col.origin && col.origin.length > 0 && (
+                          <span
+                            className="schema-origin-badge"
+                            title={`Origem: ${col.origin.join(", ")}`}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              background: "rgba(16, 185, 129, 0.15)",
+                              color: "#34d399",
+                              borderRadius: 4,
+                              padding: "1px 5px",
+                              fontSize: "0.62rem",
+                              fontWeight: 500,
+                              whiteSpace: "nowrap",
+                              border: "1px solid rgba(16, 185, 129, 0.3)",
+                              maxWidth: 160,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                            }}
+                          >
+                            {col.origin[0].split(".").slice(-2).join(".")}
+                            {col.origin.length > 1 ? ` (+${col.origin.length - 1})` : ""}
+                          </span>
+                        )}
+                        {col.computed && (
+                          <span
+                            className="schema-computed-badge"
+                            title="Coluna calculada / computada"
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              background: "rgba(139, 92, 246, 0.15)",
+                              color: "#a78bfa",
+                              borderRadius: 4,
+                              padding: "1px 5px",
+                              fontSize: "0.62rem",
+                              fontWeight: 500,
+                              border: "1px solid rgba(139, 92, 246, 0.3)",
+                            }}
+                          >
+                            calc
                           </span>
                         )}
                       </div>

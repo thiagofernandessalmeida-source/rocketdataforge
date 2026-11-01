@@ -111,6 +111,127 @@ if __name__ == "__main__":
 """
 
 
+STANDALONE_JOB_TEMPLATE = """# ==============================================================================
+# Job Autônomo Completo: {{ pipeline_name }}
+# Gerado por: RocketDataForge Autonomous Code Engine (Spec 006)
+# Data de Geração: {{ generated_at }}
+# Total de Células: {{ cells | length }}
+#
+# Modo de Uso:
+#   1. Instale as dependências: pip install -r requirements.txt
+#   2. Configure o arquivo .env a partir de .env.example
+#   3. Execute o job: python {{ script_filename }}
+# ==============================================================================
+
+import os
+import sys
+import time
+import logging
+from pathlib import Path
+import duckdb
+import polars as pl
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger("{{ safe_pipeline_id }}")
+
+# Dicionário de resultados das etapas para avaliação de pré-condições
+cell_execution_results = {}
+
+{% for cell in cells %}
+# ==============================================================================
+# Célula {{ cell.order }}: [{{ cell.id }}] - {{ cell.name }} (Tipo: {{ cell.cell_type }})
+# ==============================================================================
+def execute_cell_{{ cell.safe_id }}(con: duckdb.DuckDBPyConnection) -> bool:
+    \"\"\"Executa a etapa '{{ cell.name }}'.\"\"\"
+    logger.info(">>> Iniciando Célula: {{ cell.name }} (ID: {{ cell.id }}, Ordem: {{ cell.order }})...")
+    cell_start = time.perf_counter()
+
+    {% if cell.preconditions %}
+    # Verificação de Pré-condições da Célula
+    {% for pre in cell.preconditions %}
+    target_status = cell_execution_results.get("{{ pre.target_cell_id }}", "NOT_FOUND")
+    if target_status != "{{ pre.expected_status }}":
+        logger.warning(
+            f"Pré-condição não satisfeita para '{{ cell.name }}': "
+            f"Célula upstream '{{ pre.target_cell_id }}' está com status '{target_status}', esperado '{{ pre.expected_status }}'."
+        )
+        return False
+    {% endfor %}
+    {% endif %}
+
+    {% if cell.cell_type == "PYTHON" %}
+    # ─── Execução de Célula Python ──────────────────────────────────────────
+    {{ cell.code_snippet | indent(4) }}
+
+    {% else %}
+    # ─── Execução de Nós da Célula Canvas no DuckDB / Polars ───────────────
+    {% for step in cell.steps %}
+    logger.info("  [Nó: {{ step.node_id }}] ({{ step.component_type }})...")
+    {% if step.env_vars %}
+    # Resolução de credenciais e variáveis via ambiente (RNF-02: Zero Plaintext)
+    {% for env_var, default_val in step.env_vars.items() %}
+    {{ env_var.lower() }} = os.getenv("{{ env_var }}", {{ default_val | tojson }})
+    {% endfor %}
+    {% endif %}
+
+    {% if step.python_code %}
+    {{ step.python_code | indent(4) }}
+    {% endif %}
+
+    {% if step.sql_query %}
+    con.execute(\"\"\"
+    {{ step.sql_query }}
+    \"\"\")
+    {% endif %}
+    {% endfor %}
+    {% endif %}
+
+    cell_duration = time.perf_counter() - cell_start
+    logger.info(f"<<< Célula '{{ cell.name }}' concluída com sucesso em {cell_duration:.3f}s!")
+    return True
+
+{% endfor %}
+
+def run_job() -> None:
+    logger.info("Iniciando orquestração do Job autônomo '{{ pipeline_name }}' ({{ cells | length }} células)...")
+    start_time = time.perf_counter()
+
+    con = duckdb.connect(database=":memory:")
+
+    try:
+        {% for cell in cells %}
+        # ----------------------------------------------------------------------
+        # Execução: Célula {{ cell.order }} ({{ cell.name }})
+        # ----------------------------------------------------------------------
+        ok_{{ cell.safe_id }} = execute_cell_{{ cell.safe_id }}(con)
+        cell_execution_results["{{ cell.id }}"] = "OK" if ok_{{ cell.safe_id }} else "FAILED"
+        if not ok_{{ cell.safe_id }}:
+            raise RuntimeError(f"Célula '{{ cell.name }}' falhou ou pré-condição não foi atingida.")
+
+        {% endfor %}
+        total_duration = time.perf_counter() - start_time
+        logger.info(f"Job '{{ pipeline_name }}' finalizado com sucesso em {total_duration:.3f}s!")
+
+    except Exception as e:
+        logger.error(f"Falha na execução do Job '{{ pipeline_name }}': {e}", exc_info=True)
+        con.close()
+        sys.exit(1)
+    finally:
+        con.close()
+
+def run_pipeline() -> None:
+    \"\"\"Alias para compatibilidade com executores padrão.\"\"\"
+    run_job()
+
+if __name__ == "__main__":
+    run_job()
+"""
+
+
 class StandaloneGenerator:
     """Compilador de grafos de pipeline em código Python autônomo."""
 
@@ -122,17 +243,25 @@ class StandaloneGenerator:
         )
         self._template = self._jinja_env.from_string(STANDALONE_TEMPLATE)
 
-    def generate(self, pipeline: Any) -> StandaloneCodeBundle:
+    def generate(self, pipeline: Any, scope: Optional[str] = None) -> StandaloneCodeBundle:
         """Gera o script Python autônomo, requirements.txt e .env.example."""
         canonical = self._normalize_pipeline_dict(pipeline)
         metadata = canonical.get("metadata", {})
         spec = canonical.get("spec", {})
         nodes = spec.get("nodes", [])
         edges = spec.get("edges", [])
+        cells = spec.get("cells", [])
 
         pipeline_name = metadata.get("name") or "rocketdataforge_job"
         pipeline_id = metadata.get("id") or "job_main"
         safe_pipeline_id = re.sub(r"\W+", "_", pipeline_id).strip("_")
+
+        chosen_scope = scope or canonical.get("export_scope") or metadata.get("export_scope")
+        if not chosen_scope:
+            chosen_scope = "job" if (cells and len(cells) > 0 and not nodes) else ("cell" if nodes else "job")
+
+        if chosen_scope == "job" and cells and len(cells) > 0:
+            return self._generate_multi_cell_job(pipeline_name, safe_pipeline_id, cells, metadata)
 
         # Ordenação topológica dos nós
         sorted_nodes = self._topological_sort(nodes, edges)
@@ -171,6 +300,108 @@ class StandaloneGenerator:
             generated_at=now_str
         )
 
+    def _generate_multi_cell_job(
+        self,
+        job_name: str,
+        safe_job_id: str,
+        raw_cells: List[Dict[str, Any]],
+        metadata: Dict[str, Any]
+    ) -> StandaloneCodeBundle:
+        """Gera um script Python autônomo orquestrando todas as células do Job."""
+        sorted_cells = sorted(raw_cells, key=lambda c: c.get("order", 0))
+
+        compiled_cells = []
+        all_nodes_collected: List[Dict[str, Any]] = []
+        env_vars_collected: Dict[str, str] = {}
+        target_tables: Dict[str, str] = {}
+
+        for idx, cell in enumerate(sorted_cells):
+            cell_id = cell.get("id") or cell.get("name") or f"cell_{idx+1}"
+            safe_cell_id = re.sub(r"\W+", "_", cell_id).strip("_")
+            cell_name = cell.get("name") or cell_id
+            order = cell.get("order", idx + 1)
+            cell_type = str(cell.get("cell_type") or cell.get("cellType") or "CANVAS").upper()
+            code_snippet = cell.get("code_snippet") or cell.get("codeSnippet") or ""
+            preconditions = cell.get("preconditions") or []
+
+            cell_nodes = [self._normalize_cell_node(n) for n in cell.get("nodes", [])]
+            cell_edges = [self._normalize_cell_edge(e) for e in cell.get("edges", [])]
+            all_nodes_collected.extend(cell_nodes)
+
+            steps = []
+            if cell_type == "CANVAS":
+                sorted_nodes = self._topological_sort(cell_nodes, cell_edges)
+                for node in sorted_nodes:
+                    step, node_envs = self._compile_node_step(node, cell_edges, target_tables)
+                    steps.append(step)
+                    env_vars_collected.update(node_envs)
+
+            compiled_cells.append({
+                "id": cell_id,
+                "safe_id": safe_cell_id,
+                "name": cell_name,
+                "order": order,
+                "cell_type": cell_type,
+                "code_snippet": code_snippet,
+                "preconditions": preconditions,
+                "steps": steps
+            })
+
+        now_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        template = self._jinja_env.from_string(STANDALONE_JOB_TEMPLATE)
+        script_code = template.render(
+            pipeline_name=job_name,
+            safe_pipeline_id=safe_job_id,
+            generated_at=now_str,
+            script_filename=f"{safe_job_id}.py",
+            cells=compiled_cells
+        )
+
+        reqs = self._generate_requirements(all_nodes_collected)
+        env_example = self._generate_env_example(env_vars_collected, job_name)
+
+        return StandaloneCodeBundle(
+            script_py=script_code,
+            requirements_txt=reqs,
+            env_example=env_example,
+            pipeline_name=job_name,
+            generated_at=now_str
+        )
+
+    def _normalize_cell_node(self, node: Dict[str, Any]) -> Dict[str, Any]:
+        """Normaliza nós de célula para o formato canônico."""
+        if "component" in node and isinstance(node["component"], dict):
+            return node
+        data = node.get("data", {})
+        comp_type = data.get("componentType") or "generic"
+        cfg = dict(data.get("config", {}) or {})
+        if data.get("schema") and isinstance(data["schema"], list):
+            cfg.setdefault("schema_definitions", data["schema"])
+        return {
+            "id": node.get("id"),
+            "component": {"type": comp_type, "version": data.get("componentVersion", "1.0.0")},
+            "config": cfg
+        }
+
+    def _normalize_cell_edge(self, edge: Dict[str, Any]) -> Dict[str, Any]:
+        """Normaliza arestas de célula para o formato canônico."""
+        if "from" in edge and "to" in edge:
+            return edge
+        from_node = edge.get("source", "")
+        from_port = (
+            edge.get("data", {}).get("flowName") or
+            edge.get("label") or
+            edge.get("sourceHandle") or
+            "main"
+        )
+        to_node = edge.get("target", "")
+        to_port = edge.get("targetHandle") or (edge.get("data", {}).get("flowType") == "lkp" and "lookup") or "input"
+        return {
+            "id": edge.get("id"),
+            "from": f"{from_node}.{from_port}" if from_port else from_node,
+            "to": f"{to_node}.{to_port}" if to_port else to_node
+        }
+
     def _normalize_pipeline_dict(self, pipeline: Any) -> Dict[str, Any]:
         """Normaliza entrada para dicionário com estrutura canonical {metadata, spec}."""
         if isinstance(pipeline, PipelineDraft):
@@ -180,10 +411,14 @@ class StandaloneGenerator:
         elif isinstance(pipeline, dict):
             if "spec" in pipeline:
                 return pipeline
-            elif "nodes" in pipeline:
+            elif "nodes" in pipeline or "cells" in pipeline:
                 return {
                     "metadata": {"name": pipeline.get("name", "pipeline"), "id": pipeline.get("id", "pipeline")},
-                    "spec": pipeline
+                    "spec": {
+                        "nodes": pipeline.get("nodes", []),
+                        "edges": pipeline.get("edges", []),
+                        "cells": pipeline.get("cells", [])
+                    }
                 }
             return {"metadata": {}, "spec": {"nodes": [], "edges": []}}
         return {"metadata": {}, "spec": {"nodes": [], "edges": []}}

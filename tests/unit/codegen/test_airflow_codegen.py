@@ -118,3 +118,44 @@ def test_airflow_codegen_zero_plaintext_credentials():
 
     assert "UltraSecretPassword999#" not in bundle.dag_py
     assert "os.getenv(" in bundle.dag_py
+
+
+def test_airflow_codegen_multi_cell_job():
+    """Valida geração de DAG do Airflow para um Job com múltiplas células."""
+    job_def = {
+        "metadata": {"name": "multi_cell_analytics_job", "id": "job_multi_cell"},
+        "spec": {
+            "cells": [
+                {
+                    "id": "cell_ingestion",
+                    "name": "Ingestion",
+                    "order": 1,
+                    "cell_type": "CANVAS",
+                    "nodes": [{"id": "s1", "component": {"type": "core.file.source"}, "config": {"path": "in.csv"}}],
+                    "edges": []
+                },
+                {
+                    "id": "cell_enrichment",
+                    "name": "Enrichment",
+                    "order": 2,
+                    "cell_type": "CANVAS",
+                    "nodes": [{"id": "t1", "component": {"type": "core.file.target"}, "config": {"path": "out.parquet"}}],
+                    "edges": [],
+                    "preconditions": [{"target_cell_id": "cell_ingestion", "expected_status": "OK"}]
+                }
+            ]
+        }
+    }
+
+    generator = AirflowGenerator()
+    bundle = generator.generate(job_def, scope="job")
+
+    assert "execute_cell_cell_ingestion" in bundle.dag_py
+    assert "execute_cell_cell_enrichment" in bundle.dag_py
+    assert "task_cell_ingestion" in bundle.dag_py
+    assert "task_cell_enrichment" in bundle.dag_py
+    assert "task_cell_ingestion >> task_cell_enrichment" in bundle.dag_py
+
+    parsed = ast.parse(bundle.dag_py)
+    assert parsed is not None
+

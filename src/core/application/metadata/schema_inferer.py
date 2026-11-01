@@ -24,6 +24,12 @@ class InferredField:
     physical_type: str
     nullable: bool = True
     description: Optional[str] = None
+    length: Optional[int] = None
+    precision: Optional[int] = None
+    scale: Optional[int] = None
+    is_primary_key: bool = False
+    origin: List[str] = field(default_factory=list)
+    computed: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -31,7 +37,13 @@ class InferredField:
             "logical_type": self.logical_type.value,
             "physical_type": self.physical_type,
             "nullable": self.nullable,
-            "description": self.description
+            "description": self.description,
+            "length": self.length,
+            "precision": self.precision,
+            "scale": self.scale,
+            "is_primary_key": self.is_primary_key,
+            "origin": self.origin,
+            "computed": self.computed,
         }
 
 
@@ -40,11 +52,15 @@ class InferredSchema:
     """Esquema estrutural inferido de uma fonte ou arquivo."""
     dataset_name: str
     fields: List[InferredField] = field(default_factory=list)
+    inference_source: str = "database"
+    warnings: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "dataset_name": self.dataset_name,
-            "fields": [f.to_dict() for f in self.fields]
+            "fields": [f.to_dict() for f in self.fields],
+            "inference_source": self.inference_source,
+            "warnings": self.warnings
         }
 
 
@@ -107,6 +123,94 @@ def map_type_name_to_polars(type_str: str) -> pl.DataType:
     elif t in ("json", "object", "array"):
         return pl.String
     return pl.String
+
+
+POSTGRES_OID_TO_LOGICAL: Dict[int, tuple[LogicalDataType, str]] = {
+    16: (LogicalDataType.BOOLEAN, "boolean"),
+    17: (LogicalDataType.BINARY, "bytea"),
+    20: (LogicalDataType.INT64, "bigint"),
+    21: (LogicalDataType.INT16, "smallint"),
+    23: (LogicalDataType.INT32, "integer"),
+    25: (LogicalDataType.STRING, "text"),
+    114: (LogicalDataType.JSON, "json"),
+    700: (LogicalDataType.FLOAT32, "real"),
+    701: (LogicalDataType.FLOAT64, "double precision"),
+    1042: (LogicalDataType.STRING, "character"),
+    1043: (LogicalDataType.STRING, "varchar"),
+    1082: (LogicalDataType.DATE, "date"),
+    1083: (LogicalDataType.TIME, "time"),
+    1114: (LogicalDataType.TIMESTAMP, "timestamp"),
+    1184: (LogicalDataType.TIMESTAMP_TZ, "timestamptz"),
+    1266: (LogicalDataType.TIME, "timetz"),
+    1700: (LogicalDataType.DECIMAL, "numeric"),
+    2950: (LogicalDataType.STRING, "uuid"),
+    3802: (LogicalDataType.JSON, "jsonb"),
+    # Arrays
+    1000: (LogicalDataType.ARRAY, "boolean[]"),
+    1005: (LogicalDataType.ARRAY, "smallint[]"),
+    1007: (LogicalDataType.ARRAY, "integer[]"),
+    1016: (LogicalDataType.ARRAY, "bigint[]"),
+    1009: (LogicalDataType.ARRAY, "text[]"),
+    1014: (LogicalDataType.ARRAY, "character[]"),
+    1015: (LogicalDataType.ARRAY, "varchar[]"),
+    199: (LogicalDataType.ARRAY, "json[]"),
+    3807: (LogicalDataType.ARRAY, "jsonb[]"),
+    2951: (LogicalDataType.ARRAY, "uuid[]"),
+    1021: (LogicalDataType.ARRAY, "real[]"),
+    1022: (LogicalDataType.ARRAY, "double precision[]"),
+    1231: (LogicalDataType.ARRAY, "numeric[]"),
+    1182: (LogicalDataType.ARRAY, "date[]"),
+    1115: (LogicalDataType.ARRAY, "timestamp[]"),
+    1185: (LogicalDataType.ARRAY, "timestamptz[]"),
+}
+
+
+def map_postgres_type_to_logical(type_ref: Any) -> tuple[LogicalDataType, str]:
+    """Mapeia OID ou nome textual do Postgres (format_type) para LogicalDataType e physical_type legível."""
+    if isinstance(type_ref, int) or (isinstance(type_ref, str) and type_ref.isdigit()):
+        oid = int(type_ref)
+        if oid in POSTGRES_OID_TO_LOGICAL:
+            return POSTGRES_OID_TO_LOGICAL[oid]
+        return LogicalDataType.STRING, f"oid_{oid}"
+
+    t_str = str(type_ref or "").lower().strip()
+    if t_str.endswith("[]"):
+        return LogicalDataType.ARRAY, t_str
+
+    if t_str in ("int2", "smallint", "smallserial"):
+        return LogicalDataType.INT16, "smallint"
+    if t_str in ("int4", "integer", "int", "serial"):
+        return LogicalDataType.INT32, "integer"
+    if t_str in ("int8", "bigint", "bigserial"):
+        return LogicalDataType.INT64, "bigint"
+    if t_str in ("float4", "real"):
+        return LogicalDataType.FLOAT32, "real"
+    if t_str in ("float8", "double precision", "double"):
+        return LogicalDataType.FLOAT64, "double precision"
+    if "numeric" in t_str or "decimal" in t_str:
+        return LogicalDataType.DECIMAL, t_str
+    if t_str in ("bool", "boolean"):
+        return LogicalDataType.BOOLEAN, "boolean"
+    if t_str in ("date",):
+        return LogicalDataType.DATE, "date"
+    if t_str in ("time", "time without time zone"):
+        return LogicalDataType.TIME, "time"
+    if t_str in ("timetz", "time with time zone"):
+        return LogicalDataType.TIME, "timetz"
+    if t_str in ("timestamp", "timestamp without time zone"):
+        return LogicalDataType.TIMESTAMP, "timestamp"
+    if t_str in ("timestamptz", "timestamp with time zone"):
+        return LogicalDataType.TIMESTAMP_TZ, "timestamptz"
+    if t_str == "uuid":
+        return LogicalDataType.STRING, "uuid"
+    if t_str in ("json", "jsonb"):
+        return LogicalDataType.JSON, t_str
+    if t_str == "bytea":
+        return LogicalDataType.BINARY, "bytea"
+    if any(t_str.startswith(p) for p in ("varchar", "character varying", "char", "character", "text", "citext")):
+        return LogicalDataType.STRING, t_str
+
+    return LogicalDataType.STRING, t_str
 
 
 class SchemaInferer:
@@ -261,9 +365,9 @@ class SchemaInferer:
         import re
         import duckdb
 
-        # Substitui tokens {node_id.col} por literais dummy para permitir inspeção sem erro de sintaxe
-        sanitized_query = re.sub(r"\{[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_]+\}", "1", query)
-        sanitized_query = re.sub(r"\{[a-zA-Z0-9_]+\}", "1", sanitized_query)
+        # Substitui tokens {node_id.col} por NULL para permitir inspeção sem erro de tipo (ex: WHERE text_col = NULL)
+        sanitized_query = re.sub(r"\{[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_]+\}", "NULL", query)
+        sanitized_query = re.sub(r"\{[a-zA-Z0-9_]+\}", "NULL", sanitized_query)
 
         # Se for ScyllaDB / Cassandra
         is_scylla = (
@@ -353,52 +457,155 @@ class SchemaInferer:
                 pass
 
         # Se houver dados de conexão PostgreSQL
-        if connection_details and (connection_details.get("host") or connection_details.get("database")):
+        is_postgres = (
+            connection_details
+            and (
+                str(connection_details.get("type", "")).lower() in ("postgres", "postgresql")
+                or connection_details.get("host")
+                or connection_details.get("database")
+            )
+        )
+        if is_postgres:
+            from src.core.infrastructure.security.redaction import sanitize_message
+            from src.core.infrastructure.security.secret_resolver import SecretResolver
+            from src.core.domain.shared.types import SecretReference
+
+            resolver = SecretResolver()
+            raw_pwd = connection_details.get("password") or connection_details.get("pwd") or ""
+            if isinstance(raw_pwd, str) and (raw_pwd.startswith("secret://") or raw_pwd.startswith("env://")):
+                password = resolver.resolve(SecretReference(raw_pwd))
+            elif raw_pwd:
+                password = str(raw_pwd)
+            else:
+                password = ""
+
             try:
                 import psycopg2
                 host = connection_details.get("host") or "localhost"
                 port = int(connection_details.get("port") or 5432)
                 database = connection_details.get("database") or "postgres"
                 username = connection_details.get("username") or "postgres"
-                password = connection_details.get("password") or ""
-                sslmode = connection_details.get("sslMode") or "prefer"
+                sslmode = connection_details.get("sslMode") or connection_details.get("sslmode") or "prefer"
 
                 conn = psycopg2.connect(
                     dbname=database, user=username, password=password,
                     host=host, port=port, sslmode=sslmode, connect_timeout=5
                 )
                 cur = conn.cursor()
-                # Executa com LIMIT 0 para inspecionar cursor.description
-                cur.execute(f"SELECT * FROM ({sanitized_query}) AS _subq_infer LIMIT 0;")
                 fields: List[InferredField] = []
-                if cur.description:
-                    for desc in cur.description:
-                        col_name = desc[0]
-                        # Type code mapping simples
-                        type_code = desc[1]
-                        logical = LogicalDataType.STRING
-                        if type_code in (20, 21, 23):  # int8, int2, int4
-                            logical = LogicalDataType.INT32 if type_code != 20 else LogicalDataType.INT64
-                        elif type_code in (700, 701, 1700):  # float4, float8, numeric
-                            logical = LogicalDataType.FLOAT64 if type_code != 1700 else LogicalDataType.DECIMAL
-                        elif type_code in (16,):  # bool
-                            logical = LogicalDataType.BOOLEAN
-                        elif type_code in (1082,):  # date
-                            logical = LogicalDataType.DATE
-                        elif type_code in (1114, 1184):  # timestamp, timestamptz
-                            logical = LogicalDataType.TIMESTAMP
-                        fields.append(InferredField(
-                            name=col_name,
-                            logical_type=logical,
-                            physical_type=str(type_code),
-                            nullable=True
-                        ))
+
+                # Camada A2: CREATE TEMP VIEW com ROLLBACK para tipos exatos e format_type
+                from src.core.application.metadata.catalog_provider import parse_format_type
+                from src.core.infrastructure.connectors.postgres_catalog_provider import PostgresCatalogProvider
+                catalog_prov = PostgresCatalogProvider()
+
+                a2_success = False
+                try:
+                    cur.execute("BEGIN READ WRITE;")
+                    cur.execute("SET LOCAL statement_timeout = '10s';")
+                    cur.execute(f"CREATE TEMP VIEW _rdf_infer AS {sanitized_query};")
+                    cur.execute("""
+                        SELECT a.attname,
+                               format_type(a.atttypid, a.atttypmod) AS data_type
+                        FROM pg_attribute a
+                        WHERE a.attrelid = '_rdf_infer'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+                        ORDER BY a.attnum;
+                    """)
+                    rows = cur.fetchall()
+                    cur.execute("ROLLBACK;")
+                    if isinstance(rows, list) and rows and isinstance(rows[0], (tuple, list)):
+                        for row in rows:
+                            col_name, data_type = row[0], str(row[1])
+                            length, precision, scale = parse_format_type(data_type)
+                            logical = catalog_prov.resolve_type(data_type)
+                            fields.append(InferredField(
+                                name=col_name,
+                                logical_type=logical,
+                                physical_type=data_type,
+                                nullable=True,
+                                length=length,
+                                precision=precision,
+                                scale=scale,
+                            ))
+                        a2_success = True
+                except Exception as a2_err:
+                    try:
+                        cur.execute("ROLLBACK;")
+                    except Exception:
+                        pass
+                    logger.debug(f"Camada A2 (temp view) falhou, tentando fallback A1 (LIMIT 0): {a2_err}")
+
+                # Fallback para Camada A1 (LIMIT 0) se A2 não obteve sucesso
+                if not a2_success:
+                    cur.execute("BEGIN READ ONLY;")
+                    cur.execute("SET LOCAL statement_timeout = '10s';")
+                    cur.execute(f"SELECT * FROM ({sanitized_query}) AS _subq_infer LIMIT 0;")
+                    if cur.description:
+                        for desc in cur.description:
+                            col_name = desc[0]
+                            type_code = desc[1]
+                            logical, physical = map_postgres_type_to_logical(type_code)
+                            fields.append(InferredField(
+                                name=col_name,
+                                logical_type=logical,
+                                physical_type=physical,
+                                nullable=True
+                            ))
+                    try:
+                        cur.execute("ROLLBACK;")
+                    except Exception:
+                        pass
+
                 cur.close()
                 conn.close()
                 if fields:
-                    return InferredSchema(dataset_name=dataset_name, fields=fields)
-            except Exception:
-                pass  # Fallback para DuckDB
+                    # Camada B: Enriquece campos com análise de linhagem semântica e catálogo
+                    from src.core.application.metadata.sql_lineage import SqlLineageAnalyzer
+
+                    warnings: List[str] = []
+                    inference_source = "database"
+                    try:
+                        analyzer = SqlLineageAnalyzer(catalog_provider=catalog_prov, dialect="postgres")
+                        lineage_res = analyzer.analyze_lineage(sanitized_query, validate_tables_exist=False)
+                        if lineage_res.warnings:
+                            warnings.extend(lineage_res.warnings)
+
+                        enriched_fields: List[InferredField] = []
+                        for f in fields:
+                            lin = lineage_res.columns.get(f.name)
+                            if lin:
+                                enriched_fields.append(InferredField(
+                                    name=f.name,
+                                    logical_type=f.logical_type,
+                                    physical_type=f.physical_type,
+                                    nullable=lin.nullable,
+                                    description=lin.comment or f.description,
+                                    length=f.length if f.length is not None else lin.length,
+                                    precision=f.precision if f.precision is not None else lin.precision,
+                                    scale=f.scale if f.scale is not None else lin.scale,
+                                    is_primary_key=lin.is_primary_key,
+                                    origin=lin.origin,
+                                    computed=lin.computed,
+                                ))
+                            else:
+                                enriched_fields.append(f)
+                        fields = enriched_fields
+                        if not warnings:
+                            inference_source = "database+lineage"
+                    except Exception as b_err:
+                        logger.debug(f"Falha ao executar Camada B (linhagem): {b_err}")
+                        warnings.append("lineage_unavailable")
+
+                    return InferredSchema(
+                        dataset_name=dataset_name,
+                        fields=fields,
+                        inference_source=inference_source,
+                        warnings=warnings,
+                    )
+            except Exception as e:
+                clean_err = sanitize_message(str(e))
+                logger.error(f"Erro na execução da consulta PostgreSQL: {clean_err}")
+                raise DomainValidationError(f"Erro na consulta SQL no PostgreSQL: {clean_err}")
 
         # Fallback para motor analítico DuckDB
         try:
@@ -429,22 +636,23 @@ class SchemaInferer:
                     physical_type=col_type,
                     nullable=True
                 ))
-            return InferredSchema(dataset_name=dataset_name, fields=fields)
-        except Exception:
-            # Fallback sintático simples se a query não puder ser executada em banco vazio
-            clean = re.sub(r"--.*$", "", sanitized_query, flags=re.MULTILINE)
-            m = re.search(r"SELECT\s+(.*?)\s+FROM", clean, re.IGNORECASE | re.DOTALL)
-            if m:
-                select_clause = m.group(1).strip()
-                if select_clause != "*":
-                    cols = [c.strip().split()[-1].strip('"').strip("'").split(".")[-1] for c in select_clause.split(",") if c.strip()]
-                    fields = [
-                        InferredField(name=c, logical_type=LogicalDataType.STRING, physical_type="VARCHAR", nullable=True)
-                        for c in cols
-                    ]
-                    return InferredSchema(dataset_name=dataset_name, fields=fields)
+            return InferredSchema(dataset_name=dataset_name, fields=fields, inference_source="database", warnings=[])
+        except Exception as duck_err:
+            logger.debug(f"Inferência DuckDB em memória falhou: {duck_err}")
 
-        raise DomainValidationError(f"Não foi possível inferir o schema para a query SQL informada.")
+        # Tentativa Camada C (offline / estática com sqlglot)
+        try:
+            from src.core.application.metadata.sql_lineage import SqlLineageAnalyzer
+            analyzer = SqlLineageAnalyzer(dialect="postgres")
+            static_schema = analyzer.infer_offline(sanitized_query, dataset_name=dataset_name)
+            if static_schema.fields:
+                return static_schema
+        except DomainValidationError:
+            raise
+        except Exception as static_err:
+            logger.debug(f"Inferência estática Camada C falhou: {static_err}")
+
+        raise DomainValidationError("Não foi possível inferir o schema para a query SQL informada.")
 
     def infer_from_path_or_query(
         self,

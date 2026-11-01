@@ -80,11 +80,22 @@ def infer_schema(
                 logical_type=f.logical_type.value,
                 physical_type=f.physical_type,
                 nullable=f.nullable,
-                description=f.description
+                description=f.description,
+                length=f.length,
+                precision=f.precision,
+                scale=f.scale,
+                is_primary_key=f.is_primary_key,
+                origin=f.origin,
+                computed=f.computed,
             )
             for f in inferred.fields
         ]
-        return InferredSchema(dataset_name=inferred.dataset_name, fields=fields)
+        return InferredSchema(
+            dataset_name=inferred.dataset_name,
+            fields=fields,
+            inference_source=getattr(inferred, "inference_source", "database"),
+            warnings=getattr(inferred, "warnings", []),
+        )
     except DomainValidationError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.message)
     except Exception as e:

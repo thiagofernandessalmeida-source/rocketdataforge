@@ -678,6 +678,9 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
         }
       : undefined;
     const inferred = await api.inferSchema(pathOrQuery, ct, connDetails);
+    if (inferred.inference_source === "static" || (inferred.warnings && inferred.warnings.some((w: string) => w.toLowerCase().includes("estimado")))) {
+      setDriftStatusMessage("⚠️ Aviso: Schema estimado por análise estática (não confirmado pelo banco).");
+    }
     const mapped: SchemaColumn[] = inferred.fields.map((f, i) => ({
       id: `col-${Date.now()}-${i}`,
       name: f.name,
@@ -685,6 +688,13 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
         ? f.logical_type.charAt(0).toUpperCase() + f.logical_type.slice(1).toLowerCase()
         : "String") as any,
       nullable: f.nullable,
+      length: f.length,
+      precision: f.precision,
+      scale: f.scale,
+      isPrimaryKey: f.is_primary_key,
+      comment: f.description || (f.origin && f.origin.length > 0 ? `Origem: ${f.origin.join(', ')}` : undefined),
+      origin: f.origin,
+      computed: f.computed,
       physicalType: f.physical_type,
     }));
     return mapped;
@@ -1506,7 +1516,8 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                   <SqlAutocompleteTextarea
                     value={config.query ?? ""}
                     placeholder={"SELECT * FROM read_parquet('data/sales.parquet')\nWHERE valor > 100"}
-                    style={{ minHeight: 90 }}
+                    style={{ minHeight: 240 }}
+                    title="DuckDB Query SQL"
                     sources={autocompleteSources}
                     contextVariables={contextVariables}
                     onChange={(v) => handleChange("query", v)}
@@ -1711,7 +1722,8 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                       <SqlAutocompleteTextarea
                         value={config.duckdb_query ?? ""}
                         placeholder="SELECT * FROM source_data WHERE total > 0"
-                        style={{ minHeight: 70 }}
+                        style={{ minHeight: 240 }}
+                        title="Query SQL DuckDB em Memória"
                         sources={autocompleteSources}
                         contextVariables={contextVariables}
                         onChange={(v) => handleChange("duckdb_query", v)}
@@ -1819,7 +1831,8 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                   <SqlAutocompleteTextarea
                     value={config.query ?? ""}
                     placeholder={"SELECT id, nome, email, valor\nFROM analytics.usuarios\nWHERE ativo = true"}
-                    style={{ minHeight: 110 }}
+                    style={{ minHeight: 240 }}
+                    title="Consulta CQL (ScyllaDB / Cassandra)"
                     sources={autocompleteSources}
                     contextVariables={contextVariables}
                     onChange={(v) => handleChange("query", v)}
@@ -2116,7 +2129,8 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                   <SqlAutocompleteTextarea
                     value={config.query ?? ""}
                     placeholder={"SELECT *\nFROM tabela\nWHERE ativo = 1"}
-                    style={{ minHeight: 110 }}
+                    style={{ minHeight: 240 }}
+                    title="Query SQL do Componente de Entrada"
                     sources={autocompleteSources}
                     contextVariables={contextVariables}
                     onChange={(v) => handleChange("query", v)}

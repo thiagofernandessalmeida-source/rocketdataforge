@@ -215,3 +215,75 @@ def test_duckdb_source_and_tmap_compilation():
     assert sink_op.table_action == "drop_create"
     assert sink_op.data_action == "insert"
 
+
+def test_tmap_multi_input_lookups_compilation():
+    """Valida compilação de pipeline com tMap recebendo 1 main e 2 lookups."""
+    draft = PipelineDraft(id="dataset_test", project_id="pr1", name="dataset_test")
+    ver = SemanticVersion(1, 0, 0)
+
+    draft.add_node("csv_source_1", "core.file.source.csv", ver, {"path": "audio_features.csv"})
+    draft.add_node("csv_source_2", "core.file.source.csv", ver, {"path": "chart_longevity_panel.csv"})
+    draft.add_node("csv_source_3", "core.file.source.csv", ver, {"path": "track_metadata.csv"})
+
+    draft.add_node(
+        "data_mapper_1",
+        "core.tmap",
+        ver,
+        config={
+            "main_alias": "main1",
+            "lookups": [
+                {
+                    "node_id": "csv_source_2",
+                    "label": "lkp1",
+                    "alias": "lkp1",
+                    "join_type": "inner",
+                    "join_keys": [{"expr_key": "main1.track_id", "column": "track_id"}]
+                },
+                {
+                    "node_id": "csv_source_3",
+                    "label": "lkp2",
+                    "alias": "lkp2",
+                    "join_type": "inner",
+                    "join_keys": [{"expr_key": "main1.track_id", "column": "track_id"}]
+                }
+            ],
+            "outputs": [
+                {
+                    "id": "out1",
+                    "name": "out1",
+                    "columns": [
+                        {"target": "track_id", "expression": "main1.track_id"},
+                        {"target": "peak_chart_rank", "expression": "lkp1.peak_chart_rank"},
+                        {"target": "track_title", "expression": "lkp2.track_title"}
+                    ]
+                }
+            ]
+        }
+    )
+
+    draft.add_node("file_sink_1", "core.file.target", ver, {"path": "output_test1.csv", "format": "csv"})
+
+    # Conecta as 3 origens ao data_mapper_1 e a saída out1 ao sink
+    draft.connect_ports(PortId("csv_source_1", "main"), PortId("data_mapper_1", "main"))
+    draft.connect_ports(PortId("csv_source_2", "main"), PortId("data_mapper_1", "lookup"))
+    draft.connect_ports(PortId("csv_source_3", "main"), PortId("data_mapper_1", "lookup"))
+    draft.connect_ports(PortId("data_mapper_1", "out1"), PortId("file_sink_1", "input"))
+
+    validator = GraphValidator()
+    report = validator.validate(draft)
+    assert report.is_valid, f"Erros inesperados: {[e.message for e in report.errors]}"
+
+    logical_planner = LogicalPlanner()
+    plan = logical_planner.compile(draft, report)
+    tmap_op = plan.operators["data_mapper_1"]
+
+    assert tmap_op.operator_type == "tmap"
+    assert tmap_op.main_input_id == "csv_source_1"
+    assert tmap_op.main_alias == "main1"
+    assert len(tmap_op.lookups) == 2
+    assert len(tmap_op.outputs) == 1
+
+    sink_op = plan.operators["file_sink_1"]
+    assert "data_mapper_1:out1" in sink_op.input_ids
+
+

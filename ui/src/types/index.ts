@@ -144,11 +144,20 @@ export interface InferredField {
   logical_type: string;
   physical_type: string;
   nullable: boolean;
+  description?: string;
+  length?: number;
+  precision?: number;
+  scale?: number;
+  is_primary_key?: boolean;
+  origin?: string[];
+  computed?: boolean;
 }
 
 export interface InferredSchema {
   dataset_name: string;
   fields: InferredField[];
+  inference_source?: string;
+  warnings?: string[];
 }
 
 export interface ColumnProfile {

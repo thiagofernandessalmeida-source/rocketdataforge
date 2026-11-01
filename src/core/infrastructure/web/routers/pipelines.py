@@ -392,10 +392,20 @@ def export_pipeline_standalone(
     from src.core.application.codegen.standalone_generator import StandaloneGenerator
 
     draft_def = None
+    scope = None
     if payload and isinstance(payload, dict):
         draft_def = payload.get("draft_definition") or payload
+        scope = payload.get("export_scope") or payload.get("scope")
 
-    if not draft_def or not draft_def.get("spec", {}).get("nodes"):
+    spec_has_content = bool(
+        draft_def and (
+            draft_def.get("spec", {}).get("nodes") or
+            draft_def.get("spec", {}).get("cells") or
+            draft_def.get("cells")
+        )
+    )
+
+    if not draft_def or not spec_has_content:
         repo = SqlAlchemyPipelineRepository(session)
         res = repo.get_draft(pipeline_id)
         if not res and pipeline_id not in ("temp", "draft", "current"):
@@ -411,7 +421,7 @@ def export_pipeline_standalone(
         draft_def = {"metadata": {"name": pipeline_id, "id": pipeline_id}, "spec": {"nodes": [], "edges": []}}
 
     generator = StandaloneGenerator()
-    bundle = generator.generate(draft_def)
+    bundle = generator.generate(draft_def, scope=scope)
 
     return {
         "script_py": bundle.script_py,
@@ -433,8 +443,17 @@ def export_pipeline_airflow(
 
     payload = payload or {}
     draft_def = payload.get("draft_definition")
+    scope = payload.get("export_scope") or payload.get("scope")
 
-    if not draft_def or not draft_def.get("spec", {}).get("nodes"):
+    spec_has_content = bool(
+        draft_def and (
+            draft_def.get("spec", {}).get("nodes") or
+            draft_def.get("spec", {}).get("cells") or
+            draft_def.get("cells")
+        )
+    )
+
+    if not draft_def or not spec_has_content:
         repo = SqlAlchemyPipelineRepository(session)
         res = repo.get_draft(pipeline_id)
         if not res and pipeline_id not in ("temp", "draft", "current"):
@@ -461,7 +480,7 @@ def export_pipeline_airflow(
     )
 
     generator = AirflowGenerator()
-    bundle = generator.generate(draft_def, options)
+    bundle = generator.generate(draft_def, options=options, scope=scope)
 
     return {
         "dag_py": bundle.dag_py,

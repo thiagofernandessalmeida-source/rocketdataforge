@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Node, Edge } from "reactflow";
 import {
   Plus,
@@ -16,10 +16,12 @@ import {
   ChevronRight,
   RotateCcw,
   RefreshCw,
+  Code,
   Code2,
 } from "lucide-react";
 
 import { CanvasCellCard } from "./CanvasCellCard";
+import { ExportCodegenModal } from "../codegen/ExportCodegenModal";
 import {
   jobStore,
   CanvasCellData,
@@ -58,12 +60,45 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
     job.activeCellId || job.cells?.[0]?.id || "canvas-cell-01"
   );
   const [isOrchestrating, setIsOrchestrating] = useState(false);
+  const [isJobExportModalOpen, setIsJobExportModalOpen] = useState(false);
   const cancelOrchestrationRef = useRef(false);
 
   const cells = job.cells && job.cells.length > 0 ? job.cells : [];
 
   // Sort cells by order
   const sortedCells = [...cells].sort((a, b) => a.order - b.order);
+
+  // Serializa o job inteiro para compilação autônoma (Python / Airflow)
+  const currentJobDef = useMemo(() => ({
+    metadata: {
+      id: job.id,
+      name: job.name,
+    },
+    spec: {
+      cells: sortedCells.map((c) => ({
+        id: c.id,
+        name: c.name,
+        cellType: c.cellType || "CANVAS",
+        codeSnippet: c.codeSnippet || "",
+        order: c.order,
+        preconditions: c.preconditions || [],
+        preconditionOperator: c.preconditionOperator || "AND",
+        is_active: c.is_active !== false,
+        nodes: (c.nodes || []).map((n) => ({
+          id: n.id,
+          component: {
+            type: n.data?.componentType || "generic",
+            version: n.data?.componentVersion || "1.0.0",
+          },
+          config: n.data?.config || {},
+        })),
+        edges: (c.edges || []).map((e) => ({
+          from: e.sourceHandle ? `${e.source}.${e.sourceHandle}` : `${e.source}.output`,
+          to: e.targetHandle ? `${e.target}.${e.targetHandle}` : `${e.target}.input`,
+        })),
+      })),
+    },
+  }), [job, sortedCells]);
 
   // Sync active cell if current one was removed
   useEffect(() => {
@@ -486,6 +521,28 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
             </button>
           )}
 
+          {/* Export Full Job Button (Spec 006 - Fase 3) */}
+          <button
+            type="button"
+            className="btn btn-secondary"
+            id="btn-export-full-job"
+            style={{
+              fontSize: "0.76rem",
+              padding: "4px 11px",
+              borderColor: "rgba(99, 102, 241, 0.4)",
+              color: "#a5b4fc",
+              background: "rgba(99, 102, 241, 0.08)",
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+            }}
+            onClick={() => setIsJobExportModalOpen(true)}
+            title="Exportar o Job Inteiro como código Python autônomo (DuckDB/Polars) ou Airflow DAG"
+          >
+            <Code size={13} color="#818cf8" />
+            <span>Exportar Job (Python)</span>
+          </button>
+
           {/* Orchestrated Run / Stop Button */}
           {isOrchestrating ? (
             <button
@@ -644,6 +701,16 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
           </div>
         )}
       </div>
+      {/* ─── Modal de Exportação do Job Inteiro (Spec 006 - Fase 3) ─── */}
+      <ExportCodegenModal
+        isOpen={isJobExportModalOpen}
+        onClose={() => setIsJobExportModalOpen(false)}
+        pipelineId={job.id}
+        pipelineName={job.name}
+        jobDefinition={currentJobDef}
+        jobName={job.name}
+        initialScope="job"
+      />
     </div>
   );
 };

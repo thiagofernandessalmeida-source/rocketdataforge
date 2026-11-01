@@ -198,15 +198,15 @@ export const api = {
     request<void>(`/schedules/${scheduleId}`, { method: "DELETE" }),
 
   // Codegen Export (Spec 006 - Fase 3)
-  exportStandaloneCode: (pipelineId: string, draftDefinition?: any) =>
+  exportStandaloneCode: (pipelineId: string, draftDefinition?: any, scope?: "cell" | "job") =>
     request<StandaloneCodeResult>(`/pipelines/${pipelineId}/export/standalone`, {
       method: "POST",
-      body: JSON.stringify({ draft_definition: draftDefinition }),
+      body: JSON.stringify({ draft_definition: draftDefinition, export_scope: scope }),
     }),
-  exportAirflowDag: (pipelineId: string, options?: AirflowExportOptions, draftDefinition?: any) =>
+  exportAirflowDag: (pipelineId: string, options?: AirflowExportOptions, draftDefinition?: any, scope?: "cell" | "job") =>
     request<AirflowDagResult>(`/pipelines/${pipelineId}/export/airflow`, {
       method: "POST",
-      body: JSON.stringify({ ...options, draft_definition: draftDefinition }),
+      body: JSON.stringify({ ...options, draft_definition: draftDefinition, export_scope: scope }),
     }),
 
   // Git integration

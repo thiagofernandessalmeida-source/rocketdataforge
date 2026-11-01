@@ -44,5 +44,22 @@ describe("Fase 3: Gerador de Código Autônomo e Airflow DAG (UI - T-3.5)", () =
     assert.ok(content.includes("btn-export-codegen"), "Canvas deve conter botão com id/classe btn-export-codegen");
     assert.ok(content.includes("<ExportCodegenModal"), "Canvas deve integrar o componente ExportCodegenModal");
     assert.ok(content.includes("isExportModalOpen"), "Canvas deve gerenciar o estado isExportModalOpen");
+    assert.ok(content.includes("jobDefinition"), "Canvas deve repassar o jobDefinition completo");
+  });
+
+  test("Exportação do Job Inteiro (Multi-Cell / Canvas + Python): Escopo e Interface", () => {
+    const modalFile = path.resolve(__dirname, "../src/features/designer/codegen/ExportCodegenModal.tsx");
+    const modalContent = fs.readFileSync(modalFile, "utf-8");
+
+    assert.ok(modalContent.includes("btn-scope-cell"), "Deve conter seletor de escopo para Célula");
+    assert.ok(modalContent.includes("btn-scope-job"), "Deve conter seletor de escopo para Job Inteiro");
+    assert.ok(modalContent.includes("exportScope"), "Deve gerenciar estado de escopo");
+
+    const multiCanvasFile = path.resolve(__dirname, "../src/features/designer/cells/MultiCanvasContainer.tsx");
+    const multiCanvasContent = fs.readFileSync(multiCanvasFile, "utf-8");
+
+    assert.ok(multiCanvasContent.includes("btn-export-full-job"), "MultiCanvasContainer deve conter botão Exportar Job");
+    assert.ok(multiCanvasContent.includes("isJobExportModalOpen"), "MultiCanvasContainer deve gerenciar modal de exportação");
+    assert.ok(multiCanvasContent.includes("<ExportCodegenModal"), "MultiCanvasContainer deve integrar ExportCodegenModal");
   });
 });

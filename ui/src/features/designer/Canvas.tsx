@@ -124,6 +124,10 @@ interface TMapOutputChoice {
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
 
+  const activeJob = jobStore.getActiveJob();
+  const activeCellName = activeJob?.cells?.find((c) => c.id === cellId)?.name || cellId || "Célula Atual";
+  const currentJobName = activeJob?.name || "Job_Completo";
+
   const currentDraftDef = useMemo(() => ({
     metadata: { name: cellId || "pipeline_main", id: cellId || "pipeline_main" },
     spec: {
@@ -138,6 +142,40 @@ interface TMapOutputChoice {
       })),
     },
   }), [nodes, edges, cellId]);
+
+  const currentJobDef = useMemo(() => {
+    if (!activeJob) return undefined;
+    return {
+      metadata: {
+        id: activeJob.id,
+        name: activeJob.name,
+      },
+      spec: {
+        cells: (activeJob.cells || []).map((c) => ({
+          id: c.id,
+          name: c.name,
+          cellType: c.cellType || "CANVAS",
+          codeSnippet: c.codeSnippet || "",
+          order: c.order,
+          preconditions: c.preconditions || [],
+          preconditionOperator: c.preconditionOperator || "AND",
+          is_active: c.is_active !== false,
+          nodes: (c.nodes || []).map((n) => ({
+            id: n.id,
+            component: {
+              type: n.data?.componentType || "generic",
+              version: n.data?.componentVersion || "1.0.0",
+            },
+            config: n.data?.config || {},
+          })),
+          edges: (c.edges || []).map((e) => ({
+            from: e.sourceHandle ? `${e.source}.${e.sourceHandle}` : `${e.source}.output`,
+            to: e.targetHandle ? `${e.target}.${e.targetHandle}` : `${e.target}.input`,
+          })),
+        })),
+      },
+    };
+  }, [activeJob, nodes, edges, cellId]);
 
 
   const handleRunToNode = useCallback(async (targetNodeId: string) => {
@@ -332,8 +370,14 @@ interface TMapOutputChoice {
         const flowName = generateFlowName(flowType, eds);
         const meta = FLOW_CONFIG[flowType];
 
+        const targetHandle =
+          flowType === "lkp" && (!params.targetHandle || params.targetHandle === "main")
+            ? "lookup"
+            : (params.targetHandle || (flowType === "trigger" ? "trigger" : "input"));
+
         const edgeData = {
           ...params,
+          targetHandle,
           id: `e_${flowName}_${Date.now()}`,
           type: flowType === "trigger" ? "triggerEdge" : "flowEdge",
           label: flowName,
@@ -997,9 +1041,12 @@ interface TMapOutputChoice {
       <ExportCodegenModal
         isOpen={isExportModalOpen}
         onClose={() => setIsExportModalOpen(false)}
-        pipelineId={cellId || "pipeline_main"}
-        pipelineName="Pipeline Atual"
+        pipelineId={cellId || activeJob?.id || "pipeline_main"}
+        pipelineName={activeCellName}
         draftDefinition={currentDraftDef}
+        jobDefinition={currentJobDef}
+        jobName={currentJobName}
+        initialScope="cell"
       />
 
       {/* ─── Gaveta de Prévia de Dados Virtualizada (T-4.2) ─── */}

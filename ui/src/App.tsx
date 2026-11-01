@@ -921,10 +921,16 @@ export const App: React.FC = () => {
         (typeof e.label === "string" ? e.label : "") ||
         e.sourceHandle ||
         "main";
+      let toPort = e.targetHandle;
+      if (!toPort) {
+        toPort = e.data?.flowType === "lkp" ? "lookup" : "input";
+      } else if (toPort === "main" && e.data?.flowType === "lkp") {
+        toPort = "lookup";
+      }
       return {
         id: e.id,
         from: `${e.source}.${fromPort}`,
-        to: `${e.target}.${e.targetHandle || "input"}`,
+        to: `${e.target}.${toPort}`,
       };
     });
     const layoutNodes = sourceNodes.map((n) => ({
@@ -1287,10 +1293,16 @@ export const App: React.FC = () => {
             (typeof e.label === "string" ? e.label : "") ||
             e.sourceHandle ||
             "main";
+          let toPort = e.targetHandle;
+          if (!toPort) {
+            toPort = e.data?.flowType === "lkp" ? "lookup" : "input";
+          } else if (toPort === "main" && e.data?.flowType === "lkp") {
+            toPort = "lookup";
+          }
           return {
             id: e.id,
             from: `${e.source}.${fromPort}`,
-            to: `${e.target}.${e.targetHandle || "input"}`,
+            to: `${e.target}.${toPort}`,
           };
         });
 
