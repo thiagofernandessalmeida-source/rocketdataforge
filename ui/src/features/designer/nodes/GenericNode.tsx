@@ -2,6 +2,7 @@ import React, { memo, useState, useCallback, useRef } from "react";
 import { Handle, Position, NodeProps, useReactFlow } from "reactflow";
 import { CanvasNodeData, PortDefinition } from "../../../types";
 import { EXPANDED_CATALOG } from "../../../catalog/components";
+import { useNodeTelemetry } from "../../../store/telemetryStore";
 import {
   Database,
   FileText,
@@ -14,13 +15,122 @@ import {
   Loader2,
   Edit2,
   Info,
+  Clock,
+  Activity,
+  Zap,
+  BarChart2,
 } from "lucide-react";
+
+function formatSpeed(rowsPerSec: number): string {
+  if (rowsPerSec >= 1_000_000) return `${(rowsPerSec / 1_000_000).toFixed(1)}M/s`;
+  if (rowsPerSec >= 1_000) return `${(rowsPerSec / 1_000).toFixed(1)}k/s`;
+  return `${rowsPerSec}/s`;
+}
+
+interface NodeTelemetryFooterProps {
+  nodeId: string;
+  fallbackStatus?: string;
+  fallbackMetrics?: { rowsIn?: number; rowsOut?: number; durationMs?: number };
+}
+
+const NodeTelemetryFooter: React.FC<NodeTelemetryFooterProps> = memo(({
+  nodeId,
+  fallbackStatus,
+  fallbackMetrics,
+}) => {
+  const telemetry = useNodeTelemetry(nodeId);
+
+  // Determina status ativo: da store reativa ou fallback legado
+  let status = telemetry?.status;
+  if (!status || status === "idle") {
+    if (fallbackStatus === "running") status = "running";
+    else if (fallbackStatus === "succeeded") status = "succeeded";
+    else if (fallbackStatus === "failed") status = "failed";
+    else return null; // Quando não há execução ativa ou métricas, oculta para manter o card limpo
+  }
+
+  const rowCount = telemetry
+    ? telemetry.rowCount
+    : Math.max(fallbackMetrics?.rowsIn || 0, fallbackMetrics?.rowsOut || 0);
+  const throughput = telemetry?.throughput || 0;
+
+  return (
+    <div className={`rdf-node-telemetry-footer status-${status}`}>
+      {/* 1. Status em tempo real */}
+      <div className="rdf-telemetry-status-badge">
+        {status === "queued" && (
+          <>
+            <Clock size={11} color="#f59e0b" />
+            <span style={{ color: "#f59e0b" }}>Queued</span>
+          </>
+        )}
+        {status === "starting" && (
+          <>
+            <Loader2 size={11} className="rdf-telemetry-spin" color="#38bdf8" />
+            <span style={{ color: "#38bdf8" }}>Starting</span>
+          </>
+        )}
+        {status === "running" && (
+          <>
+            <Activity size={11} className="rdf-telemetry-pulse" color="#10b981" />
+            <span style={{ color: "#10b981" }}>Running</span>
+          </>
+        )}
+        {status === "succeeded" && (
+          <>
+            <CheckCircle2 size={11} color="#22c55e" />
+            <span style={{ color: "#22c55e" }}>Success</span>
+          </>
+        )}
+        {status === "failed" && (
+          <>
+            <AlertCircle size={11} color="#ef4444" />
+            <span style={{ color: "#ef4444" }}>Failed</span>
+          </>
+        )}
+        {status === "cancelled" && (
+          <>
+            <AlertCircle size={11} color="#94a3b8" />
+            <span style={{ color: "#94a3b8" }}>Cancelled</span>
+          </>
+        )}
+      </div>
+
+      {/* 2. Feedback quando status é Starting (esperando retorno do banco) */}
+      {status === "starting" && (
+        <div className="rdf-telemetry-starting-hint" title="Aguardando retorno da query no banco de dados">
+          <span>Consultando DB...</span>
+        </div>
+      )}
+
+      {/* 3. Métricas de Linhas e Throughput */}
+      {(status === "running" || status === "succeeded") && (
+        <div className="rdf-telemetry-metrics">
+          <span className="rdf-telemetry-rows" title={`Total de linhas: ${rowCount.toLocaleString()}`}>
+            {rowCount.toLocaleString()} rows
+          </span>
+
+          {throughput > 0 && (
+            <span className="rdf-telemetry-throughput" title={`Taxa de transferência: ${throughput.toLocaleString()} rows/sec`}>
+              <Zap size={10} style={{ display: "inline", verticalAlign: "middle", marginRight: 1 }} />
+              {formatSpeed(throughput)}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+});
+
+NodeTelemetryFooter.displayName = "NodeTelemetryFooter";
 
 function getCategoryIcon(typeId?: string) {
   const safeId = typeId || "";
+  if (safeId.includes("control.sync") || safeId.includes("control.barrier") || safeId.includes("control")) return <Clock size={15} color="#10b981" />;
   if (safeId.includes("database.source") || safeId.includes("connector.db")) return <Database size={15} color="#10b981" />;
   if (safeId.includes("file.source")) return <FileText size={15} color="#10b981" />;
   if (safeId.includes("filter")) return <Filter size={15} color="#3b82f6" />;
+  if (safeId.includes("aggregate")) return <BarChart2 size={15} color="#06b6d4" />;
   if (safeId.includes("select")) return <Layers size={15} color="#3b82f6" />;
   if (safeId.includes("join")) return <GitMerge size={15} color="#8b5cf6" />;
   if (safeId.includes("database.target") || safeId.includes(".output")) return <Database size={15} color="#f59e0b" />;
@@ -36,24 +146,49 @@ function getCategoryBadgeColor(category: string) {
       return "rgba(59, 130, 246, 0.15)";
     case "target":
       return "rgba(245, 158, 11, 0.15)";
+    case "control":
+      return "rgba(16, 185, 129, 0.25)";
     default:
       return "rgba(139, 92, 246, 0.15)";
   }
 }
 
-export const GenericNode: React.FC<NodeProps<CanvasNodeData>> = memo(({ id, data, selected }) => {
+export const GenericNode: React.FC<NodeProps<CanvasNodeData>> = memo(({ id, data, selected, targetPosition, sourcePosition }) => {
   const { setNodes } = useReactFlow();
   const [isEditing, setIsEditing] = useState(false);
   const [titleText, setTitleText] = useState(data.label || id);
   const [showTooltip, setShowTooltip] = useState(false);
   const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Determina orientação dos handles (LR padrão, ou TB no layout vertical)
+  const isVertical = (data as any)?.layoutDirection
+    ? (data as any).layoutDirection === "TB"
+    : targetPosition === Position.Top || sourcePosition === Position.Bottom;
+  const inPosition = isVertical ? Position.Top : Position.Left;
+  const outPosition = isVertical ? Position.Bottom : Position.Right;
+
   // Busca descrição no catálogo de componentes
   const catalogComp = EXPANDED_CATALOG.find((c) => c.type_id === data.componentType);
   const compDescription = catalogComp?.description || "Operador de processamento de dados";
 
-  const inputPorts = data.ports?.filter((p) => p.direction === "input") || [];
-  const outputPorts = data.ports?.filter((p) => p.direction === "output") || [];
+  // Componentes de Origem (Source) sempre expõem a porta 'input' para receber
+  // arestas de iteração e repetição em loop (tFlowToIterate direto entre inputs)
+  const hasDeclaredInput = data.ports?.some((p) => p.direction === "input");
+  const inputPorts: PortDefinition[] = hasDeclaredInput
+    ? (data.ports?.filter((p) => p.direction === "input") || [])
+    : data.category === "source"
+    ? [{ name: "input", direction: "input", type: "dataset" }]
+    : (data.ports?.filter((p) => p.direction === "input") || []);
+
+  // Pass-through nos Nós de Target (Output):
+  // Mesmo componentes de categoria "target" agora podem ter portas de saída ("main" e "reject")
+  // permitindo encadeamento contínuo do fluxo de dados estilo Talend
+  const hasDeclaredOutput = data.ports?.some((p) => p.direction === "output");
+  const outputPorts: PortDefinition[] = hasDeclaredOutput
+    ? (data.ports?.filter((p) => p.direction === "output") || [])
+    : data.category === "target"
+    ? [{ name: "main", direction: "output", type: "dataset" }]
+    : [{ name: "main", direction: "output", type: "dataset" }];
 
   // ─── Salvar renomeação ──────────────────────────────────────
   const handleSaveTitle = useCallback(() => {
@@ -104,14 +239,17 @@ export const GenericNode: React.FC<NodeProps<CanvasNodeData>> = memo(({ id, data
     >
       {/* Input Handles */}
       {inputPorts.map((port: PortDefinition, idx: number) => {
-        const topPercent = ((idx + 1) / (inputPorts.length + 1)) * 100;
+        const offsetPercent = ((idx + 1) / (inputPorts.length + 1)) * 100;
+        const handleStyle: React.CSSProperties = isVertical
+          ? { left: `${offsetPercent}%`, top: "-5px", bottom: "auto", right: "auto", transform: "translateX(-50%)" }
+          : { top: `${offsetPercent}%`, left: "-5px", right: "auto", bottom: "auto", transform: "translateY(-50%)" };
         return (
           <Handle
             key={`${id}-${port.name}`}
             type="target"
-            position={Position.Left}
+            position={inPosition}
             id={port.name}
-            style={{ top: `${topPercent}%` }}
+            style={handleStyle}
             className={`custom-handle ${
               port.type === "reject" ? "handle-reject" : "handle-dataset"
             }`}
@@ -208,36 +346,28 @@ export const GenericNode: React.FC<NodeProps<CanvasNodeData>> = memo(({ id, data
           </div>
         )}
 
-        {/* Runtime Metrics Display */}
-        {data.metrics && (
-          <div
-            style={{
-              marginTop: 4,
-              paddingTop: 4,
-              borderTop: "1px solid var(--border-subtle)",
-              display: "flex",
-              justifyContent: "space-between",
-              fontSize: "0.68rem",
-              color: "var(--accent-cyan)",
-              fontFamily: "var(--font-mono)",
-            }}
-          >
-            <span>In: {data.metrics.rowsIn ?? 0}</span>
-            <span>Out: {data.metrics.rowsOut ?? 0}</span>
-          </div>
-        )}
       </div>
+
+      {/* ─── Real-time Telemetry Footer ─────────── */}
+      <NodeTelemetryFooter
+        nodeId={id}
+        fallbackStatus={data.status}
+        fallbackMetrics={data.metrics}
+      />
 
       {/* Output Handles */}
       {outputPorts.map((port: PortDefinition, idx: number) => {
-        const topPercent = ((idx + 1) / (outputPorts.length + 1)) * 100;
+        const offsetPercent = ((idx + 1) / (outputPorts.length + 1)) * 100;
+        const handleStyle: React.CSSProperties = isVertical
+          ? { left: `${offsetPercent}%`, bottom: "-5px", top: "auto", right: "auto", transform: "translateX(-50%)" }
+          : { top: `${offsetPercent}%`, right: "-5px", left: "auto", bottom: "auto", transform: "translateY(-50%)" };
         return (
           <Handle
             key={`${id}-${port.name}`}
             type="source"
-            position={Position.Right}
+            position={outPosition}
             id={port.name}
-            style={{ top: `${topPercent}%` }}
+            style={handleStyle}
             className={`custom-handle ${
               port.type === "reject" ? "handle-reject" : "handle-dataset"
             }`}
@@ -245,6 +375,40 @@ export const GenericNode: React.FC<NodeProps<CanvasNodeData>> = memo(({ id, data
           />
         );
       })}
+
+      {/* Trigger / OnComponentOk Source Handle (Disponível em nós de Target e Control) */}
+      {(data.category === "target" || data.category === "control" || data.componentType?.includes("sync")) && (
+        <Handle
+          key={`${id}-trigger-out`}
+          type="source"
+          position={outPosition}
+          id="trigger"
+          style={
+            isVertical
+              ? { left: "85%", bottom: "-5px", top: "auto", right: "auto", transform: "translateX(-50%)", background: "#10b981", borderColor: "#059669", borderRadius: 2 }
+              : { top: "85%", right: "-5px", left: "auto", bottom: "auto", transform: "translateY(-50%)", background: "#10b981", borderColor: "#059669", borderRadius: 2 }
+          }
+          className="custom-handle handle-trigger-source"
+          title="Gatilho de Execução: OnComponentOk / Trigger (Puxe para ordenar execução)"
+        />
+      )}
+
+      {/* Trigger / Barrier Target Handle (Para componentes de Controle / Sincronização) */}
+      {(data.category === "control" || data.componentType?.includes("sync")) && (
+        <Handle
+          key={`${id}-trigger-in`}
+          type="target"
+          position={inPosition}
+          id="trigger"
+          style={
+            isVertical
+              ? { left: "15%", top: "-5px", bottom: "auto", right: "auto", transform: "translateX(-50%)", background: "#10b981", borderColor: "#059669", borderRadius: 2 }
+              : { top: "15%", left: "-5px", right: "auto", bottom: "auto", transform: "translateY(-50%)", background: "#10b981", borderColor: "#059669", borderRadius: 2 }
+          }
+          className="custom-handle handle-trigger-target"
+          title="Entrada Trigger: Aguarda conclusão dos ramos upstream antes de liberar"
+        />
+      )}
 
       {/* ─── Hover Description Tooltip ─────────────────────────── */}
       {showTooltip && (

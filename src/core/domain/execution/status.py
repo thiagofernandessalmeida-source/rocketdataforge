@@ -14,31 +14,35 @@ class ExecutionStatus(str, Enum):
     CANCELLED = "cancelled"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    SKIPPED = "skipped"
 
     def is_active(self) -> bool:
-        return self not in {ExecutionStatus.CANCELLED, ExecutionStatus.SUCCEEDED, ExecutionStatus.FAILED}
+        return self not in {ExecutionStatus.CANCELLED, ExecutionStatus.SUCCEEDED, ExecutionStatus.FAILED, ExecutionStatus.SKIPPED}
 
 
 TERMINAL_STATUSES = {
     ExecutionStatus.CANCELLED,
     ExecutionStatus.SUCCEEDED,
-    ExecutionStatus.FAILED
+    ExecutionStatus.FAILED,
+    ExecutionStatus.SKIPPED,
 }
 
 # Mapa explícito de transições válidas
 VALID_TRANSITIONS = {
-    ExecutionStatus.CREATED: {ExecutionStatus.PLANNING, ExecutionStatus.CANCELLING, ExecutionStatus.FAILED},
-    ExecutionStatus.PLANNING: {ExecutionStatus.QUEUED, ExecutionStatus.CANCELLING, ExecutionStatus.FAILED},
-    ExecutionStatus.QUEUED: {ExecutionStatus.RUNNING, ExecutionStatus.CANCELLING, ExecutionStatus.FAILED},
+    ExecutionStatus.CREATED: {ExecutionStatus.PLANNING, ExecutionStatus.CANCELLING, ExecutionStatus.FAILED, ExecutionStatus.SKIPPED},
+    ExecutionStatus.PLANNING: {ExecutionStatus.QUEUED, ExecutionStatus.CANCELLING, ExecutionStatus.FAILED, ExecutionStatus.SKIPPED},
+    ExecutionStatus.QUEUED: {ExecutionStatus.RUNNING, ExecutionStatus.CANCELLING, ExecutionStatus.FAILED, ExecutionStatus.SKIPPED},
     ExecutionStatus.RUNNING: {
         ExecutionStatus.SUCCEEDED,
         ExecutionStatus.FAILED,
-        ExecutionStatus.CANCELLING
+        ExecutionStatus.CANCELLING,
+        ExecutionStatus.SKIPPED
     },
     ExecutionStatus.CANCELLING: {ExecutionStatus.CANCELLED, ExecutionStatus.FAILED},
     ExecutionStatus.CANCELLED: set(),
     ExecutionStatus.SUCCEEDED: set(),
-    ExecutionStatus.FAILED: set()
+    ExecutionStatus.FAILED: set(),
+    ExecutionStatus.SKIPPED: set()
 }
 
 

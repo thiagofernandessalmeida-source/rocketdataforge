@@ -3,10 +3,74 @@
 Executa transformações tabulares em alta velocidade com suporte a streaming em chunks.
 """
 
-from typing import Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import polars as pl
 from src.core.domain.shared.exceptions import DomainError
+
+
+def deduplicate_column_names(names: List[str]) -> List[str]:
+    """Garante que a lista de nomes de colunas não contenha duplicatas, evitando erros de schema no Polars."""
+    seen: Dict[str, int] = {}
+    deduped: List[str] = []
+    for name in names:
+        base = str(name) if name is not None else "col"
+        if base in seen:
+            seen[base] += 1
+            deduped.append(f"{base}_{seen[base]}")
+        else:
+            seen[base] = 0
+            deduped.append(base)
+    return deduped
+
+
+def batch_to_polars_df(batch: List[Any], col_names: List[str]) -> pl.DataFrame:
+    """Converte um lote de tuplas de cursor de banco de dados em um pl.DataFrame de forma altamente resiliente."""
+    col_names = col_names or (["result"] if not batch else [f"col_{i}" for i in range(len(batch[0]))])
+    deduped_cols = deduplicate_column_names(col_names)
+    if not batch:
+        return pl.DataFrame({c: [] for c in deduped_cols})
+
+    # 1. Tentativa nativa de alta velocidade com inferência total
+    try:
+        return pl.DataFrame(batch, schema=deduped_cols, orient="row", infer_schema_length=None, strict=False)
+    except Exception:
+        pass
+
+    # 2. Construção por dicionário de colunas com strict=False
+    try:
+        col_dict = {col: [row[i] for row in batch] for i, col in enumerate(deduped_cols)}
+        return pl.DataFrame(col_dict, strict=False)
+    except Exception:
+        pass
+
+    # 3. Interoperabilidade via Pandas (quando disponível)
+    try:
+        import pandas as pd
+        pdf = pd.DataFrame(batch, columns=deduped_cols)
+        return pl.from_pandas(pdf)
+    except Exception:
+        pass
+
+    # 4. Fallback por séries individuais com coerção de tipos incompatíveis para string
+    try:
+        col_dict = {}
+        for i, col in enumerate(deduped_cols):
+            vals = [row[i] for row in batch]
+            try:
+                col_dict[col] = pl.Series(col, vals, strict=False)
+            except Exception:
+                col_dict[col] = pl.Series(col, [str(v) if v is not None else None for v in vals])
+        return pl.DataFrame(col_dict)
+    except Exception:
+        pass
+
+    # 5. Fallback final garantido
+    safe_dict = {
+        col: [str(row[i]) if row[i] is not None else None for row in batch]
+        for i, col in enumerate(deduped_cols)
+    }
+    return pl.DataFrame(safe_dict)
 
 
 class PolarsRunner:

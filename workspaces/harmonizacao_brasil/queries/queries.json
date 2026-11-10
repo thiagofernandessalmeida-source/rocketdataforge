@@ -1,0 +1,9 @@
+[
+  {
+    "id": "qry-ativas-por-nivel",
+    "name": "Ativas Por Nível",
+    "connection_ref": "brm",
+    "sql": "SELECT * FROM ativas_por_nivel",
+    "createdAt": "2026-10-13T19:00:00Z"
+  }
+]

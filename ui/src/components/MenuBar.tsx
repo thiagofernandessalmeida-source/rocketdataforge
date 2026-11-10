@@ -27,7 +27,16 @@ import {
   Layers,
   Sparkles,
   Zap,
+  HardDrive,
+  FolderOpen,
+  Code2,
+  ArrowRightLeft,
+  ArrowUpDown,
+  Undo2,
+  Redo2,
+  ClipboardPaste,
 } from "lucide-react";
+import { jobStore } from "../store/jobStore";
 
 export interface MenuBarProps {
   activeJobName?: string;
@@ -69,9 +78,23 @@ export interface MenuBarProps {
   onOpenPolicySimulator?: () => void;
   onOpenAutoDoc?: () => void;
   onOpenAbout: () => void;
+  onOpenWorkspace?: () => void;
+  onOpenWorkspaceFolder?: () => void;
+  onLayoutHorizontal?: () => void;
+  onLayoutVertical?: () => void;
+  onLayoutHorizontalAll?: () => void;
+  onLayoutVerticalAll?: () => void;
+  onUndo?: () => void;
+  onRedo?: () => void;
+  canUndo?: boolean;
+  canRedo?: boolean;
+  onCopyNode?: () => void;
+  onPasteNode?: () => void;
+  canPaste?: boolean;
+  hasSelectedNode?: boolean;
 }
 
-type MenuKey = "arquivo" | "execucao" | "celulas" | "ferramentas" | "exibir" | "ajuda" | null;
+type MenuKey = "arquivo" | "editar" | "execucao" | "celulas" | "ferramentas" | "exibir" | "ajuda" | null;
 
 export const MenuBar: React.FC<MenuBarProps> = ({
   activeJobName,
@@ -111,6 +134,20 @@ export const MenuBar: React.FC<MenuBarProps> = ({
   onOpenPolicySimulator,
   onOpenAutoDoc,
   onOpenAbout,
+  onOpenWorkspace,
+  onOpenWorkspaceFolder,
+  onLayoutHorizontal,
+  onLayoutVertical,
+  onLayoutHorizontalAll,
+  onLayoutVerticalAll,
+  onUndo,
+  onRedo,
+  canUndo,
+  canRedo,
+  onCopyNode,
+  onPasteNode,
+  canPaste,
+  hasSelectedNode,
 }) => {
   const [openMenu, setOpenMenu] = useState<MenuKey>(null);
   const barRef = useRef<HTMLDivElement>(null);
@@ -210,6 +247,84 @@ export const MenuBar: React.FC<MenuBarProps> = ({
               >
                 <UploadCloud size={14} />
                 <span className="entry-label">Publicar Versão</span>
+              </button>
+              {(onOpenWorkspace || onOpenWorkspaceFolder) && <div className="dropdown-divider" />}
+              {onOpenWorkspace && (
+                <button
+                  type="button"
+                  className="dropdown-entry"
+                  onClick={() => closeAndRun(onOpenWorkspace)}
+                >
+                  <HardDrive size={14} />
+                  <span className="entry-label">Alternar Espaço de Trabalho (Workspace)...</span>
+                </button>
+              )}
+              {onOpenWorkspaceFolder && (
+                <button
+                  type="button"
+                  className="dropdown-entry"
+                  onClick={() => closeAndRun(onOpenWorkspaceFolder)}
+                >
+                  <FolderOpen size={14} />
+                  <span className="entry-label">Abrir Pasta do Workspace no Explorer</span>
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* EDITAR */}
+        <div className="menubar-item-wrapper">
+          <button
+            type="button"
+            className={`menubar-btn ${openMenu === "editar" ? "active" : ""}`}
+            onClick={() => handleMenuClick("editar")}
+            onMouseEnter={() => handleMenuHover("editar")}
+          >
+            Editar
+          </button>
+          {openMenu === "editar" && (
+            <div className="menubar-dropdown">
+              <button
+                type="button"
+                className="dropdown-entry"
+                disabled={!canUndo}
+                onClick={() => onUndo && closeAndRun(onUndo)}
+              >
+                <Undo2 size={14} color={canUndo ? "var(--accent-cyan)" : "var(--text-muted)"} />
+                <span className="entry-label">Desfazer</span>
+                <span className="shortcut">Ctrl+Z</span>
+              </button>
+              <button
+                type="button"
+                className="dropdown-entry"
+                disabled={!canRedo}
+                onClick={() => onRedo && closeAndRun(onRedo)}
+              >
+                <Redo2 size={14} color={canRedo ? "var(--accent-cyan)" : "var(--text-muted)"} />
+                <span className="entry-label">Refazer</span>
+                <span className="shortcut">Ctrl+Y</span>
+              </button>
+              <div className="dropdown-divider" />
+              <button
+                type="button"
+                className="dropdown-entry"
+                disabled={!hasSelectedNode}
+                onClick={() => onCopyNode && closeAndRun(onCopyNode)}
+              >
+                <Copy size={14} />
+                <span className="entry-label">Copiar Componente</span>
+                <span className="shortcut">Ctrl+C</span>
+              </button>
+              <button
+                type="button"
+                className="dropdown-entry"
+                disabled={!canPaste}
+                onClick={() => onPasteNode && closeAndRun(onPasteNode)}
+              >
+                <ClipboardPaste size={14} />
+                <span className="entry-label">Colar Componente</span>
+                <span className="shortcut">Ctrl+V</span>
               </button>
             </div>
           )}
@@ -413,6 +528,44 @@ export const MenuBar: React.FC<MenuBarProps> = ({
                   <span className="entry-label">Documentação Interativa (Auto-Doc & Linhagem)</span>
                 </button>
               )}
+              <div className="dropdown-divider" />
+              <button
+                type="button"
+                className="dropdown-entry"
+                onClick={() => {
+                  const current = jobStore.isPythonCellsEnabled();
+                  jobStore.setPythonCellsEnabled(!current);
+                  setOpenMenu(null);
+                }}
+                title="Habilitar ou desabilitar a criação de Células Python no Job (Recurso Enterprise)"
+              >
+                <Code2 size={14} color="#f59e0b" />
+                <span className="entry-label">
+                  {jobStore.isPythonCellsEnabled()
+                    ? "Desabilitar Células Python"
+                    : "Habilitar Células Python"}
+                </span>
+                <span
+                  className="badge"
+                  style={{
+                    fontSize: "0.62rem",
+                    padding: "1px 5px",
+                    borderRadius: 3,
+                    background: jobStore.isPythonCellsEnabled()
+                      ? "rgba(16, 185, 129, 0.15)"
+                      : "rgba(255, 255, 255, 0.1)",
+                    color: jobStore.isPythonCellsEnabled() ? "#10b981" : "#94a3b8",
+                    border: `1px solid ${
+                      jobStore.isPythonCellsEnabled()
+                        ? "rgba(16, 185, 129, 0.3)"
+                        : "rgba(255, 255, 255, 0.15)"
+                    }`,
+                    fontWeight: 600,
+                  }}
+                >
+                  {jobStore.isPythonCellsEnabled() ? "Enterprise: Ativo" : "Enterprise: Inativo"}
+                </span>
+              </button>
             </div>
           )}
         </div>
@@ -464,6 +617,47 @@ export const MenuBar: React.FC<MenuBarProps> = ({
                 <Terminal size={14} />
                 <span className="entry-label">Console de Execução</span>
                 <span className="check-mark">{consoleVisible ? "✓" : ""}</span>
+              </button>
+              <div className="dropdown-divider" />
+              <button
+                type="button"
+                className="dropdown-entry"
+                disabled={!hasActiveCell}
+                onClick={() => onLayoutHorizontal && closeAndRun(onLayoutHorizontal)}
+                title="Reorganizar nós em layout horizontal da esquerda para a direita (LR) na célula ativa"
+              >
+                <ArrowRightLeft size={14} color="#06b6d4" />
+                <span className="entry-label">Auto-Layout: Horizontal (Célula Ativa)</span>
+              </button>
+              <button
+                type="button"
+                className="dropdown-entry"
+                disabled={!hasActiveCell}
+                onClick={() => onLayoutVertical && closeAndRun(onLayoutVertical)}
+                title="Reorganizar nós em layout vertical de cima para baixo (TB) na célula ativa"
+              >
+                <ArrowUpDown size={14} color="#06b6d4" />
+                <span className="entry-label">Auto-Layout: Vertical (Célula Ativa)</span>
+              </button>
+              <button
+                type="button"
+                className="dropdown-entry"
+                disabled={!hasActiveJob}
+                onClick={() => onLayoutHorizontalAll && closeAndRun(onLayoutHorizontalAll)}
+                title="Reorganizar nós em layout horizontal em todas as células do Job"
+              >
+                <ArrowRightLeft size={14} color="#3b82f6" />
+                <span className="entry-label">Auto-Layout: Horizontal (Todas as Células)</span>
+              </button>
+              <button
+                type="button"
+                className="dropdown-entry"
+                disabled={!hasActiveJob}
+                onClick={() => onLayoutVerticalAll && closeAndRun(onLayoutVerticalAll)}
+                title="Reorganizar nós em layout vertical em todas as células do Job"
+              >
+                <ArrowUpDown size={14} color="#3b82f6" />
+                <span className="entry-label">Auto-Layout: Vertical (Todas as Células)</span>
               </button>
             </div>
           )}

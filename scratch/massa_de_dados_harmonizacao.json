@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "rdf.layout/v1",
+  "kind": "Layout",
+  "metadata": {
+    "pipelineId": "01m4gk9jey2794ycwrpq3hs5dv"
+  },
+  "viewport": {
+    "x": 0.0,
+    "y": 0.0,
+    "zoom": 1.0
+  },
+  "nodes": [
+    {
+      "id": "csv_source_1",
+      "position": {
+        "x": -345.28236384379636,
+        "y": 74.2962146478194
+      }
+    },
+    {
+      "id": "data_mapper_1",
+      "position": {
+        "x": 113.90737570585361,
+        "y": 73.64540007388155
+      }
+    },
+    {
+      "id": "duckdb_sink_ativas_por_nivel",
+      "position": {
+        "x": 324.6294494367039,
+        "y": 59.25
+      }
+    },
+    {
+      "id": "file_sink_1",
+      "position": {
+        "x": 430.30312834202755,
+        "y": 70.8563696285322
+      }
+    },
+    {
+      "id": "postgres_source_brm_ativas_por_nivel",
+      "position": {
+        "x": -153.50000000000006,
+        "y": 54.0
+      }
+    }
+  ]
+}

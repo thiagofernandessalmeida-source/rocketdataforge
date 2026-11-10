@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
   ReactFlowProvider,
   Node,
@@ -29,15 +29,23 @@ import {
   Activity,
   List,
   Terminal,
+  Code2,
+  ArrowRightLeft,
+  ArrowUpDown,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 
 import { Canvas } from "../Canvas";
+import { getLayoutedElements, LayoutDirection } from "../utils/autoLayout";
+import { PythonCellEditor } from "./PythonCellEditor";
 import { CanvasCellData, CellExecutionStatus, CellPrecondition } from "../../../store/jobStore";
 import { CanvasNodeData } from "../../../types";
 import { CellPreconditionsModal } from "./CellPreconditionsModal";
 
 interface CanvasCellCardProps {
   cell: CanvasCellData;
+  jobId?: string;
   allCells: CanvasCellData[];
   isFocusMode: boolean;
   isActive: boolean;
@@ -60,6 +68,7 @@ interface CanvasCellCardProps {
 
 export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
   cell,
+  jobId,
   allCells,
   isFocusMode,
   isActive,
@@ -90,13 +99,21 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
   const [metricsTab, setMetricsTab] = useState<"metrics" | "logs">("metrics");
   const [logFilter, setLogFilter] = useState("");
 
-  // Sync internal nodes/edges when cell prop changes externally
+  // Sync internal nodes/edges when cell prop changes externally without cyclic updates
+  const lastSyncedNodesRef = useRef(cell.nodes);
   useEffect(() => {
-    setNodes(cell.nodes || []);
+    if (cell.nodes !== lastSyncedNodesRef.current) {
+      lastSyncedNodesRef.current = cell.nodes;
+      setNodes(cell.nodes || []);
+    }
   }, [cell.nodes, setNodes]);
 
+  const lastSyncedEdgesRef = useRef(cell.edges);
   useEffect(() => {
-    setEdges(cell.edges || []);
+    if (cell.edges !== lastSyncedEdgesRef.current) {
+      lastSyncedEdgesRef.current = cell.edges;
+      setEdges(cell.edges || []);
+    }
   }, [cell.edges, setEdges]);
 
   useEffect(() => {
@@ -112,32 +129,190 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
     setOrderInput(String(cell.order));
   }, [cell.order]);
 
-  // Propagate graph changes to parent container
+  // Refs para manter sempre a versão mais recente e evitar stale closures entre nodes e edges
+  const nodesRef = useRef<Node<CanvasNodeData>[]>(nodes);
+  nodesRef.current = nodes;
+  const edgesRef = useRef<Edge[]>(edges);
+  edgesRef.current = edges;
+
+  // Todos os nós existentes no Job inteiro (unindo as outras células com esta)
+  const allJobNodes = useMemo(() => {
+    const otherNodes = (allCells || [])
+      .filter((c) => c.id !== cell.id)
+      .flatMap((c) => c.nodes || []);
+    return [...otherNodes, ...nodes];
+  }, [allCells, cell.id, nodes]);
+
+  // Propagação pura de mudanças no ReactFlow sem efeitos colaterais impuros no updater
   const handleNodesChange = useCallback(
     (changes: any) => {
       onNodesChange(changes);
-      // Inform parent with updated node positions on next tick
-      setTimeout(() => {
-        setNodes((currentNodes) => {
-          onUpdateGraph(cell.id, currentNodes, edges);
-          return currentNodes;
-        });
-      }, 0);
     },
-    [onNodesChange, onUpdateGraph, cell.id, edges, setNodes]
+    [onNodesChange]
   );
 
   const handleEdgesChange = useCallback(
     (changes: any) => {
       onEdgesChange(changes);
+    },
+    [onEdgesChange]
+  );
+
+  // Persistência quando o arraste de nó for concluído (onNodeDragStop)
+  const handleNodeDragStop = useCallback(() => {
+    onUpdateGraph(cell.id, nodesRef.current, edgesRef.current);
+  }, [cell.id, onUpdateGraph]);
+
+  // Wrapper para setNodes puro: mutação do estado local isolada e notificação externa fora do updater
+  const handleSetNodes = useCallback(
+    (updater: React.SetStateAction<Node<CanvasNodeData>[]>) => {
+      setNodes((currentNodes) => {
+        const rawNext = typeof updater === "function" ? updater(currentNodes) : updater;
+        return rawNext.map((n) => ({
+          ...n,
+          data: {
+            ...n.data,
+            cellId: cell.id,
+          },
+        }));
+      });
+
+      // Notificação e higienização desacopladas da função pura de render
       setTimeout(() => {
-        setEdges((currentEdges) => {
-          onUpdateGraph(cell.id, nodes, currentEdges);
-          return currentEdges;
-        });
+        const currentNodes = nodesRef.current;
+        const validNodeIds = new Set(currentNodes.map((n) => n.id));
+        const currentEdges = edgesRef.current;
+        const validEdges = currentEdges.filter(
+          (e) => validNodeIds.has(e.source) && validNodeIds.has(e.target)
+        );
+        if (validEdges.length !== currentEdges.length) {
+          setEdges(validEdges);
+        }
+        onUpdateGraph(cell.id, currentNodes, validEdges);
       }, 0);
     },
-    [onEdgesChange, onUpdateGraph, cell.id, nodes, setEdges]
+    [cell.id, onUpdateGraph, setNodes, setEdges]
+  );
+
+  // Wrapper para setEdges puro
+  const handleSetEdges = useCallback(
+    (updater: React.SetStateAction<Edge[]>) => {
+      setEdges((currentEdges) => {
+        return typeof updater === "function" ? updater(currentEdges) : updater;
+      });
+
+      setTimeout(() => {
+        onUpdateGraph(cell.id, nodesRef.current, edgesRef.current);
+      }, 0);
+    },
+    [cell.id, onUpdateGraph, setEdges]
+  );
+
+  // Handler de teclado para deleção atômica de nós e arestas (RF-01.3 & T-1.2)
+  // deleteKeyCode={null} no ReactFlow transfere o controle para este handleKeyDown quando isActive
+  useEffect(() => {
+    if (!isActive) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+
+      // Ignora se o elemento ativo pertencer a inputs de formulário, textareas ou instâncias Monaco
+      const activeEl = document.activeElement;
+      if (activeEl) {
+        const tagName = activeEl.tagName ? activeEl.tagName.toUpperCase() : "";
+        if (tagName === "INPUT" || tagName === "TEXTAREA" || tagName === "SELECT") {
+          return;
+        }
+        if ((activeEl as HTMLElement).isContentEditable) {
+          return;
+        }
+        if (activeEl.closest && activeEl.closest(".monaco-editor")) {
+          return;
+        }
+      }
+
+      const currentNodes = nodesRef.current;
+      const currentEdges = edgesRef.current;
+
+      const selectedNodeIds = new Set(
+        currentNodes.filter((n) => n.selected).map((n) => n.id)
+      );
+      const selectedEdgeIds = new Set(
+        currentEdges.filter((e) => e.selected).map((e) => e.id)
+      );
+
+      if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return;
+
+      e.preventDefault();
+
+      // Deleção atômica: deletar nó remove o nó e todas as arestas conectadas
+      const nextNodes = currentNodes.filter((n) => !selectedNodeIds.has(n.id));
+      const nextEdges = currentEdges.filter(
+        (e) =>
+          !selectedEdgeIds.has(e.id) &&
+          !selectedNodeIds.has(e.source) &&
+          !selectedNodeIds.has(e.target)
+      );
+
+      setNodes(nextNodes);
+      setEdges(nextEdges);
+      onUpdateGraph(cell.id, nextNodes, nextEdges);
+
+      if (selectedNodeIds.size > 0) {
+        onSelectNode(null);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isActive, cell.id, onUpdateGraph, onSelectNode, setNodes, setEdges]);
+
+
+  // Auto-Layout Direcional (Horizontal 'LR' ou Vertical 'TB')
+  const handleApplyAutoLayout = useCallback(
+    (direction: LayoutDirection) => {
+      onSelectCell(cell.id);
+      if (!nodes || nodes.length === 0) return;
+      const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(nodes, edges, direction);
+      setNodes(layoutedNodes);
+      setEdges(layoutedEdges);
+      onUpdateGraph(cell.id, layoutedNodes, layoutedEdges);
+      onUpdateCellMeta(cell.id, { layoutDirection: direction });
+    },
+    [nodes, edges, cell.id, setNodes, setEdges, onUpdateGraph, onUpdateCellMeta, onSelectCell]
+  );
+
+  // Seleção de nó enriquecida com cellId
+  const handleSelectNode = useCallback(
+    (node: Node<CanvasNodeData> | null) => {
+      onSelectCell(cell.id);
+      if (node) {
+        onSelectNode({
+          ...node,
+          data: {
+            ...node.data,
+            cellId: cell.id,
+          },
+        });
+      } else {
+        onSelectNode(null);
+      }
+    },
+    [cell.id, onSelectCell, onSelectNode]
+  );
+
+  const handleDoubleClickNode = useCallback(
+    (node: Node<CanvasNodeData>) => {
+      onSelectCell(cell.id);
+      onDoubleClickNode?.({
+        ...node,
+        data: {
+          ...node.data,
+          cellId: cell.id,
+        },
+      });
+    },
+    [cell.id, onSelectCell, onDoubleClickNode]
   );
 
   const handleCommitName = () => {
@@ -221,9 +396,12 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
 
   const currentStatus = cell.status || "idle";
   const statusMeta = statusConfig[currentStatus];
+  const isCellActive = cell.is_active !== false;
+  const isCellMinimized = Boolean(cell.is_minimized);
 
   // Card outline glow style
   const getBorderColor = () => {
+    if (!isCellActive) return "var(--border-subtle)";
     if (currentStatus === "running") return "var(--accent-cyan)";
     if (currentStatus === "failed") return "var(--status-danger)";
     if (currentStatus === "cancelled") return "#f97316";
@@ -234,6 +412,7 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
   };
 
   const getBoxShadow = () => {
+    if (!isCellActive) return "none";
     if (currentStatus === "running") return "0 0 16px rgba(6, 182, 212, 0.35)";
     if (currentStatus === "failed") return "0 0 14px rgba(239, 68, 68, 0.3)";
     if (currentStatus === "cancelled") return "0 0 12px rgba(249, 115, 22, 0.3)";
@@ -247,7 +426,7 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
     <div
       className={`canvas-cell-container ${isFocusMode ? "focus-mode" : ""} ${
         isActive ? "active-cell" : ""
-      }`}
+      } ${!isCellActive ? "cell-inactive opacity-50" : ""} ${isCellMinimized ? "minimized" : ""}`}
       style={{
         display: "flex",
         flexDirection: "column",
@@ -256,9 +435,11 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
         borderRadius: isFocusMode ? 0 : 10,
         boxShadow: getBoxShadow(),
         marginBottom: isFocusMode ? 0 : 18,
-        height: isFocusMode ? "100%" : 460,
-        minHeight: isFocusMode ? "100%" : 380,
-        transition: "border-color 0.2s ease, box-shadow 0.2s ease",
+        height: isCellMinimized ? "auto" : isFocusMode ? "100%" : 460,
+        minHeight: isCellMinimized ? "auto" : isFocusMode ? "100%" : 380,
+        opacity: isCellActive ? 1 : 0.52,
+        filter: isCellActive ? "none" : "grayscale(0.35)",
+        transition: "border-color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease",
         position: "relative",
       }}
       onClick={() => onSelectCell(cell.id)}
@@ -349,8 +530,12 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
           )}
 
           {/* Cell Name (Editable, max 50 chars) */}
-          <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, maxWidth: 360 }}>
-            <Layers size={14} color="var(--accent-cyan)" />
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, maxWidth: 380 }}>
+            {cell.cellType === "PYTHON" ? (
+              <Code2 size={14} color="#f59e0b" />
+            ) : (
+              <Layers size={14} color="var(--accent-cyan)" />
+            )}
             <input
               className="form-input"
               style={{
@@ -362,7 +547,7 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
                 padding: "2px 6px",
                 borderRadius: 4,
                 width: "100%",
-                maxWidth: 260,
+                maxWidth: 240,
                 transition: "border-color 0.15s",
               }}
               value={name}
@@ -423,30 +608,75 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
 
         {/* Right: Actions Toolbar */}
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          {/* Show Metrics Button if available and closed */}
-          {cell.metrics && !cell.showMetricsPanel && (
-            <button
-              type="button"
-              className="btn btn-secondary"
-              style={{
-                fontSize: "0.7rem",
-                padding: "3px 8px",
-                display: "flex",
-                alignItems: "center",
-                gap: 4,
-                color: "var(--accent-cyan)",
-                borderColor: "rgba(6, 182, 212, 0.4)",
-              }}
-              title="Exibir métricas e logs desta célula"
-              onClick={(e) => {
-                e.stopPropagation();
-                onUpdateCellMeta(cell.id, { showMetricsPanel: true });
-              }}
-            >
-              <Activity size={12} />
-              Métricas & Logs
-            </button>
-          )}
+          {/* Active / Inactive Toggle (Eye / EyeOff) */}
+          <button
+            type="button"
+            className={`btn btn-secondary ${!isCellActive ? "cell-inactive-btn" : ""}`}
+            style={{
+              fontSize: "0.7rem",
+              padding: "2px 8px",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              color: isCellActive ? "var(--status-success)" : "var(--text-muted)",
+              background: isCellActive ? "rgba(16, 185, 129, 0.12)" : "rgba(255, 255, 255, 0.05)",
+              borderColor: isCellActive ? "rgba(16, 185, 129, 0.3)" : "var(--border-subtle)",
+              cursor: "pointer",
+            }}
+            title={
+              isCellActive
+                ? "Célula Ativa. Clique para desativar (será ignorada com status SKIPPED na execução)."
+                : "Célula Desativada. Clique para ativar."
+            }
+            onClick={(e) => {
+              e.stopPropagation();
+              onUpdateCellMeta(cell.id, { is_active: !isCellActive });
+            }}
+          >
+            {isCellActive ? <Eye size={12} /> : <EyeOff size={12} />}
+            <span>{isCellActive ? "Ativa" : "Desativada"}</span>
+          </button>
+
+          {/* Métricas & Logs Toggle Button */}
+          <button
+            type="button"
+            className={`btn btn-secondary ${cell.showMetricsPanel ? "active" : ""}`}
+            style={{
+              fontSize: "0.7rem",
+              padding: "3px 8px",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              color: cell.showMetricsPanel
+                ? "var(--accent-cyan)"
+                : cell.status === "failed"
+                ? "var(--status-danger)"
+                : "var(--text-secondary)",
+              borderColor: cell.showMetricsPanel
+                ? "var(--accent-cyan)"
+                : cell.status === "failed"
+                ? "rgba(239, 68, 68, 0.4)"
+                : "var(--border-subtle)",
+              background: cell.showMetricsPanel
+                ? "rgba(6, 182, 212, 0.15)"
+                : cell.status === "failed"
+                ? "rgba(239, 68, 68, 0.1)"
+                : undefined,
+            }}
+            title={cell.showMetricsPanel ? "Ocultar painel de métricas e logs" : "Exibir painel de métricas e logs desta célula"}
+            onClick={(e) => {
+              e.stopPropagation();
+              onUpdateCellMeta(cell.id, { showMetricsPanel: !cell.showMetricsPanel });
+            }}
+          >
+            <Activity size={12} />
+            <span>Métricas & Logs</span>
+            {cell.metrics ? (
+              <span style={{ fontSize: "0.68rem", opacity: 0.85 }}>({cell.metrics.durationMs}ms)</span>
+            ) : cell.logs && cell.logs.length > 0 ? (
+              <span style={{ fontSize: "0.68rem", opacity: 0.85 }}>({cell.logs.length})</span>
+            ) : null}
+          </button>
 
           {/* Reset Status Button */}
           <button
@@ -463,6 +693,50 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
           >
             <RotateCcw size={13} />
           </button>
+
+          {/* Auto-Layout Buttons */}
+          <div style={{ display: "flex", alignItems: "center", gap: 2, background: "rgba(255, 255, 255, 0.04)", borderRadius: 4, padding: "1px 2px" }}>
+            <button
+              type="button"
+              className="icon-btn"
+              style={{
+                fontSize: "0.68rem",
+                display: "flex",
+                alignItems: "center",
+                gap: 3,
+                padding: "2px 5px",
+                color: cell.layoutDirection === "LR" || !cell.layoutDirection ? "var(--accent-cyan)" : "var(--text-muted)",
+              }}
+              title="Organizar nós automaticamente em Layout Horizontal (Left to Right)"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleApplyAutoLayout("LR");
+              }}
+            >
+              <ArrowRightLeft size={11} />
+              <span>Horiz</span>
+            </button>
+            <button
+              type="button"
+              className="icon-btn"
+              style={{
+                fontSize: "0.68rem",
+                display: "flex",
+                alignItems: "center",
+                gap: 3,
+                padding: "2px 5px",
+                color: cell.layoutDirection === "TB" ? "var(--accent-cyan)" : "var(--text-muted)",
+              }}
+              title="Organizar nós automaticamente em Layout Vertical (Top to Bottom)"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleApplyAutoLayout("TB");
+              }}
+            >
+              <ArrowUpDown size={11} />
+              <span>Vert</span>
+            </button>
+          </div>
 
           {/* Run or Stop Single Cell Button */}
           {currentStatus === "running" ? (
@@ -492,18 +766,26 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
             <button
               type="button"
               className="btn btn-secondary"
+              disabled={!isCellActive}
               style={{
                 fontSize: "0.72rem",
                 padding: "3px 9px",
                 display: "flex",
                 alignItems: "center",
                 gap: 4,
-                color: "var(--status-success)",
-                borderColor: "rgba(16, 185, 129, 0.4)",
+                color: isCellActive ? "var(--status-success)" : "var(--text-muted)",
+                borderColor: isCellActive ? "rgba(16, 185, 129, 0.4)" : "var(--border-subtle)",
+                opacity: isCellActive ? 1 : 0.45,
+                cursor: isCellActive ? "pointer" : "not-allowed",
               }}
-              title="Executar apenas esta célula de forma isolada"
+              title={
+                !isCellActive
+                  ? "Célula desativada. Ative-a para poder executar."
+                  : "Executar apenas esta célula de forma isolada"
+              }
               onClick={(e) => {
                 e.stopPropagation();
+                if (!isCellActive) return;
                 onRunSingleCell(cell);
               }}
             >
@@ -589,6 +871,27 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
           >
             {isFocusMode ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
           </button>
+
+          {/* Minimize / Expand Toggle */}
+          {!isFocusMode && (
+            <button
+              type="button"
+              className={`icon-btn ${isCellMinimized ? "active" : ""}`}
+              style={{
+                marginLeft: 2,
+                color: isCellMinimized ? "var(--accent-cyan)" : "var(--text-secondary)",
+                background: isCellMinimized ? "rgba(6, 182, 212, 0.15)" : undefined,
+                borderColor: isCellMinimized ? "var(--accent-cyan)" : undefined,
+              }}
+              title={isCellMinimized ? "Expandir célula" : "Minimizar célula (economiza recursos do navegador)"}
+              onClick={(e) => {
+                e.stopPropagation();
+                onUpdateCellMeta(cell.id, { is_minimized: !isCellMinimized });
+              }}
+            >
+              {isCellMinimized ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+            </button>
+          )}
         </div>
       </div>
 
@@ -623,20 +926,34 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
         </div>
       )}
 
-      {/* ─── Cell Canvas (Scoped in its own ReactFlowProvider) ─── */}
-      <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
-        <ReactFlowProvider>
-          <Canvas
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={handleNodesChange}
-            onEdgesChange={handleEdgesChange}
-            setNodes={setNodes}
-            setEdges={setEdges}
-            onSelectNode={onSelectNode}
-            onDoubleClickNode={onDoubleClickNode}
+      {/* ─── Cell Body: Canvas (ReactFlow) or Python Editor (Monaco) ─── */}
+      {!isCellMinimized && (
+        <>
+          <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+        {cell.cellType === "PYTHON" ? (
+          <PythonCellEditor
+            cell={cell}
+            jobId={jobId || ""}
+            allCells={allCells}
+            onUpdateCode={(newCode) => onUpdateCellMeta(cell.id, { codeSnippet: newCode })}
           />
-        </ReactFlowProvider>
+        ) : (
+          <ReactFlowProvider>
+            <Canvas
+              nodes={nodes}
+              edges={edges}
+              onNodesChange={handleNodesChange}
+              onEdgesChange={handleEdgesChange}
+              setNodes={handleSetNodes}
+              setEdges={handleSetEdges}
+              onSelectNode={handleSelectNode}
+              onDoubleClickNode={handleDoubleClickNode}
+              onNodeDragStop={handleNodeDragStop}
+              allNodes={allJobNodes}
+              cellId={cell.id}
+            />
+          </ReactFlowProvider>
+        )}
       </div>
 
       {/* ─── Cell Metrics & Logs Inspector ─── */}
@@ -743,37 +1060,63 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
                               key={t.node_id}
                               style={{
                                 display: "flex",
-                                alignItems: "center",
-                                justifyContent: "space-between",
-                                padding: "4px 8px",
-                                background: "rgba(0,0,0,0.18)",
+                                flexDirection: "column",
+                                gap: 4,
+                                padding: "6px 8px",
+                                background: t.status === "failed" ? "rgba(239,68,68,0.12)" : "rgba(0,0,0,0.18)",
                                 borderRadius: 4,
-                                border: "1px solid var(--border-subtle)",
+                                border: `1px solid ${t.status === "failed" ? "rgba(239,68,68,0.35)" : "var(--border-subtle)"}`,
                                 fontSize: "0.72rem",
                               }}
                             >
-                              <span style={{ fontFamily: "var(--font-mono)", fontWeight: 500 }}>
-                                {t.node_id}
-                              </span>
-                              <div style={{ display: "flex", gap: 10, color: "var(--text-muted)" }}>
-                                <span>In: <strong style={{ color: "var(--text-primary)" }}>{t.rows_in}</strong></span>
-                                <span>Out: <strong style={{ color: "var(--text-primary)" }}>{t.rows_out}</strong></span>
-                                <span>{t.duration_ms}ms</span>
-                                <span
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                                <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--accent-cyan)" }}>
+                                  {t.node_id}
+                                </span>
+                                <div style={{ display: "flex", gap: 10, color: "var(--text-muted)" }}>
+                                  <span>In: <strong style={{ color: "var(--text-primary)" }}>{t.rows_in}</strong></span>
+                                  <span>Out: <strong style={{ color: "var(--text-primary)" }}>{t.rows_out}</strong></span>
+                                  <span>{t.duration_ms}ms</span>
+                                  <span
+                                    style={{
+                                      color: t.status === "succeeded" ? "var(--status-success)" : "var(--status-danger)",
+                                      fontWeight: 600,
+                                    }}
+                                  >
+                                    {t.status}
+                                  </span>
+                                </div>
+                              </div>
+                              {t.error_message && (
+                                <div
                                   style={{
-                                    color: t.status === "succeeded" ? "var(--status-success)" : "var(--status-danger)",
-                                    fontWeight: 600,
+                                    marginTop: 2,
+                                    padding: "4px 8px",
+                                    background: "rgba(239,68,68,0.18)",
+                                    borderRadius: 3,
+                                    color: "var(--status-danger)",
+                                    fontSize: "0.71rem",
+                                    lineHeight: 1.35,
+                                    wordBreak: "break-word",
+                                    borderLeft: "2px solid var(--status-danger)",
                                   }}
                                 >
-                                  {t.status}
-                                </span>
-                              </div>
+                                  ❌ <b>Erro no nó:</b> {t.error_message}
+                                </div>
+                              )}
                             </div>
                           ))}
                         </div>
                       </div>
                     )}
                   </>
+                ) : cell.status === "failed" ? (
+                  <div style={{ padding: "12px", background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6, color: "var(--status-danger)" }}>
+                    <div style={{ fontWeight: 600, marginBottom: 4 }}>❌ A execução desta célula falhou</div>
+                    <div style={{ fontSize: "0.73rem", color: "var(--text-primary)" }}>
+                      {cell.logs?.[0]?.message || "Ocorreu um erro durante a execução. Verifique a aba Logs ao lado para visualizar a mensagem detalhada."}
+                    </div>
+                  </div>
                 ) : (
                   <div style={{ textAlign: "center", padding: "12px", color: "var(--text-muted)" }}>
                     Nenhuma métrica registrada ainda. Execute a célula individualmente para inspecionar.
@@ -827,8 +1170,10 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
           </div>
         </div>
       )}
+    </>
+  )}
 
-      {/* Preconditions Modal */}
+  {/* Preconditions Modal */}
       {showPreconditionsModal && (
         <CellPreconditionsModal
           cell={cell}

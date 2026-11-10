@@ -5,7 +5,7 @@ e sanitização automática de mensagens de erro.
 """
 
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import quote_plus
 
 import psycopg2
@@ -18,8 +18,13 @@ from src.core.infrastructure.security.secret_resolver import SecretResolver
 class PostgresConnector:
     """Conector para banco de dados PostgreSQL com integração ao SecretResolver."""
 
-    def __init__(self, secret_resolver: SecretResolver):
+    def __init__(self, secret_resolver: SecretResolver, pool_manager: Optional[Any] = None):
         self.secret_resolver = secret_resolver
+        if pool_manager is None:
+            from src.core.infrastructure.connectors.pool_manager import ConnectionPoolManager
+            self.pool_manager = ConnectionPoolManager.get_instance(secret_resolver=self.secret_resolver)
+        else:
+            self.pool_manager = pool_manager
 
     def build_dsn(self, connection: Connection) -> str:
         """Constrói a string de conexão (DSN) em tempo de execução sem persistir a senha.
@@ -101,8 +106,7 @@ class PostgresConnector:
         """
         start_time = time.time()
         try:
-            dsn = self.build_dsn(connection)
-            with psycopg2.connect(dsn, connect_timeout=5) as conn:
+            with self.pool_manager.get_postgres_connection(connection, timeout=5) as conn:
                 with conn.cursor() as cur:
                     cur.execute("SELECT 1;")
                     cur.fetchone()
@@ -121,6 +125,49 @@ class PostgresConnector:
         cur.execute(query)
         return cur
 
+    def execute_query_chunks(
+        self,
+        connection: Connection,
+        query: str,
+        fetch_size: int = 10000
+    ):
+        """Executa consulta com cursor de streaming do banco (Fetch Size), gerando DataFrames em chunks para evitar estouro de memória."""
+        import polars as pl
+        with self.pool_manager.get_postgres_connection(connection) as conn:
+            try:
+                with conn.cursor() as setup_cur:
+                    setup_cur.execute("SET statement_timeout = 0;")
+            except Exception:
+                pass
+
+            # Cria cursor nomeado para forçar cursor server-side no PostgreSQL
+            cur = conn.cursor(name=f"cur_fetch_{int(time.time() * 1000)}")
+            cur.itersize = fetch_size
+            cur.execute(query)
+            col_names = [desc[0] for desc in cur.description] if cur.description else None
+
+            while True:
+                batch = cur.fetchmany(fetch_size)
+                if not batch:
+                    break
+                if not col_names and cur.description:
+                    col_names = [desc[0] for desc in cur.description]
+                actual_cols = col_names or (["result"] if not batch else [f"col_{i}" for i in range(len(batch[0]))])
+                from src.core.infrastructure.engines.polars_runner import batch_to_polars_df
+                chunk_df = batch_to_polars_df(batch, actual_cols)
+                yield chunk_df
+
+            cur.close()
+
+    def stream_extract(
+        self,
+        connection: Connection,
+        query: str,
+        fetch_size: int = 10000
+    ) -> Iterator[Any]:
+        """Método gerador base de extração com Server-Side Cursors para controle de memória (Multi-Tiered Fetch)."""
+        yield from self.execute_query_chunks(connection, query, fetch_size=fetch_size)
+
     def execute_write(
         self,
         connection: Connection,
@@ -129,12 +176,13 @@ class PostgresConnector:
         table_action: str = "none",
         data_action: str = "insert",
         keys: Optional[List[str]] = None,
-        is_first_chunk: bool = True
+        is_first_chunk: bool = True,
+        use_batch_mode: bool = True,
+        batch_size: int = 10000
     ) -> int:
-        """Executa gravação com suporte a ações DDL na tabela e DML nos dados (estilo Talend)."""
+        """Executa gravação com suporte a ações DDL na tabela, DML nos dados e escrita em lotes (Batch Mode / Batch Size)."""
         import polars as pl
-        dsn = self.build_dsn(connection)
-        with psycopg2.connect(dsn) as conn:
+        with self.pool_manager.get_postgres_connection(connection) as conn:
             with conn.cursor() as cur:
                 # 1. Pre-Table Action
                 if is_first_chunk:
@@ -160,11 +208,11 @@ class PostgresConnector:
                 placeholders = ", ".join(["%s"] * len(cols))
                 cols_str = ", ".join(cols)
 
-                records = df.to_numpy().tolist()
+                records = df.rows()
 
                 if data_action == "insert":
                     query = f"INSERT INTO {table_name} ({cols_str}) VALUES ({placeholders});"
-                    cur.executemany(query, records)
+                    target_records = records
                 elif data_action in ("upsert", "update_or_insert", "insert_or_update") and keys:
                     key_cols = [f'"{k}"' for k in keys]
                     update_set = ", ".join([f'"{c}" = EXCLUDED."{c}"' for c in df.columns if c not in keys])
@@ -172,17 +220,25 @@ class PostgresConnector:
                         INSERT INTO {table_name} ({cols_str}) VALUES ({placeholders})
                         ON CONFLICT ({", ".join(key_cols)}) DO UPDATE SET {update_set};
                     """
-                    cur.executemany(query, records)
+                    target_records = records
                 elif data_action == "delete" and keys:
                     where_clause = " AND ".join([f'"{k}" = %s' for k in keys])
                     key_indices = [df.columns.index(k) for k in keys]
-                    key_records = [[rec[i] for i in key_indices] for rec in records]
+                    target_records = [[rec[i] for i in key_indices] for rec in records]
                     query = f"DELETE FROM {table_name} WHERE {where_clause};"
-                    cur.executemany(query, key_records)
                 else:
                     query = f"INSERT INTO {table_name} ({cols_str}) VALUES ({placeholders});"
-                    cur.executemany(query, records)
+                    target_records = records
 
-                conn.commit()
+                # Execução em lote (Batch Mode) com commits intermediários
+                if use_batch_mode and batch_size > 0:
+                    for i in range(0, len(target_records), batch_size):
+                        batch_slice = target_records[i:i + batch_size]
+                        cur.executemany(query, batch_slice)
+                        conn.commit()
+                else:
+                    cur.executemany(query, target_records)
+                    conn.commit()
+
                 return df.height
 

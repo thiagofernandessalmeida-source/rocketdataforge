@@ -1,0 +1,387 @@
+{
+  "activeJobId": "job-massa-de-dados-harmonizacao",
+  "jobs": [
+    {
+      "schemaVersion": "rdf.job/v2",
+      "kind": "Job",
+      "name": "massa_de_dados_harmonizacao",
+      "id": "job-massa-de-dados-harmonizacao",
+      "nodes": [
+        {
+          "id": "csv_source_1",
+          "type": "genericNode",
+          "position": {
+            "x": -345.28,
+            "y": 74.3
+          },
+          "data": {
+            "label": "CSV / Delimitado",
+            "componentType": "core.file.source.csv",
+            "componentVersion": "1.0.0",
+            "category": "source",
+            "ports": [
+              {
+                "name": "main",
+                "direction": "output",
+                "type": "dataset"
+              }
+            ],
+            "config": {
+              "path": "",
+              "delimiter": ";",
+              "header": true,
+              "encoding": "utf-8"
+            },
+            "schema": []
+          }
+        },
+        {
+          "id": "postgres_source_brm_ativas_por_nivel",
+          "type": "genericNode",
+          "position": {
+            "x": -153.5,
+            "y": 54.0
+          },
+          "data": {
+            "label": "PostgreSQL Source (brm)",
+            "componentType": "connector.db.postgresql",
+            "componentVersion": "1.0.0",
+            "category": "source",
+            "ports": [
+              {
+                "name": "main",
+                "direction": "output",
+                "type": "dataset"
+              }
+            ],
+            "config": {
+              "connection_ref": "brm",
+              "table": "ativas_por_nivel",
+              "query": "SELECT * FROM ativas_por_nivel"
+            },
+            "schema": []
+          }
+        },
+        {
+          "id": "data_mapper_1",
+          "type": "genericNode",
+          "position": {
+            "x": 113.91,
+            "y": 73.65
+          },
+          "data": {
+            "label": "Data Mapper (tMap)",
+            "componentType": "core.tmap",
+            "componentVersion": "1.0.0",
+            "category": "transform",
+            "ports": [
+              {
+                "name": "input",
+                "direction": "input",
+                "type": "dataset"
+              },
+              {
+                "name": "main",
+                "direction": "output",
+                "type": "dataset"
+              }
+            ],
+            "config": {
+              "mappings": []
+            },
+            "schema": []
+          }
+        },
+        {
+          "id": "duckdb_sink_ativas_por_nivel",
+          "type": "genericNode",
+          "position": {
+            "x": 324.63,
+            "y": 59.25
+          },
+          "data": {
+            "label": "DuckDB Output (ativas_por_nivel)",
+            "componentType": "connector.db.duckdb.output",
+            "componentVersion": "1.0.0",
+            "category": "target",
+            "ports": [
+              {
+                "name": "input",
+                "direction": "input",
+                "type": "dataset"
+              }
+            ],
+            "config": {
+              "table": "ativas_por_nivel",
+              "mode": "overwrite"
+            },
+            "schema": []
+          }
+        },
+        {
+          "id": "file_sink_1",
+          "type": "genericNode",
+          "position": {
+            "x": 430.3,
+            "y": 70.86
+          },
+          "data": {
+            "label": "Arquivo de Saída CSV",
+            "componentType": "core.file.target.csv",
+            "componentVersion": "1.0.0",
+            "category": "target",
+            "ports": [
+              {
+                "name": "input",
+                "direction": "input",
+                "type": "dataset"
+              }
+            ],
+            "config": {
+              "path": "output.csv",
+              "delimiter": ";",
+              "header": true
+            },
+            "schema": []
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge-csv_source_1-data_mapper_1",
+          "source": "csv_source_1",
+          "target": "data_mapper_1",
+          "sourceHandle": "main",
+          "targetHandle": "input"
+        },
+        {
+          "id": "edge-postgres_source_brm_ativas_por_nivel-data_mapper_1",
+          "source": "postgres_source_brm_ativas_por_nivel",
+          "target": "data_mapper_1",
+          "sourceHandle": "main",
+          "targetHandle": "input"
+        },
+        {
+          "id": "edge-data_mapper_1-duckdb_sink_ativas_por_nivel",
+          "source": "data_mapper_1",
+          "target": "duckdb_sink_ativas_por_nivel",
+          "sourceHandle": "main",
+          "targetHandle": "input"
+        },
+        {
+          "id": "edge-data_mapper_1-file_sink_1",
+          "source": "data_mapper_1",
+          "target": "file_sink_1",
+          "sourceHandle": "main",
+          "targetHandle": "input"
+        }
+      ],
+      "cells": [
+        {
+          "id": "canvas-cell-01",
+          "name": "canvas-cell-01",
+          "description": "Célula principal de harmonização",
+          "order": 1,
+          "preconditions": [],
+          "preconditionOperator": "AND",
+          "nodes": [
+            {
+              "id": "csv_source_1",
+              "type": "genericNode",
+              "position": {
+                "x": -345.28,
+                "y": 74.3
+              },
+              "data": {
+                "label": "CSV / Delimitado",
+                "componentType": "core.file.source.csv",
+                "componentVersion": "1.0.0",
+                "category": "source",
+                "ports": [
+                  {
+                    "name": "main",
+                    "direction": "output",
+                    "type": "dataset"
+                  }
+                ],
+                "config": {
+                  "path": "",
+                  "delimiter": ";",
+                  "header": true,
+                  "encoding": "utf-8"
+                },
+                "schema": []
+              }
+            },
+            {
+              "id": "postgres_source_brm_ativas_por_nivel",
+              "type": "genericNode",
+              "position": {
+                "x": -153.5,
+                "y": 54.0
+              },
+              "data": {
+                "label": "PostgreSQL Source (brm)",
+                "componentType": "connector.db.postgresql",
+                "componentVersion": "1.0.0",
+                "category": "source",
+                "ports": [
+                  {
+                    "name": "main",
+                    "direction": "output",
+                    "type": "dataset"
+                  }
+                ],
+                "config": {
+                  "connection_ref": "brm",
+                  "table": "ativas_por_nivel",
+                  "query": "SELECT * FROM ativas_por_nivel"
+                },
+                "schema": []
+              }
+            },
+            {
+              "id": "data_mapper_1",
+              "type": "genericNode",
+              "position": {
+                "x": 113.91,
+                "y": 73.65
+              },
+              "data": {
+                "label": "Data Mapper (tMap)",
+                "componentType": "core.tmap",
+                "componentVersion": "1.0.0",
+                "category": "transform",
+                "ports": [
+                  {
+                    "name": "input",
+                    "direction": "input",
+                    "type": "dataset"
+                  },
+                  {
+                    "name": "main",
+                    "direction": "output",
+                    "type": "dataset"
+                  }
+                ],
+                "config": {
+                  "mappings": []
+                },
+                "schema": []
+              }
+            },
+            {
+              "id": "duckdb_sink_ativas_por_nivel",
+              "type": "genericNode",
+              "position": {
+                "x": 324.63,
+                "y": 59.25
+              },
+              "data": {
+                "label": "DuckDB Output (ativas_por_nivel)",
+                "componentType": "connector.db.duckdb.output",
+                "componentVersion": "1.0.0",
+                "category": "target",
+                "ports": [
+                  {
+                    "name": "input",
+                    "direction": "input",
+                    "type": "dataset"
+                  }
+                ],
+                "config": {
+                  "table": "ativas_por_nivel",
+                  "mode": "overwrite"
+                },
+                "schema": []
+              }
+            },
+            {
+              "id": "file_sink_1",
+              "type": "genericNode",
+              "position": {
+                "x": 430.3,
+                "y": 70.86
+              },
+              "data": {
+                "label": "Arquivo de Saída CSV",
+                "componentType": "core.file.target.csv",
+                "componentVersion": "1.0.0",
+                "category": "target",
+                "ports": [
+                  {
+                    "name": "input",
+                    "direction": "input",
+                    "type": "dataset"
+                  }
+                ],
+                "config": {
+                  "path": "output.csv",
+                  "delimiter": ";",
+                  "header": true
+                },
+                "schema": []
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "edge-csv_source_1-data_mapper_1",
+              "source": "csv_source_1",
+              "target": "data_mapper_1",
+              "sourceHandle": "main",
+              "targetHandle": "input"
+            },
+            {
+              "id": "edge-postgres_source_brm_ativas_por_nivel-data_mapper_1",
+              "source": "postgres_source_brm_ativas_por_nivel",
+              "target": "data_mapper_1",
+              "sourceHandle": "main",
+              "targetHandle": "input"
+            },
+            {
+              "id": "edge-data_mapper_1-duckdb_sink_ativas_por_nivel",
+              "source": "data_mapper_1",
+              "target": "duckdb_sink_ativas_por_nivel",
+              "sourceHandle": "main",
+              "targetHandle": "input"
+            },
+            {
+              "id": "edge-data_mapper_1-file_sink_1",
+              "source": "data_mapper_1",
+              "target": "file_sink_1",
+              "sourceHandle": "main",
+              "targetHandle": "input"
+            }
+          ],
+          "viewport": {
+            "x": 0.0,
+            "y": 0.0,
+            "zoom": 1.0
+          },
+          "status": "idle"
+        }
+      ],
+      "environment": "dev",
+      "viewport": {
+        "x": 0.0,
+        "y": 0.0,
+        "zoom": 1.0
+      },
+      "connections": [
+        {
+          "id": "brm",
+          "name": "brm",
+          "type": "postgresql",
+          "config": {
+            "host": "localhost",
+            "port": 5432,
+            "database": "brm",
+            "username": "postgres"
+          }
+        }
+      ]
+    }
+  ],
+  "savedAt": "2026-10-13T19:00:00Z"
+}

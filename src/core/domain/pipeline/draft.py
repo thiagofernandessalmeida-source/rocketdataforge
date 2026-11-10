@@ -13,6 +13,15 @@ from src.core.domain.shared.exceptions import DomainValidationError
 from src.core.domain.shared.types import PortId, SemanticVersion
 
 
+from enum import Enum
+
+
+class CellType(str, Enum):
+    """Tipos de células suportadas no modelo Multi-Canvas / Notebook."""
+    CANVAS = "CANVAS"
+    PYTHON = "PYTHON"
+
+
 @dataclass
 class PipelineDraft:
     """Aggregate Root para edição de pipeline funcional."""
@@ -24,6 +33,7 @@ class PipelineDraft:
     nodes: Dict[str, Node] = field(default_factory=dict)
     edges: Dict[str, Edge] = field(default_factory=dict)
     parameters: Dict[str, Any] = field(default_factory=dict)
+    # Lista de células do pipeline: cada célula contém {id, name, order, cell_type, code_snippet, preconditions, ...}
     cells: List[Dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -80,12 +90,35 @@ class PipelineDraft:
         if to_port.node_id not in self.nodes:
             raise DomainValidationError(f"Nó de destino '{to_port.node_id}' não existe no draft")
 
-        # Invariante: uma porta de entrada recebe no máximo uma conexão
+        # Invariante: uma porta de entrada recebe no máximo uma conexão,
+        # a menos que o componente de destino seja multi-input (ex: tMap, union, join, control sync)
+        target_node = self.nodes[to_port.node_id]
+        target_comp_type = (target_node.component_type or "").lower()
+        is_control_port = (
+            to_port.port_name == "trigger" or
+            to_port.port_name.startswith("trigger") or
+            target_comp_type in ("control.sync", "control.barrier")
+        )
+        is_multi_input = (
+            is_control_port or
+            target_comp_type in (
+                "core.tmap", "transform.tmap", "processor.tmap", "tmap",
+                "core.union", "transform.union", "union",
+                "core.join", "transform.join", "join",
+            ) or
+            to_port.port_name in ("lookup", "lookups", "lkp")
+        )
+
         for edge in self.edges.values():
             if edge.to_port == to_port:
-                raise DomainValidationError(
-                    f"A porta de entrada '{to_port}' já está conectada pela aresta '{edge.id}'"
-                )
+                if not is_multi_input:
+                    raise DomainValidationError(
+                        f"A porta de entrada '{to_port}' já está conectada pela aresta '{edge.id}'"
+                    )
+                elif edge.from_port == from_port:
+                    raise DomainValidationError(
+                        f"A conexão de '{from_port}' para '{to_port}' já existe no pipeline draft"
+                    )
 
         edge = Edge.create(from_port=from_port, to_port=to_port)
         if edge.id in self.edges:
@@ -156,7 +189,15 @@ class PipelineDraft:
             }
         }
         if self.cells:
-            result["spec"]["cells"] = self.cells
+            sanitized_cells = []
+            for c in self.cells:
+                cell_data = dict(c)
+                if "is_active" not in cell_data:
+                    cell_data["is_active"] = True
+                if "is_minimized" not in cell_data:
+                    cell_data["is_minimized"] = False
+                sanitized_cells.append(cell_data)
+            result["spec"]["cells"] = sanitized_cells
         return result
 
     def _increment_revision(self) -> None:

@@ -132,3 +132,76 @@ def test_validate_policy_mandatory_documentation_and_authorization():
     assert "ERR_POLICY_MISSING_JOB_DESCRIPTION" in codes
     assert "ERR_POLICY_MISSING_CELL_DESCRIPTION" in codes
     assert "ERR_POLICY_FORBIDDEN_CONNECTOR" in codes
+
+
+def test_validate_tmap_multiple_inputs_allowed():
+    """Valida que o componente core.tmap permite múltiplas conexões de entrada (main + N lookups)."""
+    draft = PipelineDraft(id="p_tmap", project_id="pr1", name="tMap Multi-Input Pipeline")
+    ver = SemanticVersion(1, 0, 0)
+    draft.add_node("csv_source_1", "core.file.source.csv", ver)
+    draft.add_node("csv_source_2", "core.file.source.csv", ver)
+    draft.add_node("csv_source_3", "core.file.source.csv", ver)
+    draft.add_node(
+        "data_mapper_1",
+        "core.tmap",
+        ver,
+        config={
+            "main_alias": "main1",
+            "lookups": [
+                {"node_id": "csv_source_2", "alias": "lkp1"},
+                {"node_id": "csv_source_3", "alias": "lkp2"}
+            ],
+            "outputs": [{"name": "out1", "columns": []}]
+        }
+    )
+    draft.add_node("file_sink_1", "core.file.target", ver)
+
+    # Conecta as 3 origens ao data_mapper_1
+    draft.connect_ports(PortId("csv_source_1", "main"), PortId("data_mapper_1", "main"))
+    draft.connect_ports(PortId("csv_source_2", "main"), PortId("data_mapper_1", "main"))
+    draft.connect_ports(PortId("csv_source_3", "main"), PortId("data_mapper_1", "main"))
+    draft.connect_ports(PortId("data_mapper_1", "out1"), PortId("file_sink_1", "input"))
+
+    validator = GraphValidator()
+    report = validator.validate(draft)
+
+    assert report.is_valid, f"Erros inesperados: {[e.message for e in report.errors]}"
+    assert len(report.errors) == 0
+    assert report.topological_order.index("data_mapper_1") > report.topological_order.index("csv_source_1")
+    assert report.topological_order.index("data_mapper_1") > report.topological_order.index("csv_source_2")
+    assert report.topological_order.index("data_mapper_1") > report.topological_order.index("csv_source_3")
+    assert report.topological_order[-1] == "file_sink_1"
+
+
+def test_validate_single_input_component_rejects_duplicate_ports():
+    """Valida que componentes não multi-input continuam rejeitando múltiplas conexões na mesma porta."""
+    from src.core.domain.pipeline.edge import Edge
+    from src.core.domain.shared.exceptions import DomainValidationError
+
+    draft = PipelineDraft(id="p_single", project_id="pr1", name="Single Input Reject Pipeline")
+    ver = SemanticVersion(1, 0, 0)
+    draft.add_node("src1", "core.file.source.csv", ver)
+    draft.add_node("src2", "core.file.source.csv", ver)
+    draft.add_node("target", "core.file.target", ver)
+
+    draft.connect_ports(PortId("src1", "main"), PortId("target", "input"))
+
+    # Verifica que connect_ports bloqueia no nível de domínio
+    with pytest.raises(DomainValidationError, match="já está conectada"):
+        draft.connect_ports(PortId("src2", "main"), PortId("target", "input"))
+
+    # Força a inserção manual da aresta para validar que o GraphValidator também barra
+    dup_edge = Edge(
+        id="src2:main->target:input_manual",
+        from_port=PortId("src2", "main"),
+        to_port=PortId("target", "input")
+    )
+    draft.edges[dup_edge.id] = dup_edge
+
+    validator = GraphValidator()
+    report = validator.validate(draft)
+
+    assert not report.is_valid
+    assert any(err.code == "ERR_DUPLICATE_PORT_CONNECTION" for err in report.errors)
+
+

@@ -39,6 +39,7 @@ class ValidationReport:
     warnings: List[ValidationWarningItem] = field(default_factory=list)
     topological_order: List[str] = field(default_factory=list)
     cell_topological_order: List[str] = field(default_factory=list)
+    iterator_edges: List[str] = field(default_factory=list)
 
 
 class GraphValidator:
@@ -154,11 +155,33 @@ class GraphValidator:
         cell_topological_order: List[str] = []
 
         # Validação macro de canvas-cells (se houver especificação de células)
+        has_python_cells = False
         if draft.cells:
             cell_errors, cell_topological_order = self.validate_cell_topology(draft.cells)
             errors.extend(cell_errors)
+            for c in draft.cells:
+                c_type = str(c.get("cell_type") or c.get("cellType") or "CANVAS").upper()
+                if c_type == "PYTHON":
+                    has_python_cells = True
+                    snippet = c.get("code_snippet") or c.get("codeSnippet") or ""
+                    if not snippet.strip():
+                        warnings.append(ValidationWarningItem(
+                            code="WARN_EMPTY_PYTHON_CELL",
+                            node_id=c.get("id"),
+                            message=f"A célula Python '{c.get('name') or c.get('id')}' está sem código definido."
+                        ))
+                    else:
+                        import ast
+                        try:
+                            ast.parse(snippet)
+                        except SyntaxError as syn_err:
+                            errors.append(ValidationErrorItem(
+                                code="ERR_PYTHON_SYNTAX",
+                                node_id=c.get("id"),
+                                message=f"Erro de sintaxe Python na célula '{c.get('name') or c.get('id')}' (linha {syn_err.lineno}): {syn_err.msg}"
+                            ))
 
-        if not draft.nodes:
+        if not draft.nodes and not has_python_cells:
             errors.append(ValidationErrorItem(
                 code="ERR_EMPTY_PIPELINE",
                 message="O pipeline não possui nós cadastrados."
@@ -169,6 +192,7 @@ class GraphValidator:
         adj_list: Dict[str, List[str]] = {node_id: [] for node_id in draft.nodes}
         in_degree: Dict[str, int] = {node_id: 0 for node_id in draft.nodes}
         connected_to_ports: Set[str] = set()
+        seen_edge_signatures: Set[tuple] = set()
 
         for edge in draft.edges.values():
             from_node = edge.from_port.node_id
@@ -192,13 +216,39 @@ class GraphValidator:
                 in_degree[to_node] += 1
 
                 to_port_key = str(edge.to_port)
-                if to_port_key in connected_to_ports:
-                    errors.append(ValidationErrorItem(
-                        code="ERR_DUPLICATE_PORT_CONNECTION",
-                        node_id=to_node,
-                        message=f"Porta de entrada '{to_port_key}' possui múltiplas conexões."
-                    ))
-                connected_to_ports.add(to_port_key)
+                to_comp_type = (draft.nodes[to_node].component_type or "").lower()
+                is_control_port = (
+                    edge.to_port.port_name == "trigger" or
+                    edge.to_port.port_name.startswith("trigger") or
+                    to_comp_type in ("control.sync", "control.barrier")
+                )
+                is_multi_input = (
+                    is_control_port or
+                    to_comp_type in (
+                        "core.tmap", "transform.tmap", "processor.tmap", "tmap",
+                        "core.union", "transform.union", "union",
+                        "core.join", "transform.join", "join",
+                    ) or
+                    edge.to_port.port_name in ("lookup", "lookups", "lkp")
+                )
+                edge_sig = (from_node, edge.from_port.port_name, to_node, edge.to_port.port_name)
+
+                if is_multi_input:
+                    if edge_sig in seen_edge_signatures:
+                        errors.append(ValidationErrorItem(
+                            code="ERR_DUPLICATE_PORT_CONNECTION",
+                            node_id=to_node,
+                            message=f"Conexão duplicada entre '{edge.from_port}' e '{edge.to_port}'."
+                        ))
+                    seen_edge_signatures.add(edge_sig)
+                else:
+                    if to_port_key in connected_to_ports:
+                        errors.append(ValidationErrorItem(
+                            code="ERR_DUPLICATE_PORT_CONNECTION",
+                            node_id=to_node,
+                            message=f"Porta de entrada '{to_port_key}' possui múltiplas conexões."
+                        ))
+                    connected_to_ports.add(to_port_key)
 
         # Se já houver erros críticos de integridade de nós, interrompe antes de ordenar
         if errors:
@@ -226,8 +276,30 @@ class GraphValidator:
             ))
             return ValidationReport(is_valid=False, errors=errors, warnings=warnings)
 
-        # 3. Validações de integridade semântica (Sources e Sinks)
-        sources = [node_id for node_id in draft.nodes if not any(edge.to_port.node_id == node_id for edge in draft.edges.values())]
+        # 3. Identificação e Validação de Arestas de Iteração (ITERATOR_EDGE)
+        # Permite conectar a saída de um nó (Origem A) diretamente na entrada de outro nó (Origem B) para iteração linha a linha.
+        iterator_edges: List[str] = []
+        for edge_id, edge in draft.edges.items():
+            to_node = draft.nodes.get(edge.to_port.node_id)
+            from_node = draft.nodes.get(edge.from_port.node_id)
+            if to_node and from_node:
+                to_type = (to_node.component_type or "").lower()
+                from_type = (from_node.component_type or "").lower()
+                is_to_source = (
+                    "source" in to_type
+                    or (to_type.startswith("connector.db.") and not to_type.endswith(".output"))
+                    or to_type.startswith("core.file.source")
+                )
+                if is_to_source:
+                    iterator_edges.append(edge_id)
+
+        # 4. Validações de integridade semântica (Sources e Sinks)
+        sources = [
+            node_id for node_id in draft.nodes
+            if not any(edge.to_port.node_id == node_id for edge in draft.edges.values())
+            or (draft.nodes[node_id].component_type or "").lower().startswith("connector.db.")
+            or "source" in (draft.nodes[node_id].component_type or "").lower()
+        ]
         sinks = [node_id for node_id in draft.nodes if not any(edge.from_port.node_id == node_id for edge in draft.edges.values())]
 
         if not sources:
@@ -320,5 +392,10 @@ class GraphValidator:
             errors=errors,
             warnings=warnings,
             topological_order=topological_order,
-            cell_topological_order=cell_topological_order
+            cell_topological_order=cell_topological_order,
+            iterator_edges=iterator_edges
         )
+
+
+DAGValidator = GraphValidator
+

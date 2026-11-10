@@ -153,3 +153,28 @@ def test_execution_repository_lifecycle_and_tasks(db_session):
 
     updated = exec_repo.get("exec-01")
     assert updated.status == ExecutionStatus.RUNNING
+
+
+def test_pipeline_repository_prevent_name_collision_integrity_error(db_session):
+    repo = SqlAlchemyPipelineRepository(db_session)
+    # 1. Cria draft 1
+    d1 = PipelineDraft(id="draft-01", project_id="proj-01", name="massa_de_dados - canvas-cell-01")
+    repo.save_draft(d1)
+    db_session.commit()
+
+    # 2. Cria draft 2
+    d2 = PipelineDraft(id="draft-02", project_id="proj-01", name="massa_de_dados - canvas-cell-02")
+    repo.save_draft(d2)
+    db_session.commit()
+
+    # 3. Tenta renomear draft-01 para ter o mesmo nome que draft-02
+    d1_renamed = PipelineDraft(id="draft-01", project_id="proj-01", name="massa_de_dados - canvas-cell-02")
+    # Não deve lançar sqlite3.IntegrityError: UNIQUE constraint failed
+    repo.save_draft(d1_renamed)
+    db_session.commit()
+
+    res = repo.get_draft("draft-01")
+    assert res is not None
+    draft_saved, _ = res
+    # Mantém o nome original com segurança sem quebrar a restrição única
+    assert draft_saved.name == "massa_de_dados - canvas-cell-01"

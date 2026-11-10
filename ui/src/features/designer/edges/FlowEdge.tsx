@@ -15,6 +15,7 @@ import {
   Check,
   X,
   Trash2,
+  Repeat,
 } from "lucide-react";
 import {
   FlowType,
@@ -57,7 +58,7 @@ export const FlowEdge: React.FC<EdgeProps<FlowEdgeData>> = ({
   });
 
   const flowName = data?.flowName || (typeof label === "string" ? label : "") || "main1";
-  const flowType: FlowType = data?.flowType || (flowName.startsWith("lkp") ? "lkp" : flowName.startsWith("out") ? "out" : flowName.startsWith("reject") ? "reject" : "main");
+  const flowType: FlowType = data?.flowType || (flowName.startsWith("iterate") ? "iterate" : flowName.startsWith("lkp") ? "lkp" : flowName.startsWith("out") ? "out" : flowName.startsWith("reject") ? "reject" : "main");
   const meta = FLOW_CONFIG[flowType] || FLOW_CONFIG.main;
 
   const [isEditing, setIsEditing] = useState(false);
@@ -148,6 +149,8 @@ export const FlowEdge: React.FC<EdgeProps<FlowEdgeData>> = ({
 
   const getFlowIcon = () => {
     switch (flowType) {
+      case "iterate":
+        return <Repeat size={11} color={meta.badgeColor} />;
       case "main":
         return <Zap size={11} color={meta.badgeColor} />;
       case "lkp":
@@ -161,16 +164,42 @@ export const FlowEdge: React.FC<EdgeProps<FlowEdgeData>> = ({
     }
   };
 
+  const [showContextMenu, setShowContextMenu] = useState(false);
+  const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
+
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setMenuPos({ x: e.clientX, y: e.clientY });
+    setShowContextMenu(true);
+  }, []);
+
+  const handleDeleteConnection = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setShowContextMenu(false);
+    setEdges((eds) => eds.filter((edge) => edge.id !== id));
+  }, [id, setEdges]);
+
+  useEffect(() => {
+    if (!showContextMenu) return;
+    const handleClickOutside = () => setShowContextMenu(false);
+    window.addEventListener("click", handleClickOutside);
+    return () => window.removeEventListener("click", handleClickOutside);
+  }, [showContextMenu]);
+
   return (
     <>
       <BaseEdge
         id={id}
         path={edgePath}
         markerEnd={markerEnd}
+        interactionWidth={20}
         style={{
           ...style,
           stroke: selected ? "var(--accent-cyan)" : meta.strokeColor,
           strokeWidth: selected ? 2.5 : 2,
+          strokeDasharray: flowType === "iterate" ? "6, 4" : undefined,
+          animation: flowType === "iterate" ? "flow-iterate-dash 1s linear infinite" : undefined,
           transition: "stroke 0.2s, stroke-width 0.2s",
         }}
       />
@@ -236,6 +265,7 @@ export const FlowEdge: React.FC<EdgeProps<FlowEdgeData>> = ({
                 e.stopPropagation();
                 setIsEditing(true);
               }}
+              onContextMenu={handleContextMenu}
             >
               <span className="flow-badge-icon">{getFlowIcon()}</span>
               <span className="flow-badge-name">{flowName}</span>
@@ -275,6 +305,48 @@ export const FlowEdge: React.FC<EdgeProps<FlowEdgeData>> = ({
               <div className="flow-tooltip-hint">
                 Duplo clique para renomear este fluxo
               </div>
+            </div>
+          )}
+
+          {/* Menu de Contexto da Aresta: Excluir Conexão (RF-02.3 & T-1.5) */}
+          {showContextMenu && (
+            <div
+              className="flow-edge-context-menu"
+              style={{
+                position: "fixed",
+                left: menuPos.x,
+                top: menuPos.y,
+                zIndex: 9999,
+                background: "var(--bg-elevated, #1e2230)",
+                border: "1px solid var(--border-subtle, #2a3148)",
+                borderRadius: 6,
+                padding: "4px 0",
+                boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+                minWidth: 140,
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                type="button"
+                className="flow-edge-context-item"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  width: "100%",
+                  padding: "6px 12px",
+                  background: "transparent",
+                  border: "none",
+                  color: "var(--status-danger, #ef4444)",
+                  fontSize: "0.8rem",
+                  cursor: "pointer",
+                  textAlign: "left",
+                }}
+                onClick={handleDeleteConnection}
+              >
+                <Trash2 size={13} />
+                <span>Excluir Conexão</span>
+              </button>
             </div>
           )}
         </div>

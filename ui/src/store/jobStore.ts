@@ -3,10 +3,25 @@
 // ============================================================
 
 import { Node, Edge } from "reactflow";
-import { CanvasNodeData } from "../types";
+import { CanvasNodeData, ComponentCategory } from "../types/index";
+import { telemetryStore } from "./telemetryStore";
+import { getBaseApiUrl } from "../api/client";
 
 export type JobStatus = "draft" | "saved" | "published";
 export type Environment = "dev" | "hml" | "prd";
+
+// ─── Ephemeral Property Sanitizers (RF-01.1 & T-1.3) ────────
+export const sanitizeNode = <T extends Record<string, any>>({
+  selected,
+  dragging,
+  measured,
+  ...node
+}: T): T => node as T;
+
+export const sanitizeEdge = <T extends Record<string, any>>({
+  selected,
+  ...edge
+}: T): T => edge as T;
 
 // ─── Multi-Canvas Cell Models ───────────────────────────────
 
@@ -34,9 +49,13 @@ export interface CellExecutionMetrics {
   tasks?: CellExecutionTaskMetric[];
 }
 
+export type CellType = "CANVAS" | "PYTHON";
+
 export interface CanvasCellData {
   id: string;
   name: string;
+  cellType?: CellType;
+  codeSnippet?: string;
   description?: string;
   order: number;
   preconditions: CellPrecondition[];
@@ -49,6 +68,9 @@ export interface CanvasCellData {
   metrics?: CellExecutionMetrics;
   logs?: any[];
   showMetricsPanel?: boolean;
+  layoutDirection?: "LR" | "TB";
+  is_active?: boolean;
+  is_minimized?: boolean;
 }
 
 export interface JobData {
@@ -98,7 +120,13 @@ export interface SchemaColumn {
   comment?: string;
   isPrimaryKey?: boolean;
   defaultValue?: string;
+  masking?: string;
+  maskingSalt?: string;
+  origin?: string[];
+  computed?: boolean;
+  physicalType?: string;
 }
+
 
 // ─── Connections ─────────────────────────────────────────────
 
@@ -209,7 +237,364 @@ interface StoreState {
   activeTabId: string | null;
 }
 
+export function generateRocketNodeId(typeId: string, existingNodes: Node<CanvasNodeData>[]): string {
+  let prefix = "node";
+  if (typeId.includes("postgresql.output") || typeId.includes("postgres.output")) prefix = "postgres_sink";
+  else if (typeId.includes("postgresql") || typeId.includes("postgres") || typeId.includes("database.source")) prefix = "postgres_source";
+  else if (typeId.includes("duckdb.output")) prefix = "duckdb_sink";
+  else if (typeId.includes("duckdb")) prefix = "duckdb_source";
+  else if (typeId.includes("oracle.output")) prefix = "oracle_sink";
+  else if (typeId.includes("oracle")) prefix = "oracle_source";
+  else if (typeId.includes("sqlserver.output")) prefix = "sqlserver_sink";
+  else if (typeId.includes("sqlserver")) prefix = "sqlserver_source";
+  else if (typeId.includes("mysql.output")) prefix = "mysql_sink";
+  else if (typeId.includes("mysql")) prefix = "mysql_source";
+  else if (typeId.includes("file.source.csv") || typeId.includes(".csv")) prefix = "csv_source";
+  else if (typeId.includes("file.source.parquet") || typeId.includes(".parquet")) prefix = "parquet_source";
+  else if (typeId.includes("file.source.json") || typeId.includes(".json")) prefix = "json_source";
+  else if (typeId.includes("file.source.excel") || typeId.includes(".excel")) prefix = "excel_source";
+  else if (typeId.includes("file.target")) prefix = "file_sink";
+  else if (typeId.includes("file.source")) prefix = "file_source";
+  else if (typeId.includes("tmap") || typeId.includes("mapper")) prefix = "data_mapper";
+  else if (typeId.includes("filter")) prefix = "filter";
+  else if (typeId.includes("select")) prefix = "project";
+  else if (typeId.includes("join")) prefix = "join";
+  else if (typeId.includes("aggregate")) prefix = "aggregate";
+  else if (typeId.includes("sort")) prefix = "sort";
+  else if (typeId.includes("deduplicate")) prefix = "dedup";
+  else if (typeId.includes("lookup")) prefix = "lookup";
+  else if (typeId.includes("union")) prefix = "union";
+  else if (typeId.includes("pivot")) prefix = "pivot";
+  else {
+    const last = typeId.split(".").pop() || "node";
+    prefix = last.replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase();
+  }
+
+  let count = 1;
+  const existingIds = new Set(existingNodes.map((n) => n.id.toLowerCase()));
+  while (existingIds.has(`${prefix}_${count}`.toLowerCase())) {
+    count++;
+  }
+  return `${prefix}_${count}`;
+}
+
+export function inferAndNormalizeNode(rawNode: any): Node<CanvasNodeData> {
+  const id = String(rawNode.id || `node_${Date.now()}`);
+  const idLower = id.toLowerCase();
+
+  let componentType = rawNode.data?.componentType || rawNode.componentType;
+  let label = rawNode.data?.label || rawNode.name;
+  let category: ComponentCategory = rawNode.data?.category || "transform";
+  let ports = rawNode.data?.ports;
+  let config = { ...(rawNode.data?.config || rawNode.config || {}) };
+  let schema = rawNode.data?.schema || rawNode.schema || [];
+
+  if (!componentType || componentType === "generic") {
+    if (idLower.includes("duckdb") && (idLower.includes("sink") || idLower.includes("target") || idLower.includes("output"))) {
+      componentType = "connector.db.duckdb.output";
+      label = label && label !== id ? label : "DuckDB Output";
+      category = "target";
+      ports = [{ name: "input", direction: "input", type: "dataset" }];
+      if (!config.table) {
+        if (config.target) {
+          config.table = config.target;
+        } else {
+          const parts = id.split("_sink_");
+          config.table = parts.length > 1 && parts[1] && isNaN(Number(parts[1])) ? parts[1] : "output_table";
+        }
+      }
+      if (!config.target && config.table) {
+        config.target = config.table;
+      }
+    } else if (idLower.includes("duckdb")) {
+      componentType = "connector.db.duckdb";
+      label = label && label !== id ? label : "DuckDB Input";
+      category = "source";
+      ports = [{ name: "main", direction: "output", type: "dataset" }];
+    } else if (idLower.includes("csv") && (idLower.includes("sink") || idLower.includes("target") || idLower.includes("output"))) {
+      componentType = "core.file.target.csv";
+      label = label && label !== id ? label : "Arquivo Delimitado (Saída)";
+      category = "target";
+      ports = [{ name: "input", direction: "input", type: "dataset" }];
+    } else if (idLower.includes("csv")) {
+      componentType = "core.file.source.csv";
+      label = label && label !== id ? label : "CSV / Delimitado";
+      category = "source";
+      ports = [
+        { name: "input", direction: "input", type: "dataset" },
+        { name: "main", direction: "output", type: "dataset" },
+      ];
+    } else if (idLower.includes("parquet") && (idLower.includes("sink") || idLower.includes("target"))) {
+      componentType = "core.file.target.parquet";
+      label = label && label !== id ? label : "Parquet Output";
+      category = "target";
+      ports = [{ name: "input", direction: "input", type: "dataset" }];
+    } else if (idLower.includes("parquet")) {
+      componentType = "core.file.source.parquet";
+      label = label && label !== id ? label : "Apache Parquet";
+      category = "source";
+      ports = [
+        { name: "input", direction: "input", type: "dataset" },
+        { name: "main", direction: "output", type: "dataset" },
+      ];
+    } else if (idLower.includes("postgres") && (idLower.includes("sink") || idLower.includes("target") || idLower.includes("output"))) {
+      componentType = "connector.db.postgresql.output";
+      label = label && label !== id ? label : "PostgreSQL Output";
+      category = "target";
+      ports = [{ name: "input", direction: "input", type: "dataset" }];
+    } else if (idLower.includes("postgres")) {
+      componentType = "connector.db.postgresql";
+      label = label && label !== id ? label : "PostgreSQL Source";
+      category = "source";
+      ports = [
+        { name: "input", direction: "input", type: "dataset" },
+        { name: "main", direction: "output", type: "dataset" },
+      ];
+      if (idLower.includes("brm") && !config.connection_ref) {
+        config.connection_ref = "brm";
+      }
+    } else if (idLower.includes("mapper") || idLower.includes("tmap")) {
+      componentType = "core.tmap";
+      label = label && label !== id ? label : "Data Mapper (tMap)";
+      category = "transform";
+      ports = [
+        { name: "input", direction: "input", type: "dataset" },
+        { name: "main", direction: "output", type: "dataset" },
+      ];
+    } else if (idLower.includes("sink") || idLower.includes("target")) {
+      componentType = "core.file.target.csv";
+      label = label && label !== id ? label : "Arquivo de Saída";
+      category = "target";
+      ports = [{ name: "input", direction: "input", type: "dataset" }];
+    } else {
+      componentType = componentType || "core.tmap";
+      label = label || id;
+      category = category || "transform";
+      ports = ports || [
+        { name: "input", direction: "input", type: "dataset" },
+        { name: "main", direction: "output", type: "dataset" },
+      ];
+    }
+  }
+
+  if (!ports || ports.length === 0) {
+    if (category === "source") {
+      ports = [
+        { name: "input", direction: "input", type: "dataset" },
+        { name: "main", direction: "output", type: "dataset" },
+      ];
+    } else if (category === "target") {
+      ports = [{ name: "input", direction: "input", type: "dataset" }];
+    } else {
+      ports = [
+        { name: "input", direction: "input", type: "dataset" },
+        { name: "main", direction: "output", type: "dataset" },
+      ];
+    }
+  }
+
+  return {
+    id,
+    type: "genericNode",
+    position: rawNode.position || { x: 0, y: 0 },
+    width: rawNode.width,
+    height: rawNode.height,
+    targetPosition: rawNode.targetPosition,
+    sourcePosition: rawNode.sourcePosition,
+    data: {
+      label: label || id,
+      componentType,
+      componentVersion: rawNode.data?.componentVersion || "1.0.0",
+      category,
+      ports,
+      config,
+      schema,
+      cellId: rawNode.data?.cellId || rawNode.cellId,
+      layoutDirection: rawNode.data?.layoutDirection || rawNode.layoutDirection,
+      status: rawNode.data?.status,
+      metrics: rawNode.data?.metrics,
+    },
+  };
+}
+
+export function inferPipelineEdges(nodes: Node<CanvasNodeData>[]): Edge[] {
+  if (!nodes || nodes.length < 2) return [];
+
+  const sources = nodes.filter((n) => n.data.category === "source");
+  const transforms = nodes.filter((n) => n.data.category === "transform");
+  const targets = nodes.filter((n) => n.data.category === "target");
+
+  const edges: Edge[] = [];
+
+  if (transforms.length > 0) {
+    transforms.forEach((t) => {
+      sources.forEach((s) => {
+        edges.push({
+          id: `e-${s.id}-${t.id}`,
+          source: s.id,
+          target: t.id,
+          sourceHandle: "main",
+          targetHandle: "input",
+          type: "smoothstep",
+          animated: true,
+          label: s.data.label || "row",
+        });
+      });
+
+      targets.forEach((tgt) => {
+        edges.push({
+          id: `e-${t.id}-${tgt.id}`,
+          source: t.id,
+          target: tgt.id,
+          sourceHandle: "main",
+          targetHandle: "input",
+          type: "smoothstep",
+          animated: true,
+          label: tgt.data.label || "out",
+        });
+      });
+    });
+  } else if (sources.length > 0 && targets.length > 0) {
+    sources.forEach((s, idx) => {
+      const tgt = targets[idx] || targets[0];
+      edges.push({
+        id: `e-${s.id}-${tgt.id}`,
+        source: s.id,
+        target: tgt.id,
+        sourceHandle: "main",
+        targetHandle: "input",
+        type: "smoothstep",
+        animated: true,
+        label: "main",
+      });
+    });
+  }
+
+  return edges;
+}
+
 const STORAGE_KEY = "rdf_studio_v2";
+
+/**
+ * Substitui recursivamente referências a IDs antigos por novos IDs (ex: {{old_id.col}}, {old_id.col}, lookups.node_id, etc.)
+ */
+export function remapNodeReferences<T = any>(obj: T, idMap: Record<string, string>): T {
+  if (!obj || Object.keys(idMap).length === 0) return obj;
+
+  if (typeof obj === "string") {
+    let result: string = obj;
+    for (const [oldId, newId] of Object.entries(idMap)) {
+      result = result.split(`{{${oldId}.`).join(`{{${newId}.`);
+      result = result.split(`{${oldId}.`).join(`{${newId}.`);
+      result = result.replace(new RegExp(`\\{\\{\\s*${oldId}\\.`, "g"), `{{${newId}.`);
+    }
+    return result as unknown as T;
+  }
+
+  if (Array.isArray(obj)) {
+    return obj.map((item) => remapNodeReferences(item, idMap)) as any;
+  }
+
+  if (typeof obj === "object") {
+    const copy: any = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (
+        (k === "node_id" || k === "targetId" || k === "main_input_id" || k === "upstream_id") &&
+        typeof v === "string" &&
+        idMap[v]
+      ) {
+        copy[k] = idMap[v];
+      } else {
+        copy[k] = remapNodeReferences(v, idMap);
+      }
+    }
+    return copy as any;
+  }
+
+  return obj;
+}
+
+/**
+ * Garante que todos os nós em todas as células de um Job possuam IDs únicos globais.
+ * Se múltiplos nós possuírem o mesmo ID (por exemplo, criados em células distintas em versões anteriores),
+ * desambigua gerando novos IDs únicos e ajustando as arestas conectadas da célula.
+ */
+export function healDuplicateNodeIdsAcrossCells(cells: CanvasCellData[]): {
+  cells: CanvasCellData[];
+  repairedCount: number;
+} {
+  const seenIds = new Set<string>();
+  let repairedCount = 0;
+
+  const repairedCells = cells.map((cell) => {
+    const idMap: Record<string, string> = {};
+    const newNodes = (cell.nodes || []).map((node) => {
+      const lower = node.id.toLowerCase();
+      if (!seenIds.has(lower)) {
+        seenIds.add(lower);
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            cellId: cell.id,
+          },
+        };
+      }
+
+      // Colisão de ID detectada entre nós do Job!
+      repairedCount++;
+      let count = 2;
+      let candidate = `${node.id}_${count}`;
+      while (seenIds.has(candidate.toLowerCase())) {
+        count++;
+        candidate = `${node.id}_${count}`;
+      }
+      seenIds.add(candidate.toLowerCase());
+      idMap[node.id] = candidate;
+
+      return {
+        ...node,
+        id: candidate,
+        data: {
+          ...node.data,
+          cellId: cell.id,
+        },
+      };
+    });
+
+    // Se houve renomeação, atualiza as arestas e dados dos nós desta célula
+    const hasRenames = Object.keys(idMap).length > 0;
+    const finalNodes = hasRenames
+      ? newNodes.map((n) => ({
+          ...n,
+          data: remapNodeReferences(n.data, idMap),
+        }))
+      : newNodes;
+
+    const newEdges = (cell.edges || []).map((edge) => {
+      const newSource = idMap[edge.source] || edge.source;
+      const newTarget = idMap[edge.target] || edge.target;
+      const remappedData = hasRenames ? remapNodeReferences(edge.data, idMap) : edge.data;
+      if (newSource !== edge.source || newTarget !== edge.target || hasRenames) {
+        return {
+          ...edge,
+          source: newSource,
+          target: newTarget,
+          data: remappedData,
+        };
+      }
+      return edge;
+    });
+
+    return {
+      ...cell,
+      nodes: finalNodes,
+      edges: newEdges,
+    };
+  });
+
+  return { cells: repairedCells, repairedCount };
+}
 
 function loadState(): StoreState {
   try {
@@ -238,10 +623,10 @@ function loadState(): StoreState {
         parsed.contextVariables = [];
       }
       
-      // Migration: add environment and multi-canvas cells to old jobs
+      // Migration: add environment, multi-canvas cells and heal unstyled nodes
       if (Array.isArray(parsed.jobs)) {
         parsed.jobs = parsed.jobs.map((j: any) => {
-          const cells: CanvasCellData[] =
+          const cells: CanvasCellData[] = (
             Array.isArray(j.cells) && j.cells.length > 0
               ? j.cells
               : [
@@ -258,24 +643,61 @@ function loadState(): StoreState {
                     nodeSchemas: j.nodeSchemas || {},
                     status: "idle",
                   },
-                ];
+                ]
+          ).map((c: CanvasCellData) => {
+            const isV2OrHigher = Boolean(
+              j.schemaVersion && (j.schemaVersion.includes("v2") || j.schemaVersion >= "rdf.job/v2")
+            );
+            const normNodes = (c.nodes || []).map(inferAndNormalizeNode);
+            const normEdges =
+              c.edges && c.edges.length > 0
+                ? c.edges
+                : isV2OrHigher
+                ? []
+                : inferPipelineEdges(normNodes);
+            return {
+              ...c,
+              nodes: normNodes,
+              edges: normEdges,
+            };
+          });
+
+          // Garante unicidade de IDs de nós através de todas as células do Job
+          const { cells: healedCells, repairedCount } = healDuplicateNodeIdsAcrossCells(cells);
+          if (repairedCount > 0) {
+            console.info(`[jobStore] Desambiguados ${repairedCount} nó(s) com IDs duplicados no job '${j.name || j.id}'`);
+          }
+
           const activeCellId =
-            j.activeCellId && cells.some((c) => c.id === j.activeCellId)
+            j.activeCellId && healedCells.some((c) => c.id === j.activeCellId)
               ? j.activeCellId
-              : cells[0]?.id || "canvas-cell-01";
+              : healedCells[0]?.id || "canvas-cell-01";
+          const activeCell = healedCells.find((c) => c.id === activeCellId) || healedCells[0];
+
           return {
             ...j,
             environment: j.environment ?? "dev",
-            cells,
+            cells: healedCells,
             activeCellId,
+            nodes: activeCell ? activeCell.nodes : healedCells.flatMap((c) => c.nodes),
+            edges: activeCell ? activeCell.edges : healedCells.flatMap((c) => c.edges),
           };
         });
       } else {
         parsed.jobs = [];
       }
       
-      // Migration: add queryBank if missing
-      if (!Array.isArray(parsed.queryBank)) parsed.queryBank = [];
+      // Migration: add queryBank if missing and normalize existing entries
+      if (!Array.isArray(parsed.queryBank)) {
+        parsed.queryBank = [];
+      } else {
+        parsed.queryBank = parsed.queryBank.map((q: any) => ({
+          ...q,
+          tags: Array.isArray(q?.tags) ? q.tags : [],
+          schema: Array.isArray(q?.schema) ? q.schema : [],
+          usageCount: typeof q?.usageCount === "number" ? q.usageCount : 0,
+        }));
+      }
       
       // Fix undefined properties that crash App
       if (!parsed.openTabIds) parsed.openTabIds = [];
@@ -331,10 +753,128 @@ function loadState(): StoreState {
   };
 }
 
+let syncWorkspaceTimeout: any = null;
+
+export function syncWorkspaceDebounced(currentState: StoreState): void {
+  if (syncWorkspaceTimeout) clearTimeout(syncWorkspaceTimeout);
+  syncWorkspaceTimeout = setTimeout(() => {
+    try {
+      fetch(`${getBaseApiUrl()}/workspaces/local/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          activeJobId: currentState.activeTabId,
+          jobs: currentState.jobs,
+          connections: currentState.connections,
+          queryBank: currentState.queryBank,
+        }),
+      }).catch(() => {});
+    } catch (_) {}
+  }, 1000);
+}
+
 function saveState(state: StoreState): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch (_) {}
+  syncWorkspaceDebounced(state);
+}
+
+export interface WorkspaceInfo {
+  name: string;
+  path: string;
+  dataDir: string;
+  jobsDir: string;
+  connectionsDir: string;
+  queriesDir: string;
+  jobsCount: number;
+  connectionsCount: number;
+  queriesCount: number;
+  recentWorkspaces: string[];
+}
+
+let currentWorkspace: WorkspaceInfo | null = null;
+
+export async function fetchCurrentWorkspaceInfo(): Promise<WorkspaceInfo | null> {
+  try {
+    const res = await fetch(`${getBaseApiUrl()}/workspaces/local/current`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    currentWorkspace = data;
+    return data;
+  } catch (_) {
+    return null;
+  }
+}
+
+export async function hydrateFromActiveWorkspace(): Promise<{ success: boolean; workspace?: WorkspaceInfo }> {
+  try {
+    const baseUrl = getBaseApiUrl();
+    const [syncRes, infoRes] = await Promise.all([
+      fetch(`${baseUrl}/workspaces/local/sync`).catch(() => null),
+      fetch(`${baseUrl}/workspaces/local/current`).catch(() => null),
+    ]);
+
+    if (infoRes && infoRes.ok) {
+      currentWorkspace = await infoRes.json();
+    }
+
+    if (!syncRes || !syncRes.ok) {
+      return { success: false, workspace: currentWorkspace || undefined };
+    }
+
+    const data = await syncRes.json();
+    const hasWorkspaceData =
+      (Array.isArray(data.jobs) && data.jobs.length > 0) ||
+      (Array.isArray(data.connections) && data.connections.length > 0) ||
+      (Array.isArray(data.queryBank) && data.queryBank.length > 0);
+
+    if (hasWorkspaceData) {
+      state = {
+        ...state,
+        jobs: Array.isArray(data.jobs) && data.jobs.length > 0 ? data.jobs : state.jobs,
+        connections: Array.isArray(data.connections) && data.connections.length > 0 ? data.connections : state.connections,
+        queryBank: Array.isArray(data.queryBank) && data.queryBank.length > 0 ? data.queryBank : state.queryBank,
+        openTabIds: data.activeJobId ? [data.activeJobId] : state.openTabIds,
+        activeTabId: data.activeJobId || state.activeTabId,
+      };
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      } catch (_) {}
+      notify();
+    } else {
+      // Se for workspace novo/vazio, salva os itens padrão para persistir em disco
+      syncWorkspaceDebounced(state);
+    }
+    return { success: true, workspace: currentWorkspace || undefined };
+  } catch (_) {
+    return { success: false, workspace: currentWorkspace || undefined };
+  }
+}
+
+export async function switchWorkspace(path: string, name?: string): Promise<{ success: boolean; workspace?: WorkspaceInfo; error?: string }> {
+  try {
+    const cleanPath = (path || "").trim().replace(/^["']|["']$/g, "").trim();
+    if (!cleanPath) {
+      return { success: false, error: "Informe o caminho da pasta raiz do workspace." };
+    }
+
+    const res = await fetch(`${getBaseApiUrl()}/workspaces/local/select`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: cleanPath, name }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      return { success: false, error: err.detail || "Erro ao alternar workspace" };
+    }
+    const info = await res.json();
+    currentWorkspace = info;
+    await hydrateFromActiveWorkspace();
+    return { success: true, workspace: currentWorkspace || info };
+  } catch (e: any) {
+    return { success: false, error: String(e) };
+  }
 }
 
 type Listener = () => void;
@@ -475,6 +1015,43 @@ export function validateParallelCellConsistency(cells: CanvasCellData[]): string
   return errors.length > 0 ? errors : null;
 }
 
+// ─── Undo/Redo (History) & Clipboard State ───────────────────────
+
+interface HistorySnapshot {
+  cells: CanvasCellData[];
+  activeCellId?: string;
+}
+
+const undoStacks: Record<string, HistorySnapshot[]> = {};
+const redoStacks: Record<string, HistorySnapshot[]> = {};
+let lastSnapshotTime = 0;
+
+export function takeSnapshot(jobId: string, force = false): void {
+  const now = Date.now();
+  if (!force && now - lastSnapshotTime < 400) {
+    return;
+  }
+  lastSnapshotTime = now;
+  const job = state.jobs.find((j) => j.id === jobId);
+  if (!job) return;
+  if (!undoStacks[jobId]) undoStacks[jobId] = [];
+  undoStacks[jobId].push({
+    cells: JSON.parse(JSON.stringify(job.cells || [])),
+    activeCellId: job.activeCellId,
+  });
+  if (undoStacks[jobId].length > 40) {
+    undoStacks[jobId].shift();
+  }
+  redoStacks[jobId] = [];
+}
+
+interface ClipboardData {
+  nodes: Node<CanvasNodeData>[];
+  sourceCellId?: string;
+}
+
+let nodeClipboard: ClipboardData | null = null;
+
 export const jobStore = {
   subscribe(listener: Listener): () => void {
     listeners.add(listener);
@@ -483,6 +1060,177 @@ export const jobStore = {
 
   getState(): StoreState {
     return state;
+  },
+
+  getActiveJob(): JobData | undefined {
+    return state.jobs.find((j) => j.id === state.activeTabId);
+  },
+
+  // ─── History (Undo / Redo) ────────────────────────────────
+
+  takeSnapshot(jobId: string, force = true): void {
+    takeSnapshot(jobId, force);
+  },
+
+  canUndo(jobId?: string): boolean {
+    const id = jobId || state.activeTabId;
+    return Boolean(id && undoStacks[id] && undoStacks[id].length > 0);
+  },
+
+  canRedo(jobId?: string): boolean {
+    const id = jobId || state.activeTabId;
+    return Boolean(id && redoStacks[id] && redoStacks[id].length > 0);
+  },
+
+  undo(jobId?: string): boolean {
+    const id = jobId || state.activeTabId;
+    if (!id) return false;
+    const job = state.jobs.find((j) => j.id === id);
+    const stack = undoStacks[id];
+    if (!job || !stack || stack.length === 0) return false;
+
+    const previous = stack.pop()!;
+    if (!redoStacks[id]) redoStacks[id] = [];
+    redoStacks[id].push({
+      cells: JSON.parse(JSON.stringify(job.cells || [])),
+      activeCellId: job.activeCellId,
+    });
+
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== id) return j;
+        const activeCell = previous.cells.find((c) => c.id === previous.activeCellId) || previous.cells[0];
+        return {
+          ...j,
+          cells: previous.cells,
+          activeCellId: previous.activeCellId || activeCell?.id,
+          nodes: activeCell ? activeCell.nodes : previous.cells.flatMap((c) => c.nodes),
+          edges: activeCell ? activeCell.edges : previous.cells.flatMap((c) => c.edges),
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+    return true;
+  },
+
+  redo(jobId?: string): boolean {
+    const id = jobId || state.activeTabId;
+    if (!id) return false;
+    const job = state.jobs.find((j) => j.id === id);
+    const stack = redoStacks[id];
+    if (!job || !stack || stack.length === 0) return false;
+
+    const next = stack.pop()!;
+    if (!undoStacks[id]) undoStacks[id] = [];
+    undoStacks[id].push({
+      cells: JSON.parse(JSON.stringify(job.cells || [])),
+      activeCellId: job.activeCellId,
+    });
+
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== id) return j;
+        const activeCell = next.cells.find((c) => c.id === next.activeCellId) || next.cells[0];
+        return {
+          ...j,
+          cells: next.cells,
+          activeCellId: next.activeCellId || activeCell?.id,
+          nodes: activeCell ? activeCell.nodes : next.cells.flatMap((c) => c.nodes),
+          edges: activeCell ? activeCell.edges : next.cells.flatMap((c) => c.edges),
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+    return true;
+  },
+
+  // ─── Clipboard (Copy / Paste) ─────────────────────────────
+
+  copyNodes(jobId: string, cellId: string, nodeIds: string[]): boolean {
+    const job = state.jobs.find((j) => j.id === jobId);
+    if (!job) return false;
+    const cell = (job.cells || []).find((c) => c.id === cellId);
+    if (!cell) return false;
+    const targetNodes = (cell.nodes || []).filter((n) => nodeIds.includes(n.id));
+    if (targetNodes.length === 0) return false;
+    nodeClipboard = {
+      nodes: JSON.parse(JSON.stringify(targetNodes)),
+      sourceCellId: cellId,
+    };
+    return true;
+  },
+
+  hasClipboardNodes(): boolean {
+    return Boolean(nodeClipboard && nodeClipboard.nodes && nodeClipboard.nodes.length > 0);
+  },
+
+  pasteNodes(jobId: string, targetCellId?: string): Node<CanvasNodeData>[] {
+    if (!nodeClipboard || !nodeClipboard.nodes || nodeClipboard.nodes.length === 0) return [];
+    const job = state.jobs.find((j) => j.id === jobId);
+    if (!job) return [];
+    const effectiveCellId = targetCellId || job.activeCellId || job.cells?.[0]?.id;
+    const targetCell = (job.cells || []).find((c) => c.id === effectiveCellId) || job.cells?.[0];
+    if (!targetCell) return [];
+
+    takeSnapshot(jobId, true);
+
+    const allJobNodes = (job.cells || []).flatMap((c) => c.nodes || []);
+    const pastedNodes: Node<CanvasNodeData>[] = [];
+
+    nodeClipboard.nodes.forEach((originalNode, idx) => {
+      const newId = generateRocketNodeId(originalNode.data?.componentType || "node", [...allJobNodes, ...pastedNodes]);
+
+      const clonedNode: Node<CanvasNodeData> = {
+        ...JSON.parse(JSON.stringify(originalNode)),
+        id: newId,
+        position: {
+          x: originalNode.position.x + 35 * (idx + 1),
+          y: originalNode.position.y + 35 * (idx + 1),
+        },
+        selected: true,
+        data: {
+          ...originalNode.data,
+          label: `${originalNode.data?.label || originalNode.id} (Cópia)`,
+          cellId: targetCell.id,
+          status: undefined,
+          metrics: undefined,
+        },
+      };
+      pastedNodes.push(clonedNode);
+    });
+
+    const unselectedExistingNodes = (targetCell.nodes || []).map((n) => ({
+      ...n,
+      selected: false,
+    }));
+
+    const updatedNodes = [...unselectedExistingNodes, ...pastedNodes];
+
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) =>
+          c.id === targetCell.id ? { ...c, nodes: updatedNodes } : c
+        );
+        const isActive = j.activeCellId === targetCell.id;
+        return {
+          ...j,
+          cells: updatedCells,
+          nodes: isActive ? updatedNodes : j.nodes,
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+    return pastedNodes;
   },
 
   // ─── Folders ──────────────────────────────────────────────
@@ -634,13 +1382,16 @@ export const jobStore = {
 
   // ─── Multi-Canvas Cell Operations ─────────────────────────
 
-  createCell(jobId: string, customName?: string): CanvasCellData | null {
+  createCell(jobId: string, customName?: string, cellType: CellType = "CANVAS"): CanvasCellData | null {
     const job = state.jobs.find((j) => j.id === jobId);
     if (!job) return null;
 
+    takeSnapshot(jobId, true);
+
     const existingCells = job.cells || [];
     const nextIndex = existingCells.length + 1;
-    const defaultId = `canvas-cell-${String(nextIndex).padStart(2, "0")}`;
+    const prefix = cellType === "PYTHON" ? "python-cell" : "canvas-cell";
+    const defaultId = `${prefix}-${String(nextIndex).padStart(2, "0")}`;
     const name = (customName?.trim() || defaultId).slice(0, 50);
 
     const maxOrder = existingCells.reduce((max, c) => Math.max(max, c.order || 0), 0);
@@ -658,9 +1409,32 @@ export const jobStore = {
         ]
       : [];
 
+    const defaultCodeSnippet = cellType === "PYTHON"
+      ? `# CellFlow Python Cell - Enterprise Notebook Engine
+# Objetos disponíveis: context, pl (polars), duckdb, datetime, math, json
+
+# 1. Lê os dados de uma etapa anterior (State Handoff):
+# df_anterior = context.read_output('${prevCell?.id || "canvas-cell-01"}')
+
+# 2. Processa ou cria dados usando Polars:
+df = pl.DataFrame({
+    "id": [1, 2, 3],
+    "item": ["Produto A", "Produto B", "Produto C"],
+    "valor": [150.0, 320.5, 89.9]
+})
+print(f"Processando {len(df)} registros na célula...")
+
+# 3. Publica a saída desta célula para as próximas etapas:
+context.write_output(df)
+print("Dados publicados com sucesso via context.write_output!")
+`
+      : undefined;
+
     const newCell: CanvasCellData = {
       id: defaultId,
       name,
+      cellType,
+      codeSnippet: defaultCodeSnippet,
       description: "",
       order: newOrder,
       preconditions: defaultPreconditions,
@@ -668,6 +1442,8 @@ export const jobStore = {
       nodes: [],
       edges: [],
       status: "idle",
+      is_active: true,
+      is_minimized: false,
     };
 
     state = {
@@ -689,6 +1465,9 @@ export const jobStore = {
   },
 
   updateCell(jobId: string, cellId: string, updates: Partial<CanvasCellData>): void {
+    if (updates.nodes || updates.edges || updates.order !== undefined || updates.layoutDirection) {
+      takeSnapshot(jobId, true);
+    }
     state = {
       ...state,
       jobs: state.jobs.map((j) => {
@@ -780,6 +1559,8 @@ export const jobStore = {
       return false; // Job must retain at least one cell
     }
 
+    takeSnapshot(jobId, true);
+
     state = {
       ...state,
       jobs: state.jobs.map((j) => {
@@ -815,6 +1596,76 @@ export const jobStore = {
     return true;
   },
 
+  deleteEdge(jobId: string, cellId: string, edgeId: string): boolean {
+    const job = state.jobs.find((j) => j.id === jobId);
+    if (!job) return false;
+
+    takeSnapshot(jobId, true);
+
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) => {
+          if (c.id !== cellId) return c;
+          const nextEdges = (c.edges || []).filter((e) => e.id !== edgeId);
+          return {
+            ...c,
+            edges: nextEdges,
+          };
+        });
+        const activeCell = updatedCells.find((c) => c.id === j.activeCellId);
+        return {
+          ...j,
+          cells: updatedCells,
+          nodes: activeCell ? activeCell.nodes : j.nodes,
+          edges: activeCell ? activeCell.edges : j.edges,
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+    return true;
+  },
+
+  deleteNode(jobId: string, cellId: string, nodeId: string): boolean {
+    const job = state.jobs.find((j) => j.id === jobId);
+    if (!job) return false;
+
+    takeSnapshot(jobId, true);
+
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) => {
+          if (c.id !== cellId) return c;
+          const nextNodes = (c.nodes || []).filter((n) => n.id !== nodeId);
+          const nextEdges = (c.edges || []).filter(
+            (e) => e.source !== nodeId && e.target !== nodeId
+          );
+          return {
+            ...c,
+            nodes: nextNodes,
+            edges: nextEdges,
+          };
+        });
+        const activeCell = updatedCells.find((c) => c.id === j.activeCellId);
+        return {
+          ...j,
+          cells: updatedCells,
+          nodes: activeCell ? activeCell.nodes : j.nodes,
+          edges: activeCell ? activeCell.edges : j.edges,
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+    return true;
+  },
+
   duplicateCell(jobId: string, cellId: string): CanvasCellData | null {
     const job = state.jobs.find((j) => j.id === jobId);
     if (!job) return null;
@@ -824,33 +1675,61 @@ export const jobStore = {
 
     const existingCells = job.cells || [];
     const nextIndex = existingCells.length + 1;
-    const newId = `canvas-cell-${String(nextIndex).padStart(2, "0")}`;
     const newName = `Cópia de ${sourceCell.name}`.slice(0, 50);
     const maxOrder = existingCells.reduce((max, c) => Math.max(max, c.order || 0), 0);
 
-    // Deep clone nodes and edges with id mapping
+    // Deep clone nodes and edges with id mapping and template token interpolation remapping
     const idMap: Record<string, string> = {};
-    const clonedNodes = (sourceCell.nodes || []).map((n) => {
+    const clonedNodesRaw = (sourceCell.nodes || []).map((n) => {
       const uniqueSuffix = Date.now().toString(36) + Math.random().toString(36).substr(2, 4);
       const newNId = `${n.id}_${uniqueSuffix}`;
       idMap[n.id] = newNId;
+      return { n, newNId };
+    });
+
+    const isPython = sourceCell.cellType === "PYTHON";
+    const prefix = isPython ? "python-cell" : "canvas-cell";
+    const newId = `${prefix}-${String(nextIndex).padStart(2, "0")}`;
+
+    const clonedNodes = clonedNodesRaw.map(({ n, newNId }) => {
+      const deepData = JSON.parse(JSON.stringify(n.data || {}));
+      const remappedData = remapNodeReferences(deepData, idMap);
       return {
         ...n,
         id: newNId,
         position: { x: n.position.x + 30, y: n.position.y + 30 },
+        data: {
+          ...remappedData,
+          cellId: newId,
+        },
       };
     });
 
-    const clonedEdges = (sourceCell.edges || []).map((e) => ({
-      ...e,
-      id: `edge_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
-      source: idMap[e.source] || e.source,
-      target: idMap[e.target] || e.target,
-    }));
+    const clonedEdges = (sourceCell.edges || []).map((e) => {
+      const deepData = JSON.parse(JSON.stringify(e.data || {}));
+      const remappedData = remapNodeReferences(deepData, idMap);
+      return {
+        ...e,
+        id: `edge_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+        source: idMap[e.source] || e.source,
+        target: idMap[e.target] || e.target,
+        data: remappedData,
+      };
+    });
+
+    const clonedNodeSchemas: Record<string, SchemaColumn[]> = {};
+    if (sourceCell.nodeSchemas) {
+      for (const [oldId, schema] of Object.entries(sourceCell.nodeSchemas)) {
+        const mappedId = idMap[oldId] || oldId;
+        clonedNodeSchemas[mappedId] = JSON.parse(JSON.stringify(schema));
+      }
+    }
 
     const newCell: CanvasCellData = {
       id: newId,
       name: newName,
+      cellType: sourceCell.cellType || "CANVAS",
+      codeSnippet: sourceCell.codeSnippet,
       description: sourceCell.description || "",
       order: maxOrder + 1,
       preconditions: [...(sourceCell.preconditions || [])],
@@ -858,8 +1737,10 @@ export const jobStore = {
       nodes: clonedNodes,
       edges: clonedEdges,
       viewport: sourceCell.viewport ? { ...sourceCell.viewport } : undefined,
-      nodeSchemas: sourceCell.nodeSchemas ? { ...sourceCell.nodeSchemas } : {},
+      nodeSchemas: clonedNodeSchemas,
       status: "idle",
+      is_active: sourceCell.is_active !== undefined ? sourceCell.is_active : true,
+      is_minimized: false,
     };
 
     state = {
@@ -926,48 +1807,83 @@ export const jobStore = {
     notify();
   },
 
-  resetCellStatus(jobId: string, cellId: string): void {
+  toggleCellActive(cellIdOrJobId: string, maybeCellId?: string): void {
+    const jobId = maybeCellId ? cellIdOrJobId : (state.activeTabId || "");
+    const cellId = maybeCellId ? maybeCellId : cellIdOrJobId;
+    if (!jobId || !cellId) return;
+    takeSnapshot(jobId, true);
     state = {
       ...state,
       jobs: state.jobs.map((j) => {
         if (j.id !== jobId) return j;
-        const updatedCells = (j.cells || []).map((c) => {
-          if (c.id !== cellId) return c;
-          const resetNodes = (c.nodes || []).map((n) => ({
-            ...n,
-            data: {
-              ...n.data,
-              status: undefined,
-              metrics: undefined,
-            },
-          }));
-          return {
-            ...c,
-            status: "idle" as CellExecutionStatus,
-            metrics: undefined,
-            logs: undefined,
-            showMetricsPanel: false,
-            nodes: resetNodes,
-          };
-        });
-        const activeCellObj = updatedCells.find((c) => c.id === j.activeCellId);
-        return {
-          ...j,
-          cells: updatedCells,
-          nodes: activeCellObj ? activeCellObj.nodes : j.nodes,
-        };
+        const updatedCells = (j.cells || []).map((c) =>
+          c.id === cellId ? { ...c, is_active: c.is_active === false ? true : false } : c
+        );
+        return { ...j, cells: updatedCells, updatedAt: new Date().toISOString() };
       }),
     };
     saveState(state);
     notify();
   },
 
-  resetAllCellsStatus(jobId: string): void {
+  toggleCellMinimized(cellIdOrJobId: string, maybeCellId?: string): void {
+    const jobId = maybeCellId ? cellIdOrJobId : (state.activeTabId || "");
+    const cellId = maybeCellId ? maybeCellId : cellIdOrJobId;
+    if (!jobId || !cellId) return;
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) =>
+          c.id === cellId ? { ...c, is_minimized: !c.is_minimized } : c
+        );
+        return { ...j, cells: updatedCells, updatedAt: new Date().toISOString() };
+      }),
+    };
+    saveState(state);
+    notify();
+  },
+
+  setCellActive(jobId: string, cellId: string, isActive: boolean): void {
+    takeSnapshot(jobId, true);
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) =>
+          c.id === cellId ? { ...c, is_active: isActive } : c
+        );
+        return { ...j, cells: updatedCells, updatedAt: new Date().toISOString() };
+      }),
+    };
+    saveState(state);
+    notify();
+  },
+
+  setCellMinimized(jobId: string, cellId: string, isMinimized: boolean): void {
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) =>
+          c.id === cellId ? { ...c, is_minimized: isMinimized } : c
+        );
+        return { ...j, cells: updatedCells, updatedAt: new Date().toISOString() };
+      }),
+    };
+    saveState(state);
+    notify();
+  },
+
+  resetCellStatus(jobId: string, cellId: string): void {
+    let affectedNodeIds: string[] = [];
     state = {
       ...state,
       jobs: state.jobs.map((j) => {
         if (j.id !== jobId) return j;
         const updatedCells = (j.cells || []).map((c) => {
+          if (c.id !== cellId) return c;
+          affectedNodeIds = (c.nodes || []).map((n) => n.id);
           const resetNodes = (c.nodes || []).map((n) => ({
             ...n,
             data: {
@@ -993,6 +1909,49 @@ export const jobStore = {
         };
       }),
     };
+    if (affectedNodeIds.length > 0) {
+      telemetryStore.clearNodes(affectedNodeIds);
+    }
+    saveState(state);
+    notify();
+  },
+
+  resetAllCellsStatus(jobId: string): void {
+    let affectedNodeIds: string[] = [];
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) => {
+          (c.nodes || []).forEach((n) => affectedNodeIds.push(n.id));
+          const resetNodes = (c.nodes || []).map((n) => ({
+            ...n,
+            data: {
+              ...n.data,
+              status: undefined,
+              metrics: undefined,
+            },
+          }));
+          return {
+            ...c,
+            status: "idle" as CellExecutionStatus,
+            metrics: undefined,
+            logs: undefined,
+            showMetricsPanel: false,
+            nodes: resetNodes,
+          };
+        });
+        const activeCellObj = updatedCells.find((c) => c.id === j.activeCellId);
+        return {
+          ...j,
+          cells: updatedCells,
+          nodes: activeCellObj ? activeCellObj.nodes : j.nodes,
+        };
+      }),
+    };
+    if (affectedNodeIds.length > 0) {
+      telemetryStore.clearNodes(affectedNodeIds);
+    }
     saveState(state);
     notify();
   },
@@ -1073,10 +2032,27 @@ export const jobStore = {
       ...state,
       jobs: state.jobs.map((j) => {
         if (j.id !== jobId) return j;
-        const targetCell = (j.cells || []).find((c) => c.id === cellId);
+        const updatedCells = (j.cells || []).map((c) => {
+          if (c.id !== cellId) {
+            return {
+              ...c,
+              nodes: (c.nodes || []).map(({ selected, dragging, measured, ...n }: any) => ({
+                ...n,
+                selected: false,
+              })),
+              edges: (c.edges || []).map(({ selected, ...e }: any) => ({
+                ...e,
+                selected: false,
+              })),
+            };
+          }
+          return c;
+        });
+        const targetCell = updatedCells.find((c) => c.id === cellId);
         return {
           ...j,
           activeCellId: cellId,
+          cells: updatedCells,
           nodes: targetCell ? targetCell.nodes : j.nodes,
           edges: targetCell ? targetCell.edges : j.edges,
         };
@@ -1093,19 +2069,45 @@ export const jobStore = {
     edges: Edge[],
     viewport?: { x: number; y: number; zoom: number }
   ): void {
+    takeSnapshot(jobId);
+    // Assegura que todos os nós tenham data.cellId registrado e higieniza arestas órfãs e propriedades efêmeras
+    const safeNodes = (nodes || []).map((n) => {
+      const sanitized = sanitizeNode(n);
+      return {
+        ...sanitized,
+        data: {
+          ...sanitized.data,
+          cellId,
+        },
+      };
+    });
+    const validNodeIds = new Set(safeNodes.map((n) => n.id));
+    const safeEdges = (edges || [])
+      .filter((e) => validNodeIds.has(e.source) && validNodeIds.has(e.target))
+      .map((e) => {
+        const sanitized = sanitizeEdge(e);
+        return {
+          ...sanitized,
+          data: {
+            ...sanitized.data,
+            cellId,
+          },
+        };
+      });
+
     state = {
       ...state,
       jobs: state.jobs.map((j) => {
         if (j.id !== jobId) return j;
         const updatedCells = (j.cells || []).map((c) =>
-          c.id === cellId ? { ...c, nodes, edges, viewport } : c
+          c.id === cellId ? { ...c, nodes: safeNodes, edges: safeEdges, viewport } : c
         );
         const isActive = j.activeCellId === cellId;
         return {
           ...j,
           cells: updatedCells,
-          nodes: isActive ? nodes : j.nodes,
-          edges: isActive ? edges : j.edges,
+          nodes: isActive ? safeNodes : j.nodes,
+          edges: isActive ? safeEdges : j.edges,
           viewport: isActive ? viewport : j.viewport,
           updatedAt: new Date().toISOString(),
         };
@@ -1203,15 +2205,38 @@ export const jobStore = {
     const name = imported.name || rawJob.name || "Job Importado";
     const defaultFolderId = state.folders.find((f) => f.parentId === null)?.id ?? "folder-root";
     const folderId = targetFolderId || rawJob.folderId || defaultFolderId;
-    const nodes = imported.nodes || rawJob.nodes || [];
-    const edges = imported.edges || rawJob.edges || [];
+    const schemaVersion = (imported as any).schemaVersion || (rawJob as any).schemaVersion || "";
+    const isV2OrHigher = Boolean(
+      schemaVersion && (schemaVersion.includes("v2") || schemaVersion >= "rdf.job/v2")
+    );
+    const rawNodes = imported.nodes || rawJob.nodes || [];
+    const normalizedNodes = rawNodes.map(inferAndNormalizeNode);
+    let edges = imported.edges || rawJob.edges || [];
+    if (!isV2OrHigher && edges.length === 0 && normalizedNodes.length > 0) {
+      edges = inferPipelineEdges(normalizedNodes);
+    }
+
     const nodeSchemas = imported.nodeSchemas || rawJob.nodeSchemas || {};
     const environment = imported.environment || rawJob.environment || "dev";
     const viewport = imported.viewport || rawJob.viewport;
 
+    const rawCells = (rawJob as any).cells;
     const importedCells: CanvasCellData[] =
-      Array.isArray((rawJob as any).cells) && (rawJob as any).cells.length > 0
-        ? (rawJob as any).cells
+      Array.isArray(rawCells) && rawCells.length > 0
+        ? rawCells.map((c: CanvasCellData) => {
+            const normC = (c.nodes || []).map(inferAndNormalizeNode);
+            const edgeC =
+              c.edges && c.edges.length > 0
+                ? c.edges
+                : isV2OrHigher
+                ? []
+                : inferPipelineEdges(normC);
+            return {
+              ...c,
+              nodes: normC,
+              edges: edgeC,
+            };
+          })
         : [
             {
               id: "canvas-cell-01",
@@ -1220,14 +2245,28 @@ export const jobStore = {
               order: 1,
               preconditions: [],
               preconditionOperator: "AND",
-              nodes,
-              edges,
+              nodes: normalizedNodes,
+              edges: edges,
               viewport,
               nodeSchemas,
               status: "idle",
             },
           ];
     const activeCellId = (rawJob as any).activeCellId || importedCells[0]?.id || "canvas-cell-01";
+    const activeCell = importedCells.find((c) => c.id === activeCellId) || importedCells[0];
+
+    // Se o payload contiver conexões migradas, importa para o repositório global
+    if (Array.isArray((imported as any).connections)) {
+      (imported as any).connections.forEach((conn: any) => {
+        if (!state.connections.some((c) => c.id === conn.id || c.name === conn.name)) {
+          state.connections.push({
+            ...conn,
+            createdAt: conn.createdAt || new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      });
+    }
 
     // Create new job with fresh ID to prevent collision
     const newId = `job-${Date.now()}`;
@@ -1235,8 +2274,8 @@ export const jobStore = {
       id: newId,
       name,
       folderId,
-      nodes,
-      edges,
+      nodes: activeCell ? activeCell.nodes : normalizedNodes,
+      edges: activeCell ? activeCell.edges : edges,
       cells: importedCells,
       activeCellId,
       nodeSchemas,
@@ -1406,7 +2445,15 @@ export const jobStore = {
 
   saveQuery(q: Omit<QueryEntry, "id" | "createdAt" | "updatedAt" | "usageCount">): QueryEntry {
     const now = new Date().toISOString();
-    const entry: QueryEntry = { ...q, id: `qry-${Date.now()}`, usageCount: 0, createdAt: now, updatedAt: now };
+    const entry: QueryEntry = {
+      ...q,
+      tags: Array.isArray(q.tags) ? q.tags : [],
+      schema: Array.isArray(q.schema) ? q.schema : [],
+      id: `qry-${Date.now()}`,
+      usageCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
     state = { ...state, queryBank: [...state.queryBank, entry] };
     saveState(state);
     notify();
@@ -1416,9 +2463,13 @@ export const jobStore = {
   updateQuery(qId: string, updates: Partial<Omit<QueryEntry, "id" | "createdAt">>): void {
     state = {
       ...state,
-      queryBank: state.queryBank.map((q) =>
-        q.id === qId ? { ...q, ...updates, updatedAt: new Date().toISOString() } : q
-      ),
+      queryBank: state.queryBank.map((q) => {
+        if (q.id !== qId) return q;
+        const updated = { ...q, ...updates, updatedAt: new Date().toISOString() };
+        if (updates.tags !== undefined) updated.tags = Array.isArray(updates.tags) ? updates.tags : [];
+        if (updates.schema !== undefined) updated.schema = Array.isArray(updates.schema) ? updates.schema : [];
+        return updated;
+      }),
     };
     saveState(state);
     notify();
@@ -1452,4 +2503,33 @@ export const jobStore = {
       return true;
     });
   },
+
+  getWorkspaceInfo(): WorkspaceInfo | null {
+    return currentWorkspace;
+  },
+
+  async hydrateFromWorkspace(): Promise<{ success: boolean; workspace?: WorkspaceInfo }> {
+    return hydrateFromActiveWorkspace();
+  },
+
+  updateCellCode(jobId: string, cellId: string, codeSnippet: string): void {
+    this.updateCell(jobId, cellId, { codeSnippet });
+  },
+
+  isPythonCellsEnabled(): boolean {
+    try {
+      const val = localStorage.getItem("cellflow_enable_python_cells");
+      return val === null ? true : val === "true";
+    } catch (_) {
+      return true;
+    }
+  },
+
+  setPythonCellsEnabled(enabled: boolean): void {
+    try {
+      localStorage.setItem("cellflow_enable_python_cells", enabled ? "true" : "false");
+    } catch (_) {}
+    notify();
+  },
 };
+

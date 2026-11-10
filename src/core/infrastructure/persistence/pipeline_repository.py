@@ -42,7 +42,18 @@ class SqlAlchemyPipelineRepository:
             )
             self.session.add(model)
         else:
-            model.name = draft.name
+            if model.name != draft.name:
+                existing_collision = (
+                    self.session.query(PipelineDraftModel)
+                    .filter(
+                        PipelineDraftModel.project_id == model.project_id,
+                        PipelineDraftModel.name == draft.name,
+                        PipelineDraftModel.id != model.id,
+                    )
+                    .first()
+                )
+                if existing_collision is None:
+                    model.name = draft.name
             model.description = draft.description
             model.revision = draft.revision
             model.definition_json = canonical_dict

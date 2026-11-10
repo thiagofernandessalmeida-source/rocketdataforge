@@ -60,7 +60,7 @@ DATABASE_SOURCE = ComponentDefinition(
         "properties": {
             "connection_ref": {"type": "string", "description": "Nome da conexão registrada"},
             "query": {"type": "string", "description": "Consulta SQL de leitura"},
-            "fetch_size": {"type": "integer", "default": 10000}
+            "fetch_size": {"type": "integer", "default": 10000, "description": "Quantidade de registros recuperados por fetch de cursor (Fetch Size)"}
         }
     },
     capabilities=ComponentCapability(
@@ -113,7 +113,8 @@ DUCKDB_SOURCE = ComponentDefinition(
         "properties": {
             "database_path": {"type": "string", "default": ":memory:", "description": "Caminho do banco DuckDB ou :memory:"},
             "query": {"type": "string", "description": "Consulta SQL analítica"},
-            "read_only": {"type": "boolean", "default": True}
+            "read_only": {"type": "boolean", "default": True},
+            "fetch_size": {"type": "integer", "default": 10000, "description": "Quantidade de registros recuperados por fetch de cursor (Fetch Size)"}
         }
     },
     capabilities=ComponentCapability(
@@ -130,7 +131,9 @@ DUCKDB_TARGET = ComponentDefinition(
     category="target",
     description="Grava registros em banco de dados DuckDB local ou arquivo persistido com criação automática.",
     ports=[
-        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET)
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET),
+        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, required=False, description="Fluxo pass-through de registros gravados"),
+        PortDefinition(name="reject", direction=PortDirection.OUTPUT, type=PortType.REJECT, required=False, description="Registros rejeitados")
     ],
     config_schema={
         "type": "object",
@@ -139,7 +142,9 @@ DUCKDB_TARGET = ComponentDefinition(
             "database_path": {"type": "string", "default": "data/output.duckdb"},
             "table": {"type": "string"},
             "table_action": {"type": "string", "enum": ["none", "drop_create", "create_if_not_exists", "drop_if_exists_create", "truncate", "delete_all"], "default": "none"},
-            "data_action": {"type": "string", "enum": ["insert", "update", "upsert", "update_or_insert", "delete"], "default": "insert"}
+            "data_action": {"type": "string", "enum": ["insert", "update", "upsert", "update_or_insert", "delete"], "default": "insert"},
+            "use_batch_mode": {"type": "boolean", "default": True, "description": "Ativar escrita em lotes particionados (Batch Mode)"},
+            "batch_size": {"type": "integer", "default": 10000, "description": "Tamanho do lote para escrita particionada (Batch Size)"}
         }
     },
     capabilities=ComponentCapability(supports_bulk_write=True)
@@ -195,17 +200,64 @@ FILTER_TRANSFORM = ComponentDefinition(
     version=SemanticVersion(1, 0, 0),
     name="Filter",
     category="transform",
-    description="Filtra registros a partir de uma expressão booleana.",
+    description="Filtra registros a partir de predicados lógicos ou expressão booleana com suporte a porta reject.",
     ports=[
         PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET),
-        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, description="Registros aprovados"),
-        PortDefinition(name="reject", direction=PortDirection.OUTPUT, type=PortType.REJECT, required=False, description="Registros reprovados")
+        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, description="Registros aprovados (Output)"),
+        PortDefinition(name="reject", direction=PortDirection.OUTPUT, type=PortType.REJECT, required=False, description="Registros reprovados (Reject)")
     ],
     config_schema={
         "type": "object",
-        "required": ["expression"],
         "properties": {
-            "expression": {"type": "string", "description": "Expressão booleana (ex: status == 'ACTIVE')"}
+            "logical_operator": {"type": "string", "enum": ["AND", "OR"], "default": "AND"},
+            "conditions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["column", "operator"],
+                    "properties": {
+                        "column": {"type": "string"},
+                        "operator": {"type": "string", "enum": ["==", "!=", ">", "<", ">=", "<=", "LIKE", "NOT LIKE", "IN", "NOT IN", "IS NULL", "IS NOT NULL"]},
+                        "value": {}
+                    }
+                }
+            },
+            "expression": {"type": "string", "description": "Expressão booleana livre opcional"}
+        }
+    }
+)
+
+AGGREGATE_TRANSFORM = ComponentDefinition(
+    type_id="core.aggregate",
+    version=SemanticVersion(1, 0, 0),
+    name="Aggregate",
+    category="transform",
+    description="Agrupa registros e calcula funções analíticas (COUNT, SUM, AVG, MIN, MAX, STRING_AGG) via GROUP BY.",
+    ports=[
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET),
+        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, description="Registros agregados")
+    ],
+    config_schema={
+        "type": "object",
+        "properties": {
+            "group_by": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Colunas de agrupamento (GROUP BY)"
+            },
+            "aggregations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["column", "function"],
+                    "properties": {
+                        "column": {"type": "string"},
+                        "function": {"type": "string", "enum": ["COUNT", "COUNT_DISTINCT", "SUM", "AVG", "MIN", "MAX", "FIRST", "LAST", "STRING_AGG"]},
+                        "alias": {"type": "string"},
+                        "delimiter": {"type": "string", "default": ", "}
+                    }
+                }
+            }
         }
     }
 )
@@ -237,9 +289,11 @@ DATABASE_TARGET = ComponentDefinition(
     version=SemanticVersion(1, 0, 0),
     name="Database Target",
     category="target",
-    description="Grava dados em banco relacional (PostgreSQL, MySQL, Oracle, etc.) com ações de tabela e dados no padrão Talend.",
+    description="Grava dados em banco relacional (PostgreSQL, MySQL, Oracle, etc.) com ações avançadas de tabela e dados.",
     ports=[
-        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET)
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET),
+        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, required=False, description="Fluxo pass-through de dados gravados com sucesso"),
+        PortDefinition(name="reject", direction=PortDirection.OUTPUT, type=PortType.REJECT, required=False, description="Linhas rejeitadas ou que falharam na gravação")
     ],
     config_schema={
         "type": "object",
@@ -249,7 +303,8 @@ DATABASE_TARGET = ComponentDefinition(
             "table": {"type": "string"},
             "table_action": {"type": "string", "enum": ["none", "drop_create", "create_if_not_exists", "drop_if_exists_create", "truncate", "delete_all"], "default": "none"},
             "data_action": {"type": "string", "enum": ["insert", "update", "upsert", "update_or_insert", "delete"], "default": "insert"},
-            "batch_size": {"type": "integer", "default": 10000}
+            "use_batch_mode": {"type": "boolean", "default": True, "description": "Ativar inserção/atualização agrupada em lote (Batch Mode)"},
+            "batch_size": {"type": "integer", "default": 10000, "description": "Quantidade de registros por transação/lote de escrita com commit (Batch Size)"}
         }
     },
     capabilities=ComponentCapability(supports_bulk_write=True)
@@ -262,7 +317,9 @@ FILE_TARGET = ComponentDefinition(
     category="target",
     description="Grava dados em arquivos locais (Parquet, CSV, JSON).",
     ports=[
-        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET)
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET),
+        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, required=False, description="Fluxo pass-through de arquivos gerados"),
+        PortDefinition(name="reject", direction=PortDirection.OUTPUT, type=PortType.REJECT, required=False, description="Linhas rejeitadas")
     ],
     config_schema={
         "type": "object",
@@ -293,7 +350,8 @@ SCYLLA_SOURCE = ComponentDefinition(
             "connection_ref": {"type": "string"},
             "query": {"type": "string", "description": "Consulta CQL (SELECT ...)"},
             "table": {"type": "string", "description": "Nome da tabela (caso query não informada)"},
-            "keyspace": {"type": "string"}
+            "keyspace": {"type": "string"},
+            "fetch_size": {"type": "integer", "default": 5000, "description": "Quantidade de registros por página CQL (Fetch Size)"}
         }
     },
     capabilities=ComponentCapability(supports_filter_pushdown=True, supports_chunked_read=True)
@@ -306,7 +364,9 @@ SCYLLA_TARGET = ComponentDefinition(
     category="target",
     description="Grava registros em alta performance no ScyllaDB ou Cassandra via batches CQL.",
     ports=[
-        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET)
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET),
+        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, required=False, description="Fluxo pass-through de dados"),
+        PortDefinition(name="reject", direction=PortDirection.OUTPUT, type=PortType.REJECT, required=False, description="Linhas rejeitadas")
     ],
     config_schema={
         "type": "object",
@@ -350,7 +410,9 @@ KAFKA_TARGET = ComponentDefinition(
     category="target",
     description="Produz e publica lotes de eventos serializados em JSON em tópicos Kafka.",
     ports=[
-        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET)
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET),
+        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, required=False, description="Fluxo pass-through de dados"),
+        PortDefinition(name="reject", direction=PortDirection.OUTPUT, type=PortType.REJECT, required=False, description="Linhas rejeitadas")
     ],
     config_schema={
         "type": "object",
@@ -394,7 +456,9 @@ AWS_SQS_TARGET = ComponentDefinition(
     category="target",
     description="Enfileira registros como mensagens em lotes em filas AWS SQS.",
     ports=[
-        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET)
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET),
+        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, required=False, description="Fluxo pass-through de dados"),
+        PortDefinition(name="reject", direction=PortDirection.OUTPUT, type=PortType.REJECT, required=False, description="Linhas rejeitadas")
     ],
     config_schema={
         "type": "object",
@@ -415,7 +479,9 @@ AWS_SNS_TARGET = ComponentDefinition(
     category="target",
     description="Dispara notificações e publica eventos em tópicos AWS SNS Pub/Sub.",
     ports=[
-        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET)
+        PortDefinition(name="input", direction=PortDirection.INPUT, type=PortType.DATASET),
+        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, required=False, description="Fluxo pass-through de dados"),
+        PortDefinition(name="reject", direction=PortDirection.OUTPUT, type=PortType.REJECT, required=False, description="Linhas rejeitadas")
     ],
     config_schema={
         "type": "object",
@@ -460,6 +526,7 @@ CATALOG_COMPONENTS: List[ComponentDefinition] = [
     TMAP_TRANSFORM,
     SELECT_TRANSFORM,
     FILTER_TRANSFORM,
+    AGGREGATE_TRANSFORM,
     JOIN_TRANSFORM,
     DATABASE_TARGET,
     FILE_TARGET,
@@ -472,6 +539,29 @@ CATALOG_COMPONENTS: List[ComponentDefinition] = [
     AWS_SNS_TARGET,
     MYSQL_AGREEMENTS
 ]
+
+CONTROL_SYNC = ComponentDefinition(
+    type_id="control.sync",
+    version=SemanticVersion(1, 0, 0),
+    name="Sync Barrier (Wait All)",
+    category="control",
+    description="Barreira de sincronização que bloqueia a execução até que todas as ramificações paralelas upstream terminem com sucesso.",
+    ports=[
+        PortDefinition(name="trigger", direction=PortDirection.INPUT, type=PortType.CONTROL, description="Entrada de gatilho/sinalização"),
+        PortDefinition(name="trigger", direction=PortDirection.OUTPUT, type=PortType.CONTROL, required=False, description="Saída de gatilho de liberação"),
+        PortDefinition(name="main", direction=PortDirection.OUTPUT, type=PortType.DATASET, required=False, description="Fluxo vazio para disparar nós a jusante")
+    ],
+    config_schema={
+        "type": "object",
+        "properties": {
+            "mode": {"type": "string", "enum": ["wait_all", "wait_any"], "default": "wait_all"},
+            "timeout_seconds": {"type": "integer", "default": 0, "minimum": 0},
+            "failure_policy": {"type": "string", "enum": ["fail_fast", "wait_all_and_fail", "ignore_and_continue"], "default": "fail_fast"}
+        }
+    }
+)
+
+CATALOG_COMPONENTS.append(CONTROL_SYNC)
 
 
 def get_component_definition(type_id: str) -> ComponentDefinition:

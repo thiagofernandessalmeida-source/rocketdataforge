@@ -29,7 +29,7 @@
 
 ---
 
-## 3. Ações de Tabela e Dados no Padrão Talend
+## 3. Ações de Tabela e Dados no Padrão Studio
 1. No seu nó de saída (ex: `tPostgresqlOutput` ou `tDuckDbOutput`), selecione:
    - **Ação na Tabela:** `Truncar Tabela (Truncate)` ou `Deletar e Criar Tabela (Drop and Create)`.
    - **Ação nos Dados:** `Inserir (Insert)` ou `Inserir ou Atualizar (Upsert)`.

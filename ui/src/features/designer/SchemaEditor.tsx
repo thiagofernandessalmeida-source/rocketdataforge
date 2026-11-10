@@ -3,9 +3,19 @@ import {
   X, Plus, Trash2, Loader2, Wand2, ChevronUp, ChevronDown,
   Key, AlertCircle, Check, Table2, ArrowRight, ArrowLeft,
   ChevronsRight, ChevronsLeft, RefreshCw, Search, ArrowDownToLine,
-  ArrowUpFromLine, Layers, HelpCircle, CheckSquare, Square
+  ArrowUpFromLine, Layers, HelpCircle, CheckSquare, Square,
+  Copy, Clipboard, Sparkles, GitBranch, Shield
 } from "lucide-react";
 import { SchemaColumn, SchemaColumnType } from "../../store/jobStore";
+import {
+  copyColumnsToClipboard,
+  readColumnsFromClipboard,
+  resolveSchemaCollisions,
+  serializeSchemaColumns,
+  deserializeSchemaColumns,
+  SCHEMA_MIME_TYPE,
+} from "../../utils/schemaClipboard";
+import { ImportSchemaModal } from "./ImportSchemaModal";
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -23,7 +33,17 @@ export interface SchemaEditorProps {
   onOpenModal?: () => void;
 }
 
+export const MASKING_OPTIONS = [
+  { value: "NONE", label: "Nenhum (Sem Máscara)" },
+  { value: "MASK_HASH", label: "Hash SHA-256 (com Salt)" },
+  { value: "MASK_EMAIL", label: "E-mail (j***@domain.com)" },
+  { value: "MASK_CPF_CNPJ", label: "CPF / CNPJ (123.***.***-00)" },
+  { value: "MASK_NULL", label: "Definir como Nulo (NULL)" },
+  { value: "MASK_REDACT", label: "Redigir ([REDACTED])" },
+];
+
 const COLUMN_TYPES: SchemaColumnType[] = [
+
   "String", "Integer", "Long", "Float", "Double", "Decimal",
   "Boolean", "Date", "DateTime", "Timestamp", "Time",
   "Bytes", "JSON", "Array", "Object", "Unknown",
@@ -172,7 +192,50 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
     setSelectedComponentKeys(new Set());
   };
 
-  // ─── Two-Container Transfer Operations (Talend Style) ───────
+  // ─── Clipboard & Import Modal ───────────────────────────────
+  const [showImportModal, setShowImportModal] = useState(false);
+
+  const handleCopyColumns = async () => {
+    const colsToCopy =
+      selectedComponentKeys.size > 0
+        ? schema.filter((c) => selectedComponentKeys.has(c.id))
+        : schema;
+    if (colsToCopy.length === 0) return;
+    await copyColumnsToClipboard(colsToCopy);
+    setInferStatus({
+      type: "success",
+      message: `${colsToCopy.length} coluna(s) copiada(s) para a área de transferência.`,
+    });
+    setTimeout(() => setInferStatus(null), 3000);
+  };
+
+  const handlePasteColumns = async () => {
+    const pasted = await readColumnsFromClipboard();
+    if (pasted && pasted.length > 0) {
+      const merged = resolveSchemaCollisions(schema, pasted, "rename");
+      onChange(merged);
+      setInferStatus({
+        type: "success",
+        message: `${pasted.length} coluna(s) colada(s) com novos identificadores.`,
+      });
+      setTimeout(() => setInferStatus(null), 3000);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
+    if (tag === "input" || tag === "textarea") return;
+
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
+      e.preventDefault();
+      handleCopyColumns();
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
+      e.preventDefault();
+      handlePasteColumns();
+    }
+  };
+
+  // ─── Two-Container Transfer Operations ───────
 
   // >> Import all columns from upstream (replace or sync)
   const handleImportAll = () => {
@@ -271,7 +334,7 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
   // ─────────────────────────────────────────────────────────────
   if (hasUpstream) {
     return (
-      <div className="schema-two-container">
+      <div className="schema-two-container" tabIndex={0} onKeyDown={handleKeyDown}>
         {/* Top Sync & Info Bar */}
         <div className="schema-flow-bar">
           <div className="schema-flow-info">
@@ -281,6 +344,30 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
             </span>
           </div>
           <div className="schema-flow-actions">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setShowImportModal(true)}
+              title="Importar schema de outro componente do Job"
+            >
+              <Sparkles size={12} /> Importar
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={handleCopyColumns}
+              title="Copiar colunas selecionadas para o clipboard (Ctrl+C)"
+            >
+              <Copy size={12} /> Copiar
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={handlePasteColumns}
+              title="Colar colunas do clipboard (Ctrl+V)"
+            >
+              <Clipboard size={12} /> Colar
+            </button>
             <button
               type="button"
               className="btn btn-secondary schema-sync-btn"
@@ -620,14 +707,81 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
 
                             {/* Column Name */}
                             <td>
-                              <input
-                                className="schema-cell-input name-input"
-                                value={col.name}
-                                placeholder="nome_coluna"
-                                autoFocus={editingCell?.colId === col.id && editingCell.field === "name"}
-                                onChange={(e) => updateColumn(col.id, "name", e.target.value)}
-                                onFocus={() => setEditingCell({ colId: col.id, field: "name" })}
-                              />
+                              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                <input
+                                  className="schema-cell-input name-input"
+                                  value={col.name}
+                                  placeholder="nome_coluna"
+                                  autoFocus={editingCell?.colId === col.id && editingCell.field === "name"}
+                                  onChange={(e) => updateColumn(col.id, "name", e.target.value)}
+                                  onFocus={() => setEditingCell({ colId: col.id, field: "name" })}
+                                />
+                                {col.masking && col.masking !== "NONE" && (
+                                  <span
+                                    className="schema-mask-badge"
+                                    title={`Proteção Ativa: ${col.masking}`}
+                                    style={{
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: 2,
+                                      background: "rgba(99, 102, 241, 0.15)",
+                                      color: "#818cf8",
+                                      borderRadius: 4,
+                                      padding: "1px 5px",
+                                      fontSize: "0.65rem",
+                                      fontWeight: 600,
+                                      whiteSpace: "nowrap",
+                                      border: "1px solid rgba(99, 102, 241, 0.3)"
+                                    }}
+                                  >
+                                    <Shield size={9} />
+                                    {col.masking.replace("MASK_", "")}
+                                  </span>
+                                )}
+                                {col.origin && col.origin.length > 0 && (
+                                  <span
+                                    className="schema-origin-badge"
+                                    title={`Origem: ${col.origin.join(", ")}`}
+                                    style={{
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      background: "rgba(16, 185, 129, 0.15)",
+                                      color: "#34d399",
+                                      borderRadius: 4,
+                                      padding: "1px 5px",
+                                      fontSize: "0.62rem",
+                                      fontWeight: 500,
+                                      whiteSpace: "nowrap",
+                                      border: "1px solid rgba(16, 185, 129, 0.3)",
+                                      maxWidth: 160,
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                    }}
+                                  >
+                                    {col.origin[0].split(".").slice(-2).join(".")}
+                                    {col.origin.length > 1 ? ` (+${col.origin.length - 1})` : ""}
+                                  </span>
+                                )}
+                                {col.computed && (
+                                  <span
+                                    className="schema-computed-badge"
+                                    title="Coluna calculada / computada"
+                                    style={{
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      background: "rgba(139, 92, 246, 0.15)",
+                                      color: "#a78bfa",
+                                      borderRadius: 4,
+                                      padding: "1px 5px",
+                                      fontSize: "0.62rem",
+                                      fontWeight: 500,
+                                      border: "1px solid rgba(139, 92, 246, 0.3)",
+                                    }}
+                                  >
+                                    calc
+                                  </span>
+                                )}
+                              </div>
                             </td>
 
                             {/* Type */}
@@ -768,6 +922,34 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
                                       onChange={(e) => updateColumn(col.id, "comment", e.target.value)}
                                     />
                                   </div>
+                                  <div className="schema-adv-group" style={{ borderLeft: "2px solid #6366f1", paddingLeft: 8 }}>
+                                    <label style={{ display: "flex", alignItems: "center", gap: 4, color: "#818cf8", fontWeight: 500 }}>
+                                      <Shield size={12} />
+                                      Proteção LGPD
+                                    </label>
+                                    <select
+                                      className="schema-cell-select masking-select"
+                                      style={{ width: 170 }}
+                                      value={col.masking || "NONE"}
+                                      onChange={(e) => updateColumn(col.id, "masking", e.target.value === "NONE" ? undefined : e.target.value)}
+                                    >
+                                      {MASKING_OPTIONS.map((opt) => (
+                                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                      ))}
+                                    </select>
+                                    {col.masking === "MASK_HASH" && (
+                                      <>
+                                        <label style={{ color: "#a5b4fc" }}>Salt:</label>
+                                        <input
+                                          className="schema-cell-input masking-salt-input"
+                                          style={{ width: 110 }}
+                                          value={col.maskingSalt ?? ""}
+                                          placeholder="Salt secreto..."
+                                          onChange={(e) => updateColumn(col.id, "maskingSalt", e.target.value)}
+                                        />
+                                      </>
+                                    )}
+                                  </div>
                                 </div>
                               </td>
                             </tr>
@@ -790,6 +972,14 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
             </div>
           </div>
         </div>
+
+        <ImportSchemaModal
+          isOpen={showImportModal}
+          onClose={() => setShowImportModal(false)}
+          onImport={(imported) => onChange(imported)}
+          currentSchema={schema}
+          title="Importar Schema"
+        />
       </div>
     );
   }
@@ -798,7 +988,7 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
   // RENDER: SINGLE CONTAINER (When No Upstream Node is Available)
   // ─────────────────────────────────────────────────────────────
   return (
-    <div className="schema-editor">
+    <div className="schema-editor" tabIndex={0} onKeyDown={handleKeyDown}>
       {/* Header */}
       <div className="schema-editor-header">
         <div className="schema-editor-title">
@@ -807,6 +997,30 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
           <span className="schema-col-count">{schema.length}</span>
         </div>
         <div className="schema-editor-actions">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => setShowImportModal(true)}
+            title="Importar schema de outro componente"
+          >
+            <Sparkles size={12} /> Importar
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={handleCopyColumns}
+            title="Copiar colunas para área de transferência (Ctrl+C)"
+          >
+            <Copy size={12} /> Copiar
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={handlePasteColumns}
+            title="Colar colunas da área de transferência (Ctrl+V)"
+          >
+            <Clipboard size={12} /> Colar
+          </button>
           {canInfer && onInferRequest && (
             <button
               type="button"
@@ -919,14 +1133,81 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
 
                     {/* Column Name */}
                     <td>
-                      <input
-                        className="schema-cell-input name-input"
-                        value={col.name}
-                        placeholder="nome_coluna"
-                        autoFocus={editingCell?.colId === col.id && editingCell.field === "name"}
-                        onChange={(e) => updateColumn(col.id, "name", e.target.value)}
-                        onFocus={() => setEditingCell({ colId: col.id, field: "name" })}
-                      />
+                      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <input
+                          className="schema-cell-input name-input"
+                          value={col.name}
+                          placeholder="nome_coluna"
+                          autoFocus={editingCell?.colId === col.id && editingCell.field === "name"}
+                          onChange={(e) => updateColumn(col.id, "name", e.target.value)}
+                          onFocus={() => setEditingCell({ colId: col.id, field: "name" })}
+                        />
+                        {col.masking && col.masking !== "NONE" && (
+                          <span
+                            className="schema-mask-badge"
+                            title={`Proteção Ativa: ${col.masking}`}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 2,
+                              background: "rgba(99, 102, 241, 0.15)",
+                              color: "#818cf8",
+                              borderRadius: 4,
+                              padding: "1px 5px",
+                              fontSize: "0.65rem",
+                              fontWeight: 600,
+                              whiteSpace: "nowrap",
+                              border: "1px solid rgba(99, 102, 241, 0.3)"
+                            }}
+                          >
+                            <Shield size={9} />
+                            {col.masking.replace("MASK_", "")}
+                          </span>
+                        )}
+                        {col.origin && col.origin.length > 0 && (
+                          <span
+                            className="schema-origin-badge"
+                            title={`Origem: ${col.origin.join(", ")}`}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              background: "rgba(16, 185, 129, 0.15)",
+                              color: "#34d399",
+                              borderRadius: 4,
+                              padding: "1px 5px",
+                              fontSize: "0.62rem",
+                              fontWeight: 500,
+                              whiteSpace: "nowrap",
+                              border: "1px solid rgba(16, 185, 129, 0.3)",
+                              maxWidth: 160,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                            }}
+                          >
+                            {col.origin[0].split(".").slice(-2).join(".")}
+                            {col.origin.length > 1 ? ` (+${col.origin.length - 1})` : ""}
+                          </span>
+                        )}
+                        {col.computed && (
+                          <span
+                            className="schema-computed-badge"
+                            title="Coluna calculada / computada"
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              background: "rgba(139, 92, 246, 0.15)",
+                              color: "#a78bfa",
+                              borderRadius: 4,
+                              padding: "1px 5px",
+                              fontSize: "0.62rem",
+                              fontWeight: 500,
+                              border: "1px solid rgba(139, 92, 246, 0.3)",
+                            }}
+                          >
+                            calc
+                          </span>
+                        )}
+                      </div>
                     </td>
 
                     {/* Type */}
@@ -995,14 +1276,31 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
 
                     {/* Actions */}
                     <td>
-                      <button
-                        type="button"
-                        className="icon-btn danger"
-                        onClick={() => removeColumn(col.id)}
-                        title="Remover coluna"
-                      >
-                        <Trash2 size={12} />
-                      </button>
+                      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <button
+                          type="button"
+                          className="icon-btn schema-lineage-btn"
+                          onClick={() => {
+                            window.dispatchEvent(
+                              new CustomEvent("rdf-inspect-lineage", {
+                                detail: { column: col.name }
+                              })
+                            );
+                          }}
+                          title={`Inspecionar Linhagem da Coluna '${col.name}'`}
+                          style={{ color: "#a855f7" }}
+                        >
+                          <GitBranch size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-btn danger"
+                          onClick={() => removeColumn(col.id)}
+                          title="Remover coluna"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
 
@@ -1067,6 +1365,34 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
                               onChange={(e) => updateColumn(col.id, "comment", e.target.value)}
                             />
                           </div>
+                          <div className="schema-adv-group" style={{ borderLeft: "2px solid #6366f1", paddingLeft: 8 }}>
+                            <label style={{ display: "flex", alignItems: "center", gap: 4, color: "#818cf8", fontWeight: 500 }}>
+                              <Shield size={12} />
+                              Proteção LGPD
+                            </label>
+                            <select
+                              className="schema-cell-select masking-select"
+                              style={{ width: 170 }}
+                              value={col.masking || "NONE"}
+                              onChange={(e) => updateColumn(col.id, "masking", e.target.value === "NONE" ? undefined : e.target.value)}
+                            >
+                              {MASKING_OPTIONS.map((opt) => (
+                                <option key={opt.value} value={opt.value}>{opt.label}</option>
+                              ))}
+                            </select>
+                            {col.masking === "MASK_HASH" && (
+                              <>
+                                <label style={{ color: "#a5b4fc" }}>Salt:</label>
+                                <input
+                                  className="schema-cell-input masking-salt-input"
+                                  style={{ width: 110 }}
+                                  value={col.maskingSalt ?? ""}
+                                  placeholder="Salt secreto..."
+                                  onChange={(e) => updateColumn(col.id, "maskingSalt", e.target.value)}
+                                />
+                              </>
+                            )}
+                          </div>
                         </div>
                       </td>
                     </tr>
@@ -1077,6 +1403,14 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
           </table>
         </div>
       )}
+
+      <ImportSchemaModal
+        isOpen={showImportModal}
+        onClose={() => setShowImportModal(false)}
+        onImport={(imported) => onChange(imported)}
+        currentSchema={schema}
+        title="Importar Schema"
+      />
     </div>
   );
 };

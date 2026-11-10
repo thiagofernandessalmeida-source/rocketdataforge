@@ -17,7 +17,18 @@ class SecretResolver:
     """Serviço de resolução de segredos por variáveis de ambiente ou provider local."""
 
     def __init__(self, custom_env: Optional[Dict[str, str]] = None):
-        self._custom_env = custom_env
+        self._custom_env: Dict[str, str] = dict(custom_env) if custom_env is not None else {}
+
+    @property
+    def custom_env(self) -> Dict[str, str]:
+        """Dicionário mutável de variáveis customizadas em memória."""
+        if self._custom_env is None:
+            self._custom_env = {}
+        return self._custom_env
+
+    @custom_env.setter
+    def custom_env(self, value: Optional[Dict[str, str]]) -> None:
+        self._custom_env = dict(value) if value is not None else {}
 
     def resolve(self, secret_ref: SecretReference) -> str:
         """Resolve o valor secreto da referência sob demanda."""
@@ -25,6 +36,15 @@ class SecretResolver:
             raise SecurityViolationError("Argumento deve ser uma instância de SecretReference.")
 
         uri = secret_ref.uri
+
+        # Suporte a segredo vazio / sem autenticação necessária
+        if uri == "secret://empty":
+            return ""
+
+        # Suporte a valor bruto inline seguro
+        if uri.startswith("secret://raw/"):
+            return uri[len("secret://raw/"):]
+
         if uri.startswith("secret://env/"):
             var_name = uri[len("secret://env/"):]
             if not var_name:

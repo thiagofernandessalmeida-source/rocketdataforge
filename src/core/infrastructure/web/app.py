@@ -17,9 +17,12 @@ from src.core.infrastructure.web.routers import (
     git,
     pipelines,
     policies,
+    schedules,
+    tmap,
     versions,
     workspaces,
 )
+
 
 
 def create_app() -> FastAPI:
@@ -77,12 +80,23 @@ def create_app() -> FastAPI:
             content={"error": exc.code or "ERR_DOMAIN", "message": exc.message}
         )
 
+    @app.exception_handler(Exception)
+    async def general_exception_handler(request: Request, exc: Exception):
+        import logging
+        import traceback
+        logging.getLogger("uvicorn.error").error(
+            f"Exceção não tratada na rota {request.url.path}: {exc}\n{traceback.format_exc()}"
+        )
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"error": "ERR_INTERNAL_SERVER_ERROR", "detail": str(exc), "message": str(exc)}
+        )
+
     @app.get("/health", tags=["Health"])
     @app.get("/api/v1/health", tags=["Health"])
     def health_check():
         return {"status": "healthy", "service": "RocketDataForge Control Plane"}
 
-    # Inclusão dos routers com prefixo canônico /api/v1 e sem prefixo para conveniência
     api_routers = [
         workspaces.router,
         connections.router,
@@ -93,13 +107,33 @@ def create_app() -> FastAPI:
         git.router,
         policies.router,
         autodoc.router,
+        tmap.router,
+        schedules.router,
     ]
 
     for r in api_routers:
         app.include_router(r, prefix="/api/v1")
         app.include_router(r)
 
+    @app.on_event("startup")
+    def on_startup():
+        from src.core.infrastructure.scheduler.scheduler_service import SchedulerService
+        try:
+            SchedulerService.get_instance().start()
+        except Exception as e:
+            import logging
+            logging.getLogger("uvicorn.error").warning(f"Scheduler startup warning: {e}")
+
+    @app.on_event("shutdown")
+    def on_shutdown():
+        from src.core.infrastructure.scheduler.scheduler_service import SchedulerService
+        try:
+            SchedulerService.get_instance().shutdown(wait=False)
+        except Exception:
+            pass
+
     return app
+
 
 
 app = create_app()

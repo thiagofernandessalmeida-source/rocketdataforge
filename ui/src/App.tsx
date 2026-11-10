@@ -16,6 +16,7 @@ import { Canvas } from "./features/designer/Canvas";
 import { MultiCanvasContainer } from "./features/designer/cells/MultiCanvasContainer";
 import { PropertyPanel } from "./features/designer/PropertyPanel";
 import { FloatingNodeConfig } from "./features/designer/FloatingNodeConfig";
+import { TMapModal, TMapConfig } from "./features/designer/TMapModal";
 import { ExecutionConsole, ProblemItem } from "./features/execution/ExecutionConsole";
 import { JobRepository } from "./features/repository/JobRepository";
 import { JobTabBar } from "./features/repository/JobTabBar";
@@ -25,8 +26,11 @@ import { QueryBankModal } from "./features/querybank/QueryBankModal";
 import { PolicySimulatorModal } from "./features/security/PolicySimulatorModal";
 import { AutoDocModal } from "./features/autodoc/AutoDocModal";
 import { AboutModal } from "./components/AboutModal";
-import { api } from "./api/client";
+import { WorkspaceModal } from "./features/workspace/WorkspaceModal";
+import { WorkspaceLauncher } from "./features/workspace/WorkspaceLauncher";
+import { api, getBaseApiUrl } from "./api/client";
 import { EXPANDED_CATALOG } from "./catalog/components";
+import { getLayoutedElements, LayoutDirection } from "./features/designer/utils/autoLayout";
 import {
   jobStore,
   JobData,
@@ -36,8 +40,14 @@ import {
   evaluateCellPreconditions,
   detectCellCycles,
   validateParallelCellConsistency,
+  WorkspaceInfo,
+  fetchCurrentWorkspaceInfo,
+  hydrateFromActiveWorkspace,
+  sanitizeNode,
+  sanitizeEdge,
 } from "./store/jobStore";
 import { useJobStore } from "./store/useJobStore";
+import { telemetryStore } from "./store/telemetryStore";
 import {
   CanvasNodeData,
   CompiledPlans,
@@ -357,9 +367,31 @@ export const App: React.FC = () => {
   const [showPolicySimulator, setShowPolicySimulator] = useState(false);
   const [showAutoDoc, setShowAutoDoc] = useState(false);
   const [showAboutModal, setShowAboutModal] = useState(false);
+  const [showWorkspaceModal, setShowWorkspaceModal] = useState(false);
+  const [showLauncher, setShowLauncher] = useState<boolean>(() => {
+    return localStorage.getItem("cellflow_launcher_dont_ask") !== "true";
+  });
+  const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceInfo | null>(null);
   const [floatingNode, setFloatingNode] = useState<Node<CanvasNodeData> | null>(null);
+  const [tmapModalNode, setTmapModalNode] = useState<Node<CanvasNodeData> | null>(null);
+
+  const isTMapNode = useCallback((node: Node<CanvasNodeData> | null) => {
+    if (!node) return false;
+    const ct = node.data?.componentType || "";
+    return ct === "core.tmap" || ct === "transform.tmap";
+  }, []);
+
+  const handleLauncherComplete = useCallback(async (ws: WorkspaceInfo) => {
+    setWorkspaceInfo(ws);
+    setShowLauncher(false);
+    await hydrateFromActiveWorkspace().catch(() => {});
+    const st = jobStore.getState();
+    if (!st.activeTabId && st.jobs.length > 0) {
+      jobStore.setActiveTab(st.jobs[0].id);
+    }
+  }, []);
   
-  // Independent visibility toggles for each panel (Talend style)
+  // Independent visibility toggles for each panel
   const [repoVisible, setRepoVisible] = useState(true);
   const [paletteVisible, setPaletteVisible] = useState(true);
   const [propertiesVisible, setPropertiesVisible] = useState(true);
@@ -369,10 +401,25 @@ export const App: React.FC = () => {
     { branch: string; clean: boolean; commit_hash: string; commit_message: string } | undefined
   >(undefined);
 
-  // ─── Fetch Git Status on Mount ─────────────────────────────
+  // ─── Fetch Workspace Info & Git Status on Mount ────────────
   useEffect(() => {
     api.getGitStatus().then(setGitStatus).catch(() => {});
+    fetchCurrentWorkspaceInfo().then((ws) => {
+      if (ws) setWorkspaceInfo(ws);
+    }).catch(() => {});
+    hydrateFromActiveWorkspace().catch(() => {});
   }, []);
+
+  const handleOpenWorkspaceFolder = useCallback(async () => {
+    try {
+      const clean = (workspaceInfo?.path || "").replace(/^["']|["']$/g, "").trim();
+      await fetch(`${getBaseApiUrl()}/workspaces/local/open-folder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: clean }),
+      });
+    } catch (_) {}
+  }, [workspaceInfo?.path]);
 
   // ─── Toast helpers ─────────────────────────────────────────
   const showToast = useCallback((type: "success" | "error" | "info", message: string) => {
@@ -384,22 +431,7 @@ export const App: React.FC = () => {
   const dismissToast = (id: string) => setToasts((prev) => prev.filter((t) => t.id !== id));
 
   // ─── Init backend (optional, falls back gracefully) ────────
-  const ensureBackend = useCallback(async (): Promise<string> => {
-    let pid = pipelineId;
-
-    // If we already have a pipeline ID, verify it's still valid and sync revision
-    if (pid) {
-      try {
-        const existing = await api.getDraft(pid);
-        if (existing) {
-          setRevision(existing.revision);
-          return pid;
-        }
-      } catch (_) {
-        pid = "";
-      }
-    }
-
+  const ensureBackend = useCallback(async (targetName?: string): Promise<string> => {
     let workspaces = await api.listWorkspaces().catch(() => []);
     let wsId = workspaces[0]?.id;
     if (!wsId) {
@@ -413,22 +445,37 @@ export const App: React.FC = () => {
       projId = newProj.id;
     }
 
-    // Try to reuse an existing pipeline for this job before creating a new one
-    const jobName = activeJobId ? (jobStore.getJob(activeJobId)?.name ?? "New Pipeline") : "New Pipeline";
+    const jobName = targetName || (activeJobId ? (jobStore.getJob(activeJobId)?.name ?? "New Pipeline") : "New Pipeline");
+
+    // If seeking the main job pipeline and we already have a cached pipelineId
+    if (!targetName && pipelineId) {
+      try {
+        const existing = await api.getDraft(pipelineId);
+        if (existing) {
+          setRevision(existing.revision);
+          return pipelineId;
+        }
+      } catch (_) {}
+    }
+
+    // Reuse existing pipeline by name in project if present
     const existingPipelines = await api.listPipelinesForProject(projId).catch(() => [] as any[]);
     const match = existingPipelines.find((p: any) => p.name === jobName);
     if (match) {
-      // Reuse: sync the real revision from server
       const draft = await api.getDraft(match.id);
-      setPipelineId(match.id);
-      setRevision(draft.revision);
+      if (!targetName) {
+        setPipelineId(match.id);
+        setRevision(draft.revision);
+      }
       return match.id;
     }
 
     // No match found: create a new pipeline
     const draft = await api.createPipeline(projId, jobName);
-    setPipelineId(draft.id);
-    setRevision(draft.revision);
+    if (!targetName) {
+      setPipelineId(draft.id);
+      setRevision(draft.revision);
+    }
     return draft.id;
   }, [pipelineId, activeJobId]);
 
@@ -449,6 +496,7 @@ export const App: React.FC = () => {
   // ─── Node Handlers ─────────────────────────────────────────
   const handleUpdateConfig = useCallback(
     (nodeId: string, newConfig: Record<string, any>) => {
+      const targetCellId = (selectedNode?.data as any)?.cellId || (floatingNode?.data as any)?.cellId || activeJob?.activeCellId;
       setSelectedNode((sel) =>
         sel?.id === nodeId ? { ...sel, data: { ...sel.data, config: newConfig } } : sel
       );
@@ -462,23 +510,36 @@ export const App: React.FC = () => {
       );
       if (activeJobId) {
         const j = jobStore.getJob(activeJobId);
-        if (j?.cells) {
-          j.cells.forEach((cell) => {
-            if (cell.nodes.some((n) => n.id === nodeId)) {
+        if (j?.cells && j.cells.length > 0) {
+          let updated = false;
+          if (targetCellId) {
+            const cell = j.cells.find((c) => c.id === targetCellId);
+            if (cell && cell.nodes.some((n) => n.id === nodeId)) {
               const updatedNodes = cell.nodes.map((n) =>
                 n.id === nodeId ? { ...n, data: { ...n.data, config: newConfig } } : n
               );
               jobStore.saveCellGraph(activeJobId, cell.id, updatedNodes, cell.edges);
+              updated = true;
             }
-          });
+          }
+          if (!updated) {
+            const firstCell = j.cells.find((c) => c.nodes.some((n) => n.id === nodeId));
+            if (firstCell) {
+              const updatedNodes = firstCell.nodes.map((n) =>
+                n.id === nodeId ? { ...n, data: { ...n.data, config: newConfig } } : n
+              );
+              jobStore.saveCellGraph(activeJobId, firstCell.id, updatedNodes, firstCell.edges);
+            }
+          }
         }
       }
     },
-    [setNodes, activeJobId]
+    [setNodes, activeJobId, selectedNode, floatingNode, activeJob]
   );
 
   const handleUpdateSchema = useCallback(
     (nodeId: string, schema: SchemaColumn[]) => {
+      const targetCellId = (selectedNode?.data as any)?.cellId || (floatingNode?.data as any)?.cellId || activeJob?.activeCellId;
       setSelectedNode((sel) =>
         sel?.id === nodeId ? { ...sel, data: { ...sel.data, schema } } : sel
       );
@@ -492,45 +553,70 @@ export const App: React.FC = () => {
       );
       if (activeJobId) {
         const j = jobStore.getJob(activeJobId);
-        if (j?.cells) {
-          j.cells.forEach((cell) => {
-            if (cell.nodes.some((n) => n.id === nodeId)) {
+        if (j?.cells && j.cells.length > 0) {
+          let updated = false;
+          if (targetCellId) {
+            const cell = j.cells.find((c) => c.id === targetCellId);
+            if (cell && cell.nodes.some((n) => n.id === nodeId)) {
               const updatedNodes = cell.nodes.map((n) =>
                 n.id === nodeId ? { ...n, data: { ...n.data, schema } } : n
               );
               jobStore.saveCellGraph(activeJobId, cell.id, updatedNodes, cell.edges);
+              updated = true;
             }
-          });
+          }
+          if (!updated) {
+            const firstCell = j.cells.find((c) => c.nodes.some((n) => n.id === nodeId));
+            if (firstCell) {
+              const updatedNodes = firstCell.nodes.map((n) =>
+                n.id === nodeId ? { ...n, data: { ...n.data, schema } } : n
+              );
+              jobStore.saveCellGraph(activeJobId, firstCell.id, updatedNodes, firstCell.edges);
+            }
+          }
         }
       }
     },
-    [setNodes, activeJobId]
+    [setNodes, activeJobId, selectedNode, floatingNode, activeJob]
   );
 
   const handleDeleteNode = useCallback(
     (nodeId: string) => {
+      const targetCellId = (selectedNode?.data as any)?.cellId || (floatingNode?.data as any)?.cellId || activeJob?.activeCellId;
       setNodes((nds) => nds.filter((n) => n.id !== nodeId));
       setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
       setSelectedNode(null);
       if (activeJobId) {
         const j = jobStore.getJob(activeJobId);
-        if (j?.cells) {
-          j.cells.forEach((cell) => {
-            if (cell.nodes.some((n) => n.id === nodeId)) {
+        if (j?.cells && j.cells.length > 0) {
+          let updated = false;
+          if (targetCellId) {
+            const cell = j.cells.find((c) => c.id === targetCellId);
+            if (cell && cell.nodes.some((n) => n.id === nodeId)) {
               const updatedNodes = cell.nodes.filter((n) => n.id !== nodeId);
               const updatedEdges = cell.edges.filter((e) => e.source !== nodeId && e.target !== nodeId);
               jobStore.saveCellGraph(activeJobId, cell.id, updatedNodes, updatedEdges);
+              updated = true;
             }
-          });
+          }
+          if (!updated) {
+            const firstCell = j.cells.find((c) => c.nodes.some((n) => n.id === nodeId));
+            if (firstCell) {
+              const updatedNodes = firstCell.nodes.filter((n) => n.id !== nodeId);
+              const updatedEdges = firstCell.edges.filter((e) => e.source !== nodeId && e.target !== nodeId);
+              jobStore.saveCellGraph(activeJobId, firstCell.id, updatedNodes, updatedEdges);
+            }
+          }
         }
       }
       showToast("info", `Nó '${nodeId}' removido.`);
     },
-    [setNodes, setEdges, showToast, activeJobId]
+    [setNodes, setEdges, showToast, activeJobId, selectedNode, floatingNode, activeJob]
   );
 
   const handleUpdateLabel = useCallback(
     (nodeId: string, newLabel: string) => {
+      const targetCellId = (selectedNode?.data as any)?.cellId || (floatingNode?.data as any)?.cellId || activeJob?.activeCellId;
       setNodes((nds) =>
         nds.map((n) =>
           n.id === nodeId ? { ...n, data: { ...n.data, label: newLabel } } : n
@@ -540,30 +626,56 @@ export const App: React.FC = () => {
       setFloatingNode((prev) => (prev && prev.id === nodeId ? { ...prev, data: { ...prev.data, label: newLabel } } : prev));
       if (activeJobId) {
         const j = jobStore.getJob(activeJobId);
-        if (j?.cells) {
-          j.cells.forEach((cell) => {
-            if (cell.nodes.some((n) => n.id === nodeId)) {
+        if (j?.cells && j.cells.length > 0) {
+          let updated = false;
+          if (targetCellId) {
+            const cell = j.cells.find((c) => c.id === targetCellId);
+            if (cell && cell.nodes.some((n) => n.id === nodeId)) {
               const updatedNodes = cell.nodes.map((n) =>
                 n.id === nodeId ? { ...n, data: { ...n.data, label: newLabel } } : n
               );
               jobStore.saveCellGraph(activeJobId, cell.id, updatedNodes, cell.edges);
+              updated = true;
             }
-          });
+          }
+          if (!updated) {
+            const firstCell = j.cells.find((c) => c.nodes.some((n) => n.id === nodeId));
+            if (firstCell) {
+              const updatedNodes = firstCell.nodes.map((n) =>
+                n.id === nodeId ? { ...n, data: { ...n.data, label: newLabel } } : n
+              );
+              jobStore.saveCellGraph(activeJobId, firstCell.id, updatedNodes, firstCell.edges);
+            }
+          }
         }
       }
     },
-    [setNodes, activeJobId]
+    [setNodes, activeJobId, selectedNode, floatingNode, activeJob]
   );
 
   const handleUpdateNodeId = useCallback(
-    (oldId: string, newId: string) => {
+    (oldId: string, newId: string, specificCellId?: string) => {
       const trimmed = newId.trim();
       if (!trimmed) {
         showToast("error", "O ID do componente não pode ser vazio.");
         return;
       }
       if (trimmed === oldId) return;
-      if (nodes.some((n) => n.id === trimmed)) {
+
+      const targetCellId = specificCellId || (selectedNode?.data as any)?.cellId || (floatingNode?.data as any)?.cellId || activeJob?.activeCellId;
+      const currentJob = activeJobId ? jobStore.getJob(activeJobId) : null;
+      const hasMultiCells = Boolean(currentJob?.cells && currentJob.cells.length > 0);
+
+      // Coleta todos os nós existentes em todas as células do Job para validação estrita de unicidade
+      const allJobNodes = hasMultiCells
+        ? (currentJob?.cells || []).flatMap((c) => c.nodes || [])
+        : nodes;
+
+      // Se já existe outro nó no Job com o novo ID (case-insensitive)
+      const idAlreadyExists = allJobNodes.some(
+        (n) => n.id.toLowerCase() === trimmed.toLowerCase()
+      );
+      if (idAlreadyExists) {
         showToast("error", `Já existe um nó com o ID '${trimmed}'. Escolha um ID único.`);
         return;
       }
@@ -579,28 +691,50 @@ export const App: React.FC = () => {
           return updated;
         })
       );
-      if (activeJobId) {
-        const j = jobStore.getJob(activeJobId);
-        if (j?.cells) {
-          j.cells.forEach((cell) => {
-            if (cell.nodes.some((n) => n.id === oldId)) {
-              const updatedNodes = cell.nodes.map((n) => (n.id === oldId ? { ...n, id: trimmed } : n));
-              const updatedEdges = cell.edges.map((e) => {
-                let updated = { ...e };
-                if (e.source === oldId) updated.source = trimmed;
-                if (e.target === oldId) updated.target = trimmed;
-                return updated;
-              });
-              jobStore.saveCellGraph(activeJobId, cell.id, updatedNodes, updatedEdges);
-            }
-          });
+
+      if (activeJobId && currentJob?.cells && currentJob.cells.length > 0) {
+        let updatedCell = false;
+        // Atualiza APENAS na célula alvo do nó sendo editado
+        if (targetCellId) {
+          const targetCell = currentJob.cells.find((c) => c.id === targetCellId);
+          if (targetCell && targetCell.nodes.some((n) => n.id === oldId)) {
+            const updatedNodes = targetCell.nodes.map((n) =>
+              n.id === oldId ? { ...n, id: trimmed } : n
+            );
+            const updatedEdges = targetCell.edges.map((e) => {
+              let updated = { ...e };
+              if (e.source === oldId) updated.source = trimmed;
+              if (e.target === oldId) updated.target = trimmed;
+              return updated;
+            });
+            jobStore.saveCellGraph(activeJobId, targetCell.id, updatedNodes, updatedEdges);
+            updatedCell = true;
+          }
+        }
+
+        // Se targetCellId não foi informado ou não continha o nó, atualiza apenas na primeira célula encontrada
+        if (!updatedCell) {
+          const firstCell = currentJob.cells.find((c) => c.nodes.some((n) => n.id === oldId));
+          if (firstCell) {
+            const updatedNodes = firstCell.nodes.map((n) =>
+              n.id === oldId ? { ...n, id: trimmed } : n
+            );
+            const updatedEdges = firstCell.edges.map((e) => {
+              let updated = { ...e };
+              if (e.source === oldId) updated.source = trimmed;
+              if (e.target === oldId) updated.target = trimmed;
+              return updated;
+            });
+            jobStore.saveCellGraph(activeJobId, firstCell.id, updatedNodes, updatedEdges);
+          }
         }
       }
+
       setSelectedNode((prev) => (prev && prev.id === oldId ? { ...prev, id: trimmed } : prev));
       setFloatingNode((prev) => (prev && prev.id === oldId ? { ...prev, id: trimmed } : prev));
       showToast("success", `ID do nó atualizado: '${oldId}' -> '${trimmed}'`);
     },
-    [nodes, setNodes, setEdges, showToast, activeJobId]
+    [nodes, setNodes, setEdges, showToast, activeJobId, selectedNode, floatingNode, activeJob]
   );
 
   // ─── Save Job Locally ──────────────────────────────────────
@@ -625,22 +759,96 @@ export const App: React.FC = () => {
   // ─── Keyboard Shortcuts ────────────────────────────────────
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key.toLowerCase() === "s") {
+      const isInput =
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        Boolean((e.target as HTMLElement)?.isContentEditable) ||
+        Boolean((e.target as HTMLElement)?.closest(".monaco-editor"));
+
+      // Salvar Job (Ctrl+S)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
         handleSaveLocal();
+        return;
       }
-      if (e.ctrlKey && e.key.toLowerCase() === "b") {
+
+      // Alternar Repositório (Ctrl+B)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") {
         e.preventDefault();
         setRepoVisible((v) => !v);
+        return;
       }
-      if (e.ctrlKey && e.key.toLowerCase() === "j") {
+
+      // Alternar Console (Ctrl+J)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "j") {
         e.preventDefault();
         setConsoleVisible((v) => !v);
+        return;
+      }
+
+      // Se o foco estiver dentro de um campo de texto / input, não intercepta atalhos de edição
+      if (isInput) return;
+
+      // Desfazer (Ctrl+Z)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
+        e.preventDefault();
+        if (activeJobId && jobStore.canUndo(activeJobId)) {
+          const ok = jobStore.undo(activeJobId);
+          if (ok) showToast("info", "Ação desfeita (Ctrl+Z).");
+        } else {
+          showToast("info", "Nada a desfazer.");
+        }
+        return;
+      }
+
+      // Refazer (Ctrl+Y ou Ctrl+Shift+Z)
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        (e.key.toLowerCase() === "y" || (e.shiftKey && e.key.toLowerCase() === "z"))
+      ) {
+        e.preventDefault();
+        if (activeJobId && jobStore.canRedo(activeJobId)) {
+          const ok = jobStore.redo(activeJobId);
+          if (ok) showToast("info", "Ação refeita (Ctrl+Y).");
+        } else {
+          showToast("info", "Nada a refazer.");
+        }
+        return;
+      }
+
+      // Copiar Nó Selecionado (Ctrl+C)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
+        if (selectedNode && activeJobId) {
+          const targetCellId =
+            (selectedNode.data as any)?.cellId || activeJob?.activeCellId || activeJob?.cells?.[0]?.id;
+          if (targetCellId) {
+            e.preventDefault();
+            jobStore.copyNodes(activeJobId, targetCellId, [selectedNode.id]);
+            showToast("info", `Componente "${selectedNode.data?.label || selectedNode.id}" copiado (Ctrl+C).`);
+          }
+        }
+        return;
+      }
+
+      // Colar Nó(s) (Ctrl+V)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
+        if (activeJobId && jobStore.hasClipboardNodes()) {
+          e.preventDefault();
+          const targetCellId =
+            (selectedNode?.data as any)?.cellId || activeJob?.activeCellId || activeJob?.cells?.[0]?.id;
+          const pasted = jobStore.pasteNodes(activeJobId, targetCellId);
+          if (pasted.length > 0) {
+            setSelectedNode(pasted[0]);
+            showToast("success", `${pasted.length} componente(s) colado(s) com sucesso (Ctrl+V)!`);
+          }
+        }
+        return;
       }
     };
+
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [handleSaveLocal]);
+  }, [handleSaveLocal, activeJobId, activeJob, selectedNode, showToast]);
 
   // ─── Serialize Canvas ──────────────────────────────────────
   const serializeCanvas = (customPipelineId?: string) => {
@@ -674,11 +882,28 @@ export const App: React.FC = () => {
             username: conn.config.username,
             password: conn.config.password,
             sslMode: conn.config.sslMode,
+            ...conn.config,
           };
+          if (conn.type === "duckdb") {
+            if (!cfg.database_path) {
+              cfg.database_path = conn.config.database_path || conn.config.database || ":memory:";
+            }
+          }
+          if ((conn.type === "scylla" || conn.type === "cassandra") && !cfg.keyspace && conn.config.keyspace) {
+            cfg.keyspace = conn.config.keyspace;
+          }
         }
+      }
+      if (cfg.database_path && typeof cfg.database_path === "string") {
+        cfg.database_path = cfg.database_path.trim().replace(/^["']|["']$/g, "");
       }
       if (cfg.path && typeof cfg.path === "string") {
         cfg.path = cfg.path.trim().replace(/^["']|["']$/g, "");
+      }
+      const tableVal = String(cfg.table || cfg.target || "").trim();
+      if (tableVal) {
+        cfg.table = tableVal;
+        cfg.target = tableVal;
       }
       if (n.data.schema && Array.isArray(n.data.schema) && n.data.schema.length > 0) {
         cfg.schema_columns = n.data.schema.map((c: any) => c.name);
@@ -696,10 +921,16 @@ export const App: React.FC = () => {
         (typeof e.label === "string" ? e.label : "") ||
         e.sourceHandle ||
         "main";
+      let toPort = e.targetHandle;
+      if (!toPort) {
+        toPort = e.data?.flowType === "lkp" ? "lookup" : "input";
+      } else if (toPort === "main" && e.data?.flowType === "lkp") {
+        toPort = "lookup";
+      }
       return {
         id: e.id,
         from: `${e.source}.${fromPort}`,
-        to: `${e.target}.${e.targetHandle || "input"}`,
+        to: `${e.target}.${toPort}`,
       };
     });
     const layoutNodes = sourceNodes.map((n) => ({
@@ -899,13 +1130,108 @@ export const App: React.FC = () => {
   // ─── Isolated Cell Execution (Real Backend Execution) ─────
   const handleExecuteCellIsolated = useCallback(
     async (cell: CanvasCellData): Promise<boolean> => {
+      // 1. Tratamento dedicado para células Python (Jupyter / Script)
+      if (cell.cellType === "PYTHON") {
+        try {
+          showToast("info", `Executando célula Python "${cell.name}"...`);
+          setConsoleVisible(true);
+          setConsoleTab("logs");
+
+          // Coleta saídas das células anteriores para State Handoff
+          const currentJob = activeJobId ? jobStore.getJob(activeJobId) : activeJob;
+          const allCells = currentJob?.cells || [];
+          const sharedOutputs: Record<string, any> = {};
+          for (const c of allCells) {
+            if (c.id !== cell.id && c.metrics?.rowsOut !== undefined) {
+              sharedOutputs[c.id] = c.id;
+              sharedOutputs[c.name] = c.name;
+            }
+          }
+
+          const res = await fetch(`${getBaseApiUrl()}/pipelines/cells/python/execute`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              code: cell.codeSnippet || "",
+              cell_id: cell.id,
+              cell_name: cell.name,
+              shared_outputs: sharedOutputs,
+            }),
+          });
+
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || `Erro HTTP ${res.status}`);
+          }
+
+          const data = await res.json();
+          const isSuccess = Boolean(data.success);
+          const rowsOut = data.rows_out || (data.output_preview?.rowCount ?? 0);
+
+          const cellMetrics: CellExecutionMetrics = {
+            durationMs: data.duration_ms ?? 0,
+            rowsIn: 0,
+            rowsOut: rowsOut,
+          };
+
+          const logs: LogEntry[] = [];
+          if (data.stdout) {
+            logs.push({
+              timestamp: new Date().toISOString(),
+              level: "INFO",
+              execution_id: `py-${cell.id}`,
+              node_id: cell.id,
+              message: data.stdout,
+            });
+          }
+          if (data.stderr || data.error) {
+            logs.push({
+              timestamp: new Date().toISOString(),
+              level: "ERROR",
+              execution_id: `py-${cell.id}`,
+              node_id: cell.id,
+              message: data.stderr || data.error,
+            });
+          }
+
+          if (activeJobId) {
+            jobStore.setCellExecutionResults(
+              activeJobId,
+              cell.id,
+              isSuccess ? "success" : "failed",
+              cellMetrics,
+              logs,
+              true
+            );
+          }
+
+          setLogs(logs);
+
+          if (isSuccess) {
+            showToast("success", `Célula Python "${cell.name}" executada com SUCESSO! (${rowsOut} linhas geradas)`);
+          } else {
+            showToast("error", `Célula Python "${cell.name}" falhou: ${data.error || "Verifique os logs"}`);
+          }
+
+          return isSuccess;
+        } catch (err: any) {
+          showToast("error", `Falha ao executar célula Python "${cell.name}": ${err.message}`);
+          if (activeJobId) {
+            jobStore.setCellStatus(activeJobId, cell.id, "failed");
+          }
+          return false;
+        }
+      }
+
+      // 2. Tratamento para células visuais (Canvas)
       if (!cell.nodes || cell.nodes.length === 0) {
         showToast("error", `A célula "${cell.name}" não possui componentes adicionados.`);
         return false;
       }
 
       try {
-        const activePid = await ensureBackend();
+        const cellPipelineName = `${activeJob?.name || "Pipeline"} - ${cell.name}`;
+        const activePid = await ensureBackend(cellPipelineName);
         const currentConnections = jobStore.getState().connections;
 
         const cellSpecNodes = cell.nodes.map((n) => {
@@ -927,11 +1253,28 @@ export const App: React.FC = () => {
                 username: conn.config.username,
                 password: conn.config.password,
                 sslMode: conn.config.sslMode,
+                ...conn.config,
               };
+              if (conn.type === "duckdb") {
+                if (!cfg.database_path) {
+                  cfg.database_path = conn.config.database_path || conn.config.database || ":memory:";
+                }
+              }
+              if ((conn.type === "scylla" || conn.type === "cassandra") && !cfg.keyspace && conn.config.keyspace) {
+                cfg.keyspace = conn.config.keyspace;
+              }
             }
+          }
+          if (cfg.database_path && typeof cfg.database_path === "string") {
+            cfg.database_path = cfg.database_path.trim().replace(/^["']|["']$/g, "");
           }
           if (cfg.path && typeof cfg.path === "string") {
             cfg.path = cfg.path.trim().replace(/^["']|["']$/g, "");
+          }
+          const tableVal = String(cfg.table || cfg.target || "").trim();
+          if (tableVal) {
+            cfg.table = tableVal;
+            cfg.target = tableVal;
           }
           if (n.data.schema && Array.isArray(n.data.schema) && n.data.schema.length > 0) {
             cfg.schema_columns = n.data.schema.map((c: any) => c.name);
@@ -950,10 +1293,16 @@ export const App: React.FC = () => {
             (typeof e.label === "string" ? e.label : "") ||
             e.sourceHandle ||
             "main";
+          let toPort = e.targetHandle;
+          if (!toPort) {
+            toPort = e.data?.flowType === "lkp" ? "lookup" : "input";
+          } else if (toPort === "main" && e.data?.flowType === "lkp") {
+            toPort = "lookup";
+          }
           return {
             id: e.id,
             from: `${e.source}.${fromPort}`,
-            to: `${e.target}.${e.targetHandle || "input"}`,
+            to: `${e.target}.${toPort}`,
           };
         });
 
@@ -963,7 +1312,7 @@ export const App: React.FC = () => {
         }));
 
         const definition = {
-          metadata: { id: activePid, name: `${activeJob?.name || "Pipeline"} - ${cell.name}` },
+          metadata: { id: activePid, name: cellPipelineName },
           spec: {
             nodes: cellSpecNodes,
             edges: cellSpecEdges,
@@ -972,11 +1321,10 @@ export const App: React.FC = () => {
 
         const layout = { viewport: { x: 0, y: 0, zoom: 1.0 }, nodes: cellLayoutNodes };
 
-        let freshRev = revision;
+        let freshRev = 1;
         try {
           const fresh = await api.getDraft(activePid);
           freshRev = fresh.revision;
-          setRevision(fresh.revision);
         } catch (_) {}
 
         const updated = await api.updateDraft(activePid, freshRev, definition, layout);
@@ -987,6 +1335,31 @@ export const App: React.FC = () => {
 
         const execRes = await api.executeVersion(pubVersion.id);
         activeCellExecutionsRef.current.set(cell.id, execRes.execution_id);
+        setConsoleVisible(true);
+        setConsoleTab("metrics");
+
+        // Inicializa estado de execução para feedback visual imediato
+        const initialExec: ExecutionDetail = {
+          execution_id: execRes.execution_id,
+          pipeline_version_id: pubVersion.id,
+          status: "running",
+          attempt: 1,
+          started_at: new Date().toISOString(),
+          tasks: (cell.nodes || []).map((n) => ({
+            node_id: n.id,
+            status: "running",
+            rows_in: 0,
+            rows_out: 0,
+            duration_ms: 0,
+          })),
+        };
+        setExecution(initialExec);
+
+        // Marca nós como queued na store de telemetria
+        if (cell.nodes && cell.nodes.length > 0) {
+          telemetryStore.setNodesQueued(cell.nodes.map((n) => n.id));
+        }
+
         showToast("info", `Executando célula "${cell.name}" no backend...`);
 
         let abortFn: (() => void) | null = null;
@@ -995,26 +1368,46 @@ export const App: React.FC = () => {
         try {
           execResult = await new Promise<{ detail: ExecutionDetail; logs: LogEntry[]; cancelled?: boolean }>(
             (resolve, reject) => {
-              const startTime = Date.now();
+              let consecutivePollErrors = 0;
               const timer = setInterval(async () => {
                 try {
                   const detail = await api.getExecution(execRes.execution_id);
                   const execLogs = await api.getExecutionLogs(execRes.execution_id).catch(() => []);
+                  consecutivePollErrors = 0;
+                  
+                  // Atualiza telemetria em tempo real no console e nós do canvas
+                  setExecution(detail);
+                  if (detail.tasks && detail.tasks.length > 0) {
+                    telemetryStore.batchUpdate(detail.tasks);
+                  }
+                  if (execLogs && execLogs.length > 0) {
+                    setLogs(execLogs);
+                  }
+
                   if (["succeeded", "failed", "cancelled"].includes(detail.status)) {
                     clearInterval(timer);
+                    const cellNodeIds = (cell.nodes || []).map((n) => n.id);
+                    if (detail.status === "failed") {
+                      telemetryStore.finalizeUnfinishedNodes(cellNodeIds, "failed");
+                    } else if (detail.status === "cancelled") {
+                      telemetryStore.finalizeUnfinishedNodes(cellNodeIds, "cancelled");
+                    }
                     resolve({ detail, logs: execLogs, cancelled: detail.status === "cancelled" });
-                  } else if (Date.now() - startTime > 60000) {
-                    clearInterval(timer);
-                    reject(new Error("Tempo limite de execução excedido (60s)."));
                   }
                 } catch (pollErr) {
-                  clearInterval(timer);
-                  reject(pollErr);
+                  consecutivePollErrors++;
+                  // Tolera falhas transitórias de conexão durante consultas pesadas
+                  if (consecutivePollErrors > 20) {
+                    clearInterval(timer);
+                    reject(pollErr);
+                  }
                 }
               }, 350);
 
               abortFn = () => {
                 clearInterval(timer);
+                const cellNodeIds = (cell.nodes || []).map((n) => n.id);
+                telemetryStore.finalizeUnfinishedNodes(cellNodeIds, "cancelled");
                 resolve({
                   detail: {
                     execution_id: execRes.execution_id,
@@ -1081,6 +1474,8 @@ export const App: React.FC = () => {
         if (isSuccess) {
           showToast("success", `Célula "${cell.name}" executada com SUCESSO! (${totalRowsOut} linhas geradas)`);
         } else {
+          setConsoleVisible(true);
+          setConsoleTab("logs");
           showToast("error", `Célula "${cell.name}" falhou durante a execução. Inspecione métricas e logs.`);
         }
 
@@ -1088,9 +1483,64 @@ export const App: React.FC = () => {
       } catch (err: any) {
         console.error(`Erro ao executar célula "${cell.name}":`, err);
         showToast("error", `Falha ao executar célula "${cell.name}": ${err.message}`);
+
+        const errorLog: LogEntry = {
+          timestamp: new Date().toISOString(),
+          level: "ERROR",
+          execution_id: "error",
+          node_id: cell.nodes?.[0]?.id || cell.id,
+          message: `Falha na execução da célula "${cell.name}": ${err.message}`,
+        };
+
+        const errorDetail: ExecutionDetail = {
+          execution_id: `err-${Date.now()}`,
+          pipeline_version_id: "error",
+          status: "failed",
+          attempt: 1,
+          started_at: new Date().toISOString(),
+          finished_at: new Date().toISOString(),
+          tasks: (cell.nodes || []).map((n) => ({
+            node_id: n.id,
+            status: "failed",
+            rows_in: 0,
+            rows_out: 0,
+            duration_ms: 0,
+            error_message: err.message,
+          })),
+        };
+
+        setExecution(errorDetail);
+        setLogs((prev) => [errorLog, ...prev]);
+        setConsoleVisible(true);
+        setConsoleTab("logs");
+
+        const cellNodeIds = (cell.nodes || []).map((n) => n.id);
+        telemetryStore.finalizeUnfinishedNodes(cellNodeIds, "failed", err.message);
+
         if (activeJobId) {
-          jobStore.setCellStatus(activeJobId, cell.id, "failed");
+          const failMetrics: CellExecutionMetrics = {
+            durationMs: 0,
+            rowsIn: 0,
+            rowsOut: 0,
+            tasks: (cell.nodes || []).map((n) => ({
+              node_id: n.id,
+              status: "failed",
+              rows_in: 0,
+              rows_out: 0,
+              duration_ms: 0,
+              error_message: err.message,
+            })),
+          };
+          jobStore.setCellExecutionResults(
+            activeJobId,
+            cell.id,
+            "failed",
+            failMetrics,
+            [errorLog],
+            true
+          );
         }
+
         return false;
       }
     },
@@ -1111,6 +1561,8 @@ export const App: React.FC = () => {
         abortFn();
         activeCellAbortRef.current.delete(cell.id);
       }
+      const cellNodeIds = (cell.nodes || []).map((n) => n.id);
+      telemetryStore.finalizeUnfinishedNodes(cellNodeIds, "cancelled");
       if (activeJobId) {
         jobStore.setCellStatus(activeJobId, cell.id, "cancelled");
       }
@@ -1127,6 +1579,123 @@ export const App: React.FC = () => {
       await handleStopCellIsolated(targetCell);
     }
   }, [activeJob, handleStopCellIsolated]);
+
+  const handleUndo = useCallback(() => {
+    if (!activeJobId) return;
+    if (jobStore.canUndo(activeJobId)) {
+      const ok = jobStore.undo(activeJobId);
+      if (ok) showToast("info", "Ação desfeita com sucesso (Undo).");
+    } else {
+      showToast("info", "Nada a desfazer.");
+    }
+  }, [activeJobId, showToast]);
+
+  const handleRedo = useCallback(() => {
+    if (!activeJobId) return;
+    if (jobStore.canRedo(activeJobId)) {
+      const ok = jobStore.redo(activeJobId);
+      if (ok) showToast("info", "Ação refeita com sucesso (Redo).");
+    } else {
+      showToast("info", "Nada a refazer.");
+    }
+  }, [activeJobId, showToast]);
+
+  const handleCopySelectedNode = useCallback(() => {
+    if (!selectedNode || !activeJobId) return;
+    const targetCellId =
+      (selectedNode.data as any)?.cellId || activeJob?.activeCellId || activeJob?.cells?.[0]?.id;
+    if (targetCellId) {
+      jobStore.copyNodes(activeJobId, targetCellId, [selectedNode.id]);
+      showToast("info", `Componente "${selectedNode.data?.label || selectedNode.id}" copiado.`);
+    }
+  }, [selectedNode, activeJobId, activeJob, showToast]);
+
+  const handlePasteNode = useCallback(() => {
+    if (!activeJobId || !jobStore.hasClipboardNodes()) return;
+    const targetCellId =
+      (selectedNode?.data as any)?.cellId || activeJob?.activeCellId || activeJob?.cells?.[0]?.id;
+    const pasted = jobStore.pasteNodes(activeJobId, targetCellId);
+    if (pasted.length > 0) {
+      setSelectedNode(pasted[0]);
+      showToast("success", `${pasted.length} componente(s) colado(s) com sucesso!`);
+    }
+  }, [activeJobId, selectedNode, activeJob, showToast]);
+
+  const handleLayoutHorizontal = useCallback(
+    (allCells: boolean = false) => {
+      if (!activeJobId || !activeJob) return;
+      jobStore.takeSnapshot(activeJobId, true);
+
+      if (allCells) {
+        let appliedCount = 0;
+        (activeJob.cells || []).forEach((c) => {
+          if (c.nodes && c.nodes.length > 0) {
+            const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
+              c.nodes,
+              c.edges || [],
+              "LR"
+            );
+            jobStore.saveCellGraph(activeJobId, c.id, layoutedNodes, layoutedEdges);
+            jobStore.updateCell(activeJobId, c.id, { layoutDirection: "LR" });
+            appliedCount++;
+          }
+        });
+        showToast("info", `Auto-Layout Horizontal (LR) aplicado em ${appliedCount} célula(s).`);
+      } else {
+        const targetCellId = activeJob.activeCellId || activeJob.cells?.[0]?.id;
+        if (!targetCellId) return;
+        const targetCell = activeJob.cells?.find((c) => c.id === targetCellId);
+        if (!targetCell || !targetCell.nodes || targetCell.nodes.length === 0) return;
+        const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
+          targetCell.nodes,
+          targetCell.edges || [],
+          "LR"
+        );
+        jobStore.saveCellGraph(activeJobId, targetCellId, layoutedNodes, layoutedEdges);
+        jobStore.updateCell(activeJobId, targetCellId, { layoutDirection: "LR" });
+        showToast("info", `Auto-Layout Horizontal (LR) aplicado na célula "${targetCell.name}".`);
+      }
+    },
+    [activeJobId, activeJob, showToast]
+  );
+
+  const handleLayoutVertical = useCallback(
+    (allCells: boolean = false) => {
+      if (!activeJobId || !activeJob) return;
+      jobStore.takeSnapshot(activeJobId, true);
+
+      if (allCells) {
+        let appliedCount = 0;
+        (activeJob.cells || []).forEach((c) => {
+          if (c.nodes && c.nodes.length > 0) {
+            const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
+              c.nodes,
+              c.edges || [],
+              "TB"
+            );
+            jobStore.saveCellGraph(activeJobId, c.id, layoutedNodes, layoutedEdges);
+            jobStore.updateCell(activeJobId, c.id, { layoutDirection: "TB" });
+            appliedCount++;
+          }
+        });
+        showToast("info", `Auto-Layout Vertical (TB) aplicado em ${appliedCount} célula(s).`);
+      } else {
+        const targetCellId = activeJob.activeCellId || activeJob.cells?.[0]?.id;
+        if (!targetCellId) return;
+        const targetCell = activeJob.cells?.find((c) => c.id === targetCellId);
+        if (!targetCell || !targetCell.nodes || targetCell.nodes.length === 0) return;
+        const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
+          targetCell.nodes,
+          targetCell.edges || [],
+          "TB"
+        );
+        jobStore.saveCellGraph(activeJobId, targetCellId, layoutedNodes, layoutedEdges);
+        jobStore.updateCell(activeJobId, targetCellId, { layoutDirection: "TB" });
+        showToast("info", `Auto-Layout Vertical (TB) aplicado na célula "${targetCell.name}".`);
+      }
+    },
+    [activeJobId, activeJob, showToast]
+  );
 
   const handleRunActiveCell = useCallback(async () => {
     if (!activeJob || !activeJob.cells || activeJob.cells.length === 0) return;
@@ -1177,6 +1746,8 @@ export const App: React.FC = () => {
       });
     }
 
+    telemetryStore.reset();
+
     setLoadingAction(null);
     showToast("info", "Execução do Job parada pelo usuário.");
   }, [activeJob, execution, showToast]);
@@ -1186,6 +1757,8 @@ export const App: React.FC = () => {
     if (activeJob && activeJob.cells && activeJob.cells.length > 0) {
       cancelOrchestrationRef.current = false;
       setLoadingAction("run");
+      setConsoleVisible(true);
+      setConsoleTab("metrics");
       const sortedCells = [...activeJob.cells].sort((a, b) => a.order - b.order);
 
       const cycles = detectCellCycles(sortedCells);
@@ -1205,6 +1778,8 @@ export const App: React.FC = () => {
       showToast("info", `Iniciando orquestração completa do Job (${sortedCells.length} células)...`);
 
       sortedCells.forEach((c) => jobStore.setCellStatus(activeJob.id, c.id, "queued"));
+      const allNodeIds = sortedCells.flatMap((c) => (c.nodes || []).map((n) => n.id));
+      telemetryStore.setNodesQueued(allNodeIds);
       const completedStatuses: Record<string, "success" | "failed" | "skipped" | "cancelled"> = {};
 
       const orderGroups = new Map<number, CanvasCellData[]>();
@@ -1227,6 +1802,14 @@ export const App: React.FC = () => {
           await Promise.all(
             parallelCells.map(async (cell) => {
               if (cancelOrchestrationRef.current) {
+                jobStore.setCellStatus(activeJob.id, cell.id, "skipped");
+                completedStatuses[cell.id] = "skipped";
+                completedStatuses[cell.name] = "skipped";
+                return;
+              }
+
+              // Intercepta células desativadas (is_active === false)
+              if (cell.is_active === false) {
                 jobStore.setCellStatus(activeJob.id, cell.id, "skipped");
                 completedStatuses[cell.id] = "skipped";
                 completedStatuses[cell.name] = "skipped";
@@ -1294,6 +1877,7 @@ export const App: React.FC = () => {
         showToast("info", `Versão v${tag} auto-publicada.`);
       }
       const res = await api.executeVersion(vId);
+      telemetryStore.setNodesQueued(nodes.map((n) => n.id));
       showToast("info", `Execução iniciada: ${res.execution_id}`);
       if (pollingRef.current) clearInterval(pollingRef.current);
       pollingRef.current = setInterval(async () => {
@@ -1302,6 +1886,9 @@ export const App: React.FC = () => {
           const execLogs = await api.getExecutionLogs(res.execution_id);
           setExecution(detail);
           setLogs(execLogs);
+          if (detail.tasks && detail.tasks.length > 0) {
+            telemetryStore.batchUpdate(detail.tasks);
+          }
           if (detail.tasks) {
             setNodes((nds) =>
               nds.map((n) => {
@@ -1322,6 +1909,12 @@ export const App: React.FC = () => {
           if (["succeeded", "failed", "cancelled"].includes(detail.status)) {
             clearInterval(pollingRef.current);
             setLoadingAction(null);
+            const nodeIds = nodes.map((n) => n.id);
+            if (detail.status === "failed") {
+              telemetryStore.finalizeUnfinishedNodes(nodeIds, "failed");
+            } else if (detail.status === "cancelled") {
+              telemetryStore.finalizeUnfinishedNodes(nodeIds, "cancelled");
+            }
             if (detail.status === "succeeded") showToast("success", "Execução finalizada com SUCESSO!");
             else if (detail.status === "cancelled") showToast("info", "Execução CANCELADA.");
             else showToast("error", "Execução FALHOU. Verifique os logs.");
@@ -1342,30 +1935,63 @@ export const App: React.FC = () => {
   };
 
   const handleExport = async () => {
-    if (!pipelineId) {
-      // Export local job
-      if (!activeJobId) return;
-      handleSaveLocal();
-      const job = jobStore.getJob(activeJobId);
-      if (!job) return;
-      const blob = new Blob([JSON.stringify({ job, nodes, edges }, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = `${job.name.replace(/\s+/g, "_")}.rdf.json`; a.click();
-      URL.revokeObjectURL(url);
-      showToast("success", "Job exportado como .rdf.json");
+    if (!activeJobId) {
+      showToast("error", "Nenhum job aberto para exportar.");
       return;
     }
     setLoadingAction("export");
     try {
-      const bundle = await api.exportPipeline(pipelineId);
-      const blobYaml = new Blob([bundle.pipeline_yaml], { type: "text/yaml" });
-      const a1 = document.createElement("a");
-      a1.href = URL.createObjectURL(blobYaml); a1.download = "pipeline.yaml"; a1.click();
-      const blobLayout = new Blob([bundle.layout_json], { type: "application/json" });
-      const a2 = document.createElement("a");
-      a2.href = URL.createObjectURL(blobLayout); a2.download = "layout.json"; a2.click();
-      showToast("success", "Bundle exportado: pipeline.yaml + layout.json");
+      handleSaveLocal();
+      const job = jobStore.getJob(activeJobId);
+      if (!job) {
+        showToast("error", "Job ativo não encontrado.");
+        return;
+      }
+
+      // Prepara bundle completo e autocontido para portabilidade entre máquinas
+      const currentNodes = nodes.length > 0 ? nodes : job.nodes;
+      const currentEdges = edges.length > 0 ? edges : job.edges;
+      const globalConnections = storeState.connections || [];
+      const contextVars = storeState.contextVariables || [];
+
+      // Se houver pipelineId e backend ativo, busca também a definição YAML para embutir no bundle
+      let backendYaml: string | undefined = undefined;
+      if (pipelineId) {
+        try {
+          const bundle = await api.exportPipeline(pipelineId);
+          if (bundle?.pipeline_yaml) backendYaml = bundle.pipeline_yaml;
+        } catch (_) {}
+      }
+
+      const exportBundle = {
+        schemaVersion: "rdf.job/v2",
+        exportedAt: new Date().toISOString(),
+        job: {
+          ...job,
+          nodes: currentNodes.map(sanitizeNode),
+          edges: currentEdges.map(sanitizeEdge),
+        },
+        nodes: currentNodes.map(sanitizeNode),
+        edges: currentEdges.map(sanitizeEdge),
+        cells: (job.cells || []).map((c: any) => ({
+          ...c,
+          nodes: (c.nodes || []).map(sanitizeNode),
+          edges: (c.edges || []).map(sanitizeEdge),
+        })),
+        nodeSchemas: job.nodeSchemas || {},
+        connections: globalConnections,
+        contextVariables: contextVars,
+        backendYaml,
+      };
+
+      const blob = new Blob([JSON.stringify(exportBundle, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${job.name.replace(/\s+/g, "_")}.rdf.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast("success", `Job "${job.name}" exportado com sucesso (.rdf.json completo)!`);
     } catch (err: any) {
       showToast("error", `Falha na exportação: ${err.message}`);
     } finally {
@@ -1381,7 +2007,7 @@ export const App: React.FC = () => {
         const text = await file.text();
         const json = JSON.parse(text);
 
-        // Supports standard { job, nodes, edges } or raw JobData or { nodes, edges, name }
+        // Suporta tanto .rdf.json v2, v1, quanto arquivos de layout (layout.json) ou specs
         const rawJob = json.job || json;
         const jobName =
           json.name ||
@@ -1394,7 +2020,7 @@ export const App: React.FC = () => {
         const environment = json.environment || rawJob.environment || "dev";
         const viewport = json.viewport || rawJob.viewport;
 
-        // Save current canvas state before switching if there is an active job
+        // Salva estado da aba atual se existir
         if (activeJobId) {
           setCanvasMap((m) => ({ ...m, [activeJobId]: { nodes, edges } }));
         }
@@ -1407,22 +2033,30 @@ export const App: React.FC = () => {
             nodeSchemas,
             environment,
             viewport,
+            ...(json.cells ? { cells: json.cells } : {}),
+            ...(json.connections ? { connections: json.connections } : {}),
           },
           targetFolderId
         );
 
-        // Immediately update active canvas with imported nodes and edges
-        setNodes(importedNodes);
-        setEdges(importedEdges);
+        // Usa os nós e arestas verdadeiramente normalizados e curados gerados pelo store
+        const activeCell = newJob.cells?.[0];
+        const resolvedNodes = (activeCell?.nodes && activeCell.nodes.length > 0) ? activeCell.nodes : newJob.nodes;
+        const resolvedEdges = (activeCell?.edges && activeCell.edges.length > 0) ? activeCell.edges : newJob.edges;
+
+        // Atualiza o canvas ativo e abre a aba do job importado
+        setNodes(resolvedNodes);
+        setEdges(resolvedEdges);
         setCanvasMap((m) => ({
           ...m,
-          [newJob.id]: { nodes: importedNodes, edges: importedEdges },
+          [newJob.id]: { nodes: resolvedNodes, edges: resolvedEdges },
         }));
+        jobStore.openTab(newJob.id);
         setSelectedNode(null);
 
         showToast(
           "success",
-          `Job "${newJob.name}" importado com sucesso! (${importedNodes.length} nós, ${importedEdges.length} conexões)`
+          `Job "${newJob.name}" importado e restaurado com sucesso! (${resolvedNodes.length} componentes recuperados, ${resolvedEdges.length} conexões)`
         );
       } catch (err: any) {
         showToast("error", `Falha ao importar o job: ${err.message}`);
@@ -1490,6 +2124,9 @@ export const App: React.FC = () => {
         onOpenConnections={() => setShowConnManager(true)}
         onOpenContextVars={() => setShowContextVars(true)}
         onOpenQueryBank={() => setShowQueryBank(true)}
+        workspaceName={workspaceInfo?.name}
+        workspacePath={workspaceInfo?.path}
+        onOpenWorkspace={() => setShowWorkspaceModal(true)}
       />
 
       {/* MenuBar Desktop - Menus Suspensos e Ações Rápidas */}
@@ -1524,13 +2161,19 @@ export const App: React.FC = () => {
         onCancelExecution={handleStopJob}
         onResetSelectedCellStatus={() => {
           if (activeJobId && activeJob?.activeCellId) {
+            const targetCell = activeJob.cells?.find((c) => c.id === activeJob.activeCellId);
+            if (targetCell && targetCell.status === "running") {
+              handleStopCellIsolated(targetCell);
+            }
             jobStore.resetCellStatus(activeJobId, activeJob.activeCellId);
             showToast("info", "Status da célula ativa resetado.");
           }
         }}
         onResetAllCellsStatus={() => {
           if (activeJobId) {
+            handleStopJob();
             jobStore.resetAllCellsStatus(activeJobId);
+            telemetryStore.reset();
             showToast("info", "Status de todas as células resetado.");
           }
         }}
@@ -1554,10 +2197,24 @@ export const App: React.FC = () => {
         onOpenPolicySimulator={() => setShowPolicySimulator(true)}
         onOpenAutoDoc={() => setShowAutoDoc(true)}
         onOpenAbout={() => setShowAboutModal(true)}
+        onOpenWorkspace={() => setShowWorkspaceModal(true)}
+        onOpenWorkspaceFolder={handleOpenWorkspaceFolder}
+        onLayoutHorizontal={() => handleLayoutHorizontal(false)}
+        onLayoutVertical={() => handleLayoutVertical(false)}
+        onLayoutHorizontalAll={() => handleLayoutHorizontal(true)}
+        onLayoutVerticalAll={() => handleLayoutVertical(true)}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
+        canUndo={Boolean(activeJobId && jobStore.canUndo(activeJobId))}
+        canRedo={Boolean(activeJobId && jobStore.canRedo(activeJobId))}
+        onCopyNode={handleCopySelectedNode}
+        onPasteNode={handlePasteNode}
+        canPaste={jobStore.hasClipboardNodes()}
+        hasSelectedNode={Boolean(selectedNode)}
       />
 
       <div className="studio-body">
-        {/* Left — Job Repository (Talend-style) */}
+        {/* Left — Job Repository */}
         {repoVisible && (
           <JobRepository
             onOpenJob={handleOpenJob}
@@ -1576,10 +2233,18 @@ export const App: React.FC = () => {
               {activeJob ? (
                 <MultiCanvasContainer
                   job={activeJob}
-                  onSelectNode={setSelectedNode}
+                  onSelectNode={(node) => {
+                    setSelectedNode(node);
+                  }}
                   onDoubleClickNode={(node) => {
-                    setFloatingNode(node);
-                    setSelectedNode(null);
+                    if (isTMapNode(node)) {
+                      setTmapModalNode(node);
+                      setSelectedNode(null);
+                      setFloatingNode(null);
+                    } else {
+                      setFloatingNode(node);
+                      setSelectedNode(null);
+                    }
                   }}
                   onRunEntireJob={handleRun}
                   onStopJob={handleStopJob}
@@ -1596,11 +2261,21 @@ export const App: React.FC = () => {
                     onEdgesChange={onEdgesChange}
                     setNodes={setNodes}
                     setEdges={setEdges}
-                    onSelectNode={setSelectedNode}
-                    onDoubleClickNode={(node) => {
-                      setFloatingNode(node);
-                      setSelectedNode(null);
+                    onSelectNode={(node) => {
+                      setSelectedNode(node);
                     }}
+                    onDoubleClickNode={(node) => {
+                      if (isTMapNode(node)) {
+                        setTmapModalNode(node);
+                        setSelectedNode(null);
+                        setFloatingNode(null);
+                      } else {
+                        setFloatingNode(node);
+                        setSelectedNode(null);
+                      }
+                    }}
+                    allNodes={nodes}
+                    cellId={undefined}
                   />
                 </ReactFlowProvider>
               )}
@@ -1643,8 +2318,14 @@ export const App: React.FC = () => {
             allNodes={activeJob?.cells ? activeJob.cells.flatMap((c) => c.nodes) : nodes}
             edges={activeJob?.cells ? activeJob.cells.flatMap((c) => c.edges) : edges}
             onPopOut={(node) => {
-              setFloatingNode(node);
-              setSelectedNode(null);
+              if (isTMapNode(node)) {
+                setTmapModalNode(node);
+                setSelectedNode(null);
+                setFloatingNode(null);
+              } else {
+                setFloatingNode(node);
+                setSelectedNode(null);
+              }
             }}
           />
         )}
@@ -1707,6 +2388,20 @@ export const App: React.FC = () => {
           cellsCount={activeJob?.cells?.length || 0}
         />
       )}
+      {showWorkspaceModal && (
+        <WorkspaceModal
+          onClose={() => setShowWorkspaceModal(false)}
+          onWorkspaceChanged={(ws) => {
+            setWorkspaceInfo(ws);
+            showToast("success", `Espaço de trabalho ativo: "${ws.name}"`);
+          }}
+        />
+      )}
+      {showLauncher && (
+        <WorkspaceLauncher
+          onWorkspaceSelected={handleLauncherComplete}
+        />
+      )}
 
       {/* Floating Node Config Window (double-click on node) */}
       {floatingNode && (
@@ -1730,6 +2425,87 @@ export const App: React.FC = () => {
           edges={activeJob?.cells ? activeJob.cells.flatMap((c) => c.edges) : edges}
         />
       )}
+
+      {/* Direct Data Mapper Studio Modal (TASK: bypass intermediate screen) */}
+      {tmapModalNode && (() => {
+        const allJobNodes = activeJob?.cells ? activeJob.cells.flatMap((c) => c.nodes) : nodes;
+        const allJobEdges = activeJob?.cells ? activeJob.cells.flatMap((c) => c.edges) : edges;
+        const liveTMap = allJobNodes.find((n) => n.id === tmapModalNode.id) || tmapModalNode;
+        const tmapCellId = (liveTMap.data as any)?.cellId;
+
+        const scopedEdges = tmapCellId
+          ? allJobEdges.filter((e) => {
+              if ((e.data as any)?.cellId) return (e.data as any).cellId === tmapCellId;
+              const src = allJobNodes.find((n) => n.id === e.source);
+              const tgt = allJobNodes.find((n) => n.id === e.target);
+              return (!src || (src.data as any)?.cellId === tmapCellId) && (!tgt || (tgt.data as any)?.cellId === tmapCellId);
+            })
+          : allJobEdges;
+
+        const incomingEdges = scopedEdges.filter((e) => e.target === liveTMap.id);
+        const upstreamNodes = incomingEdges
+          .map((e) => allJobNodes.find((n) => n.id === e.source))
+          .filter((n): n is Node<CanvasNodeData> => Boolean(n));
+
+        const outgoingEdges = scopedEdges.filter((e) => e.source === liveTMap.id);
+        const downstreamNodes = outgoingEdges
+          .map((e) => {
+            const tgtNode = allJobNodes.find((n) => n.id === e.target);
+            const flowName =
+              e.data?.flowName ||
+              (typeof e.label === "string" ? e.label : "") ||
+              (e.id.startsWith("e_") || e.id.startsWith("e-") ? "" : e.id);
+            return {
+              edgeId: e.id,
+              flowName,
+              targetId: e.target,
+              targetLabel: tgtNode?.data?.label || e.target,
+              targetCategory: tgtNode?.data?.category || "target",
+              targetComponentType: tgtNode?.data?.componentType || "",
+              targetSchema: (tgtNode?.data as any)?.schema || [],
+            };
+          })
+          .filter((d) => Boolean(d.targetId));
+
+        const mainSchema: SchemaColumn[] = (upstreamNodes[0]?.data as any)?.schema || (liveTMap.data as any)?.schema || [];
+        const lookupSchemas: Record<string, SchemaColumn[]> = {};
+        upstreamNodes.slice(1).forEach((un) => {
+          lookupSchemas[un.id] = (un.data as any)?.schema || [];
+        });
+
+        const availableUpstreamNodes = upstreamNodes.map((un, idx) => {
+          const edge = incomingEdges.find((e) => e.source === un.id);
+          const alias = edge?.data?.flowName || (idx === 0 ? "row1" : `row${idx + 1}`);
+          return {
+            id: un.id,
+            label: un.data?.label || un.id,
+            alias: alias,
+            schema: (un.data as any)?.schema || [],
+          };
+        });
+
+        return (
+          <TMapModal
+            nodeId={liveTMap.id}
+            nodeLabel={liveTMap.data?.label || liveTMap.id}
+            config={(liveTMap.data?.config || {}) as TMapConfig}
+            mainSchema={mainSchema}
+            lookupSchemas={lookupSchemas}
+            availableUpstreamNodes={availableUpstreamNodes}
+            downstreamNodes={downstreamNodes}
+            onSave={(newCfg, targetSchemaUpdates) => {
+              handleUpdateConfig(liveTMap.id, { ...(liveTMap.data?.config || {}), ...newCfg });
+              if (targetSchemaUpdates && targetSchemaUpdates.length > 0) {
+                targetSchemaUpdates.forEach((up) => {
+                  handleUpdateSchema(up.nodeId, up.schema);
+                });
+              }
+              setTmapModalNode(null);
+            }}
+            onClose={() => setTmapModalNode(null)}
+          />
+        );
+      })()}
 
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>

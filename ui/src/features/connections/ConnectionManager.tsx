@@ -585,7 +585,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({
     setShowQuickAdd(false);
     const defaults: Record<ConnectionType, any> = {
       duckdb: { database_path: ":memory:", memory_limit: "1GB", read_only: false },
-      oracle: { port: 1521 }, sqlserver: { port: 1433 }, mysql: { port: 3306 },
+      oracle: { port: 1521, timeout: 0 }, sqlserver: { port: 1433 }, mysql: { port: 3306 },
       postgresql: { port: 5432 }, redshift: { port: 5439 }, databricks: {},
       snowflake: {}, bigquery: {}, s3: { region: "us-east-1" },
       azure_blob: {}, gcs: {}, rest_api: { authType: "none" }, soap_api: {},
@@ -676,10 +676,45 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({
       case "oracle":
         return (
           <SqlDbForm {...commonProps} extra={
-            <div className="form-group">
-              <label className="form-label">Service Name / SID</label>
-              <input className="form-input" value={config.serviceName ?? ""} placeholder="ORCL ou XE" onChange={(e) => configField("serviceName", e.target.value)} />
-            </div>
+            <>
+              <div className="conn-form-row">
+                <div className="form-group">
+                  <label className="form-label">Service Name / SID</label>
+                  <input
+                    className="form-input"
+                    value={config.serviceName ?? config.sid ?? ""}
+                    placeholder="o02hm, ORCL ou XE"
+                    onChange={(e) => {
+                      configField("serviceName", e.target.value);
+                      configField("sid", e.target.value);
+                    }}
+                  />
+                </div>
+                <div className="form-group" style={{ width: 140, flexShrink: 0 }}>
+                  <label className="form-label">Timeout (seg)</label>
+                  <input
+                    className="form-input"
+                    type="number"
+                    value={config.timeout ?? 0}
+                    placeholder="0 = sem timeout"
+                    onChange={(e) => configField("timeout", parseInt(e.target.value) || 0)}
+                    title="Defina 0 para desativar o timeout de conexão"
+                  />
+                </div>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Oracle Instant Client (opcional)</label>
+                <input
+                  className="form-input"
+                  value={config.instantClientDir ?? ""}
+                  placeholder="Ex: C:\oracle\instantclient\instantclient_23_26 (auto se vazio)"
+                  onChange={(e) => configField("instantClientDir", e.target.value)}
+                />
+                <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginTop: 4 }}>
+                  Auto-detecta pastas em <code>C:\oracle</code> e Instant Client. Deixe vazio para detecção automática.
+                </div>
+              </div>
+            </>
           } />
         );
       case "sqlserver":

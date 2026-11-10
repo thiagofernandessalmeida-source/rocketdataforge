@@ -1,0 +1,115 @@
+================================================================================
+ROCKETDATAFORGE: A NOVA GERAÇÃO DE ENGENHARIA DE DADOS LOW-CODE & AUTÔNOMA
+Apresentação para Competição Interna Accenture
+================================================================================
+
+1. O PITCH DE ELEVADOR (ABERTURA & VISÃO GERAL)
+--------------------------------------------------------------------------------
+No universo de dados corporativos, as empresas vivem hoje em um dilema: ou ficam
+presas a ferramentas legadas de ETL (como o Talend), que são caras, pesadas e
+baseadas em ecossistemas legados de Java; ou migram para scripts em Python puro,
+que dão liberdade total, mas cobram um preço alto em falta de padronização,
+retrabalho, curva de aprendizado e governança fragmentada.
+
+O RocketDataForge nasceu para quebrar essa dicotomia. Ele entrega uma plataforma
+moderna de engenharia de dados que une o melhor dos dois mundos: a agilidade e a
+governança visual de um canvas interativo com a potência, a portabilidade e o
+custo zero de licença de motores modernos em Python e SQL (Polars e DuckDB).
+
+
+2. COMPARATIVO DIRETO: TALEND vs. PYTHON PURO vs. ROCKETDATAFORGE
+--------------------------------------------------------------------------------
+
+A) EXPERIÊNCIA DE DESENVOLVIMENTO
+- Talend: Visual, porém rígida, pesada, baseada no Eclipse/Java e lenta para abrir.
+- Python Puro: Sem interface; exige programadores seniores escrevendo linha a linha.
+- RocketDataForge: Canvas visual moderno (Multi-Canvas) com drag-and-drop, mapeamento
+  semântico estilo TMap (múltiplas entradas/saídas) e inspeção em tempo real.
+
+B) MOTOR DE PROCESSAMENTO E PERFORMANCE
+- Talend: JVM / Java / MapReduce legados (alto consumo de memória RAM e CPU).
+- Python Puro: Pandas convencional (lento para grandes volumes) ou libs dispersas.
+- RocketDataForge: Motores analíticos vetorizados em memória (Polars + DuckDB em
+  Rust/C++) com pushdown de projeção e filtros otimizado.
+
+C) VENDOR LOCK-IN & AUTONOMIA
+- Talend: Lock-in total; o código gerado fica amarrado aos runtimes da plataforma.
+- Python Puro: Sem lock-in, porém sem governança central ou padrão unificado.
+- RocketDataForge: Zero lock-in. Compila o pipeline visual com 1 clique para:
+  * Script Python 100% autônomo (DuckDB/Polars e os.getenv);
+  * Arquivo de DAG nativo pronto para deploy no Apache Airflow.
+
+D) SEGURANÇA, LGPD & GOVERNANÇA
+- Talend: Depende de plugins proprietários e licenciamento adicional.
+- Python Puro: Cada desenvolvedor cria sua própria função de hash/máscara; alto
+  risco de vazamento acidental de credenciais em código ou commits.
+- RocketDataForge: Princípio inegociável de Zero Secrets em texto puro (senhas
+  resolvidas via SecretResolver em tempo de execução), catálogo nativo de
+  mascaramento (SHA-256 com salt, e-mails, CPFs/CNPJs) e rastreamento de linhagem.
+
+E) INFERÊNCIA & EVOLUÇÃO DE SCHEMA
+- Talend: Rígido; falha frequentemente ao analisar queries com CTEs aninhadas.
+- Python Puro: Exige executar scripts previamente para inspecionar DataFrames.
+- RocketDataForge: Motor híbrido de inferência SQL: Camada A (views temporárias
+  com rollback sem leitura de dados no banco) + Camada B (análise sintática de AST
+  com sqlglot) + Camada C (offline), mapeando a origem até a tabela/coluna raiz.
+
+F) CUSTO TOTAL DE PROPRIEDADE (TCO)
+- Talend: Licenças milionárias anuais por nó de computação e por desenvolvedor.
+- Python Puro: Custo de licença zero, mas custo oculto altíssimo de manutenção.
+- RocketDataForge: TCO drasticamente reduzido com tecnologia aberta e arquitetura
+  cloud-native.
+
+
+3. OS 4 PILARES DE GANHOS TÉCNICOS E DE NEGÓCIO
+--------------------------------------------------------------------------------
+
+[PILAR 1] PRODUTIVIDADE & TIME-TO-MARKET (VELOCIDADE 5X A 10X MAIOR)
+- Visual sem amarras: Desenho de fluxos complexos, múltiplos inputs/outputs e
+  regras condicionais em minutos, sem escrever centenas de linhas repetitivas.
+- Feedback Imediato: O desenvolvedor testa expressões, visualiza esquemas e valida
+  erros de sintaxe SQL em tempo real, sem esperar jobs de 30 minutos falharem.
+
+[PILAR 2] PERFORMANCE DE NOVA GERAÇÃO (DUCKDB + POLARS)
+- Substitui o peso das JVMs legadas por processamento vetorizado ultraveloz em
+  Rust e C++.
+- Processa milhões de linhas em segundos dentro de containers leves, reduzindo
+  brutalmente a fatura de computação em nuvem (AWS, GCP, Azure).
+
+[PILAR 3] GOVERNANÇA, LGPD E SEGURANÇA POR DESIGN
+- Zero Plaintext Secrets: Credenciais de banco (PostgreSQL, Oracle, MySQL, etc.)
+  nunca ficam salvas no código gerado nem no navegador.
+- Mascaramento Automático: Anonimização de dados pessoais diretamente na fonte
+  e no gerador de código.
+- SQL Lineage com CTEs: Rastreamento automático de onde cada coluna nasceu,
+  mesmo após cruzamentos complexos, joins externos e funções analíticas.
+
+[PILAR 4] PORTABILIDADE ABSOLUTA ("COMPILAÇÃO AUTÔNOMA")
+- O cliente nunca fica refém da ferramenta. O pipeline desenhado no canvas pode
+  ser exportado como código Python puro ou DAG do Apache Airflow e executado
+  em qualquer esteira de CI/CD ou orquestrador corporativo.
+
+
+4. O IMPACTO PARA A ACCENTURE E SEUS CLIENTES
+--------------------------------------------------------------------------------
+1. ACELERADOR DE MODERNIZAÇÃO DE LEGADOS (ETL MIGRATION):
+   Acelera em até 70% a substituição de ferramentas caras e obsoletas (Talend,
+   DataStage, Informatica) sem o trauma de reescrever tudo na mão do zero.
+
+2. DEMOCRATIZAÇÃO COM CONTROLE DE ARQUITETURA:
+   Permite que analistas e cientistas de dados construam fluxos com a velocidade
+   do Low-Code, garantindo que o time de Arquitetura receba código Python limpo,
+   padronizado, seguro e homologado.
+
+3. REDUÇÃO RADICAL DE OPEX / TCO:
+   Elimina licenças de software milionárias e substitui clusters pesados por
+   workloads enxutos e altamente eficientes.
+
+
+5. FRASE DE FECHAMENTO (IMPACTO FINAL)
+--------------------------------------------------------------------------------
+"O RocketDataForge não é apenas mais uma ferramenta de dados: é o elo que
+faltava entre a agilidade visual que o negócio precisa e a robustez, governança
+e economia que a engenharia de software corporativa exige."
+================================================================================
+

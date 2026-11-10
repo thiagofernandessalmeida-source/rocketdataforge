@@ -24,8 +24,9 @@ import {
   SlidersHorizontal,
   Terminal,
   Info,
+  HardDrive,
 } from "lucide-react";
-import { Environment } from "../store/jobStore";
+import { Environment, jobStore } from "../store/jobStore";
 
 const ENV_LABELS: Record<Environment, { label: string; color: string }> = {
   dev: { label: "DEV", color: "#10b981" },
@@ -68,6 +69,9 @@ interface HeaderProps {
   onOpenConnections: () => void;
   onOpenContextVars: () => void;
   onOpenQueryBank: () => void;
+  workspaceName?: string;
+  workspacePath?: string;
+  onOpenWorkspace?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -105,6 +109,9 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenConnections,
   onOpenContextVars,
   onOpenQueryBank,
+  workspaceName,
+  workspacePath,
+  onOpenWorkspace,
 }) => {
   const env = ENV_LABELS[activeEnvironment];
 
@@ -247,19 +254,71 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         )}
 
-        {/* Environment Badge */}
-        <button
-          className="env-badge-btn"
-          style={{ "--env-color": env.color } as any}
-          onClick={onOpenContextVars}
-          title="Variáveis de Contexto & Ambientes"
-        >
-          <span className="env-dot" style={{ background: env.color }} />
-          <span className="env-label" style={{ color: env.color }}>
-            {env.label}
-          </span>
-          <Globe size={12} opacity={0.7} />
-        </button>
+        {/* Interactive Environment Profile Switcher (Tópico 7) */}
+        <div style={{ display: "flex", alignItems: "center", gap: 4, background: "var(--bg-card)", border: `1px solid ${env.color}40`, padding: "2px 6px", borderRadius: 6 }}>
+          <span className="env-dot" style={{ background: env.color, width: 7, height: 7, borderRadius: "50%", display: "inline-block" }} />
+          <select
+            value={activeEnvironment}
+            onChange={(e) => {
+              const newEnv = e.target.value as Environment;
+              jobStore.setEnvironment(newEnv);
+            }}
+            title="Alternar Perfil de Execução / Ambiente (DEV, HML, PRD) - Altera resolução de conexões e contexto"
+            style={{
+              background: "transparent",
+              border: "none",
+              color: env.color,
+              fontWeight: 700,
+              fontSize: "0.74rem",
+              cursor: "pointer",
+              outline: "none",
+            }}
+          >
+            <option value="dev" style={{ background: "#0f172a", color: "#10b981" }}>DEV (Desenvolvimento)</option>
+            <option value="hml" style={{ background: "#0f172a", color: "#f59e0b" }}>HML (Homologação)</option>
+            <option value="prd" style={{ background: "#0f172a", color: "#ef4444" }}>PRD (Produção)</option>
+          </select>
+          <button
+            type="button"
+            className="icon-btn"
+            style={{ padding: 2 }}
+            onClick={onOpenContextVars}
+            title="Gerenciar Variáveis de Contexto & Perfis de Ambiente"
+          >
+            <Globe size={11} color="var(--text-muted)" />
+          </button>
+        </div>
+
+        {/* Workspace Indicator & Selector */}
+        {onOpenWorkspace && (
+          <button
+            type="button"
+            className="workspace-badge-btn"
+            onClick={onOpenWorkspace}
+            title={`Espaço de Trabalho Ativo: ${workspaceName || "Padrão"}\nCaminho: ${workspacePath || "Carregando..."}\nClique para alternar ou gerenciar workspaces`}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              background: "rgba(168, 85, 247, 0.12)",
+              border: "1px solid rgba(168, 85, 247, 0.3)",
+              padding: "4px 10px",
+              borderRadius: 6,
+              fontSize: "0.75rem",
+              color: "#c084fc",
+              cursor: "pointer",
+              fontWeight: 500,
+              transition: "all 0.15s ease",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(168, 85, 247, 0.22)")}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(168, 85, 247, 0.12)")}
+          >
+            <HardDrive size={13} color="#c084fc" />
+            <span style={{ maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {workspaceName || "Workspace"}
+            </span>
+          </button>
+        )}
 
         {/* Sidebar & Panel Visibility Toggles */}
         <div style={{ display: "flex", alignItems: "center", gap: 3, marginLeft: 6, background: "rgba(0,0,0,0.25)", padding: "2px 4px", borderRadius: 6, border: "1px solid var(--border-subtle)" }}>

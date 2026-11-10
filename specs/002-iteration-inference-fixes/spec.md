@@ -20,7 +20,7 @@ Este documento consolida e especifica o conjunto completo de evoluções funcion
    - **Componente `tDuckDbInput` (`connector.db.duckdb`):** Leitura de bancos DuckDB persistidos (`.duckdb`, `.db`), bancos `:memory:` ou consultas federadas sobre arquivos com funções nativas (`read_parquet`, `read_csv`, etc.).
    - **Componente `tDuckDbOutput` (`connector.db.duckdb.output`):** Gravação de datasets em arquivos DuckDB locais ou memória, criando o arquivo caso não exista.
 
-3. **Ações em Tabelas e Ações em Dados nos Componentes de Saída (Padrão Talend Open Studio):**
+3. **Ações em Tabelas e Ações em Dados nos Componentes de Saída (Padrão Studio Open Studio):**
    - Configuração de **Ação na Tabela (*Action on Table*)**:
      - *Nenhuma (None)*
      - *Deletar e Criar Tabela (Drop and Create)*
@@ -35,14 +35,14 @@ Este documento consolida e especifica o conjunto completo de evoluções funcion
      - *Atualizar ou Inserir (Update or Insert)*
      - *Deletar (Delete por chave primária)*
 
-4. **Componente `tMap` (Transformação Visual no Padrão Talend `tMap`):**
+4. **Componente `tMap` (Transformação Visual no Padrão Studio `tMap`):**
    - Múltiplas entradas (Fluxo Principal *Main* + Múltiplos *Lookups* com tipos de junção: *Left Outer Join*, *Inner Join*, *First Match*, *All Matches*).
    - Múltiplos fluxos de saída nomeados e roteamento condicional (filtros por fluxo de saída e fluxo de rejeitados *Reject Flow*).
    - Tabela de Variáveis Intermediárias (*Var Table*) para cálculos intermediários reutilizáveis.
    - Construtor de Expressões (*Expression Builder*) por coluna com auto-map e mapeamento visual interativo.
 
 5. **Identificadores de Componentes Simples e Editáveis:**
-   - Geração de IDs concisos e semânticos no estilo Talend (ex: `tpostgresinput_1`, `tfileinput_1`, `tduckdbinput_1`, `tmap_1`, `tduckdboutput_1`).
+   - Geração de IDs concisos e semânticos no estilo Studio (ex: `tpostgresinput_1`, `tfileinput_1`, `tduckdbinput_1`, `tmap_1`, `tduckdboutput_1`).
    - Possibilidade de **renomear/editar o ID do componente** diretamente no painel de propriedades, com atualização em cascata de conexões e variáveis downstream.
 
 6. **Correção de Bugs e Melhorias de UI:**
@@ -64,7 +64,7 @@ Este documento consolida e especifica o conjunto completo de evoluções funcion
 - **FR-031.2:** Implementar `tDuckDbInput` com suporte a arquivo `.duckdb`, `:memory:` e queries SQL sobre múltiplos arquivos locais.
 - **FR-031.3:** Implementar `tDuckDbOutput` com suporte a criação de tabelas, persistência em arquivo e opções de gravação.
 
-### FR-032: Ações de Tabela e Dados no Padrão Talend
+### FR-032: Ações de Tabela e Dados no Padrão Studio
 - **FR-032.1:** Todos os nós de Target de Banco de Dados (PostgreSQL, DuckDB, MySQL, Oracle, SQL Server, etc.) devem fornecer o seletor **Ação na Tabela** (`none`, `drop_create`, `create_if_not_exists`, `drop_if_exists_create`, `truncate`, `delete_all`).
 - **FR-032.2:** Todos os nós de Target de Banco devem fornecer o seletor **Ação nos Dados** (`insert`, `update`, `upsert`, `update_or_insert`, `delete`).
 - **FR-032.3:** O `ExecutionWorker` deve executar a Ação na Tabela antes do streaming dos dados e respeitar a Ação nos Dados utilizando as chaves primárias (`isPrimaryKey: true`) do schema para operações de `UPDATE`, `UPSERT` e `DELETE`.
@@ -100,7 +100,7 @@ Este documento consolida e especifica o conjunto completo de evoluções funcion
 - **When** marco a opção *"Tratar como Tabela DuckDB em Memória"* e defino a query `SELECT region, SUM(amount) as total FROM sales GROUP BY region`,
 - **Then** o DuckDB executa a query diretamente no arquivo em streaming de alta velocidade sem carregar todo o arquivo desnecessariamente em RAM.
 
-### US-021: Ações de Tabela estilo Talend
+### US-021: Ações de Tabela estilo Studio
 - **Given** um nó `tPostgresqlOutput_1` apontando para a tabela `faturamento_diario`,
 - **When** seleciono *"Ação na Tabela: Truncar Tabela (Truncate)"* e *"Ação nos Dados: Inserir (Insert)"*,
 - **Then** o worker executa `TRUNCATE TABLE faturamento_diario` antes de carregar o primeiro lote de dados.

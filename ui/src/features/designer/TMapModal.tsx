@@ -1,12 +1,19 @@
-import React, { useState, useMemo, useRef, useEffect } from "react";
+import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import {
   X, Check, Plus, Trash2, GitMerge, ArrowRight, ArrowLeft,
   Table2, Layers, Play, Wand2, Search, Maximize2, Minimize2,
   ChevronDown, ChevronUp, Key, Filter, HelpCircle, AlertCircle,
   Copy, RefreshCw, ChevronsRight, FileCode, CheckSquare, Sparkles,
-  Sliders, Link2, Info
+  Sliders, Link2, Info, Zap, Undo2, Redo2, Clipboard
 } from "lucide-react";
 import { SchemaColumn, SchemaColumnType } from "../../store/jobStore";
+import {
+  copyColumnsToClipboard,
+  readColumnsFromClipboard,
+  resolveSchemaCollisions,
+} from "../../utils/schemaClipboard";
+import { ImportSchemaModal } from "./ImportSchemaModal";
+import { getBaseApiUrl } from "../../api/client";
 
 // ─── Interfaces ────────────────────────────────────────────────
 
@@ -18,6 +25,7 @@ export interface TMapJoinKey {
 export interface TMapLookupConfig {
   node_id: string;
   label?: string;
+  alias?: string;
   join_type: "left" | "inner";
   join_model?: string;
   lookup_model?: "Load once" | "Reload at each row" | string;
@@ -26,6 +34,7 @@ export interface TMapLookupConfig {
   right_keys: string[];
   join_keys?: TMapJoinKey[];
   filter_expression?: string;
+  join_filter?: string;
   schema?: SchemaColumn[];
 }
 
@@ -80,6 +89,7 @@ export interface TMapOutputFlow {
 }
 
 export interface TMapConfig {
+  main_alias?: string;
   lookups?: TMapLookupConfig[];
   variables?: TMapVariable[];
   outputs?: TMapOutputFlow[];
@@ -91,7 +101,7 @@ interface TMapModalProps {
   config: TMapConfig;
   mainSchema: SchemaColumn[];
   lookupSchemas: Record<string, SchemaColumn[]>;
-  availableUpstreamNodes?: { id: string; label: string; schema?: SchemaColumn[] }[];
+  availableUpstreamNodes?: { id: string; label: string; alias?: string; schema?: SchemaColumn[] }[];
   downstreamNodes?: DownstreamNodeInfo[];
   onSave: (newConfig: TMapConfig, targetSchemaUpdates?: TargetSchemaUpdate[]) => void;
   onClose: () => void;
@@ -141,6 +151,19 @@ const FUNCTION_CATALOG: FunctionDoc[] = [
   { category: "Condicional / Lógica", name: "CAST", syntax: "CAST(expr AS VARCHAR)", description: "Converte explicitamente o tipo do dado", example: "CAST(row1.id AS VARCHAR)" },
 ];
 
+const normalizeMatchModel = (val?: string): "all" | "unique" | "first" => {
+  const s = (val || "").toLowerCase();
+  if (s.includes("unique")) return "unique";
+  if (s.includes("first")) return "first";
+  return "all";
+};
+
+const normalizeJoinType = (type?: string, model?: string): "left" | "inner" => {
+  const s = (type || model || "").toLowerCase();
+  if (s.includes("inner")) return "inner";
+  return "left";
+};
+
 // ─── Main Component ────────────────────────────────────────────
 
 export const TMapModal: React.FC<TMapModalProps> = ({
@@ -160,8 +183,14 @@ export const TMapModal: React.FC<TMapModalProps> = ({
   const [activeTab, setActiveTab] = useState<"canvas" | "schema" | "expression">("canvas");
   const [bottomTab, setBottomTab] = useState<"schema" | "expression">("schema");
   const [bottomExpanded, setBottomExpanded] = useState(true);
+  const [showUpstreamChips, setShowUpstreamChips] = useState(true);
+  const [copiedChipToken, setCopiedChipToken] = useState<string | null>(null);
 
-  // Lookups state with fallback keys and auto-sync with upstream nodes
+  // Main Alias state (row1 / main)
+  const initialMainAlias = config.main_alias || availableUpstreamNodes[0]?.alias || "main1";
+  const [mainAlias, setMainAlias] = useState<string>(initialMainAlias);
+
+  // Lookups state with fallback keys, aliases and auto-sync with upstream nodes
   const [lookups, setLookups] = useState<TMapLookupConfig[]>(() => {
     const rawLookups = config.lookups || [];
     const upstreamLookups = availableUpstreamNodes.slice(1);
@@ -170,132 +199,130 @@ export const TMapModal: React.FC<TMapModalProps> = ({
       return upstreamLookups.map((un, idx) => ({
         node_id: un.id,
         label: un.label || `lkp${idx + 1}`,
+        alias: un.alias || `row${idx + 2}`,
         join_type: "left",
+        join_model: "left_outer",
         lookup_model: "Load once",
-        match_model: "All matches",
+        match_model: "all",
         left_keys: [],
         right_keys: [],
         join_keys: [{ expr_key: "", column: "" }],
         filter_expression: "",
+        join_filter: "",
         schema: un.schema || lookupSchemas[un.id] || [],
       }));
     }
 
-    return rawLookups.map((lk) => ({
+    return rawLookups.map((lk, idx) => ({
       ...lk,
+      alias: lk.alias || lk.label || `row${idx + 2}`,
       lookup_model: lk.lookup_model || "Load once",
-      match_model: lk.match_model || "All matches",
-      join_type: lk.join_type || "left",
+      match_model: normalizeMatchModel(lk.match_model),
+      join_type: normalizeJoinType(lk.join_type, lk.join_model),
+      join_model: normalizeJoinType(lk.join_type, lk.join_model) === "inner" ? "inner" : "left_outer",
       join_keys:
         lk.join_keys ||
         (lk.left_keys && lk.left_keys.length > 0
           ? lk.left_keys.map((k, i) => ({ expr_key: k, column: lk.right_keys?.[i] || "" }))
           : [{ expr_key: "", column: "" }]),
       filter_expression: lk.filter_expression || "",
+      join_filter: lk.join_filter || lk.filter_expression || "",
       schema: lk.schema || lookupSchemas[lk.node_id] || [],
     }));
   });
 
-  // Variables state
+  // Variables state (inicia vazio para novos mappers - sem mocks fantasmas como row1.Title)
   const [variables, setVariables] = useState<TMapVariable[]>(
     config.variables && config.variables.length > 0
       ? config.variables
-      : [{ id: "v1", name: "var1", type: "String", expression: "row1.Title" }]
+      : []
   );
 
   // Outputs state auto-synced with downstream connections
   const [outputs, setOutputs] = useState<TMapOutputFlow[]>(() => {
     const rawOutputs = config.outputs || [];
 
-    // Se temos nós conectados a jusante (downstream), sincronizamos cada um deles
-    if (downstreamNodes && downstreamNodes.length > 0) {
-      const synced: TMapOutputFlow[] = downstreamNodes.map((dn, idx) => {
-        const flowName = dn.flowName || `out${idx + 1}`;
-        // Procura se já existia configuração para esse output
-        const existing = rawOutputs.find(
-          (o) =>
-            o.id === flowName ||
-            o.name === flowName ||
-            (o.targetId && o.targetId === dn.targetId) ||
-            (idx === 0 && (o.id === "out1" || o.name === "out1")) ||
-            o.id === `out${idx + 1}`
+    // Se temos saídas previamente configuradas no nó, preservamos TODAS elas (conectadas ou não)
+    if (rawOutputs.length > 0) {
+      const mapped: TMapOutputFlow[] = rawOutputs.map((o, idx) => {
+        const matchingDownstream = downstreamNodes?.find(
+          (dn) =>
+            dn.flowName === o.id ||
+            dn.flowName === o.name ||
+            (dn.targetId && o.targetId && dn.targetId === o.targetId) ||
+            (idx === 0 && dn.flowName === "out1")
         );
-
-        let cols: TMapOutputColumn[] = [];
-        if (existing && existing.columns && existing.columns.length > 0) {
-          cols = existing.columns.map((c) => ({
+        return {
+          id: o.id || `out${idx + 1}`,
+          name: o.name || o.id || `out${idx + 1}`,
+          targetId: matchingDownstream?.targetId || o.targetId,
+          targetLabel: matchingDownstream?.targetLabel || o.targetLabel,
+          filter_expression: o.filter_expression || "",
+          catch_output_reject: o.catch_output_reject ?? false,
+          catch_lookup_reject: o.catch_lookup_reject ?? false,
+          catch_inner_join_reject: o.catch_inner_join_reject ?? false,
+          schema_type: o.schema_type || "Built-in",
+          is_reject: o.is_reject ?? false,
+          columns: (o.columns || []).map((c) => ({
             ...c,
             type: c.type || "String",
             nullable: c.nullable ?? true,
-          }));
-        } else if (dn.targetSchema && dn.targetSchema.length > 0) {
-          cols = dn.targetSchema.map((c) => ({
-            id: c.id || `col-${c.name}`,
-            target: c.name,
-            expression: mainSchema.some((m) => m.name === c.name) ? `row1.${c.name}` : "",
-            type: c.type || "String",
-            nullable: c.nullable ?? true,
-            isPrimaryKey: c.isPrimaryKey,
-            length: c.length,
-            precision: c.precision,
-            pattern: c.format,
-          }));
-        } else {
-          cols = mainSchema.map((c) => ({
-            id: `col-${c.name}`,
-            target: c.name,
-            expression: `row1.${c.name}`,
-            type: c.type || "String",
-            nullable: c.nullable ?? true,
-            isPrimaryKey: c.isPrimaryKey,
-            length: c.length,
-            precision: c.precision,
-            pattern: c.format,
-          }));
-        }
-
-        return {
-          id: existing?.id || flowName,
-          name: existing?.name || flowName,
-          targetId: dn.targetId,
-          targetLabel: dn.targetLabel,
-          filter_expression: existing?.filter_expression || "",
-          catch_output_reject: existing?.catch_output_reject ?? false,
-          catch_lookup_reject: existing?.catch_lookup_reject ?? false,
-          catch_inner_join_reject: existing?.catch_inner_join_reject ?? false,
-          schema_type: existing?.schema_type || "Built-in",
-          is_reject: existing?.is_reject ?? false,
-          columns: cols,
+          })),
         };
       });
 
-      // Preserva saídas de reject ou adicionais que não correspondam aos nós conectados
-      const rejectOutputs = rawOutputs
-        .filter((o) => o.is_reject && !synced.some((s) => s.id === o.id))
-        .map((o) => ({
-          ...o,
-          catch_output_reject: o.catch_output_reject ?? true,
-          catch_lookup_reject: o.catch_lookup_reject ?? false,
-          columns: o.columns.map((c) => ({ ...c, type: c.type || "String", nullable: c.nullable ?? true })),
-        }));
+      // Se há nós conectados a jusante cujos flowNames ainda não estão nas saídas salvas, inclui-os com colunas vazias
+      if (downstreamNodes && downstreamNodes.length > 0) {
+        downstreamNodes.forEach((dn) => {
+          const flowName = dn.flowName || `out${mapped.length + 1}`;
+          const exists = mapped.some(
+            (m) =>
+              m.id === flowName ||
+              m.name === flowName ||
+              (dn.targetId && m.targetId === dn.targetId)
+          );
+          if (!exists) {
+            mapped.push({
+              id: flowName,
+              name: flowName,
+              targetId: dn.targetId,
+              targetLabel: dn.targetLabel,
+              filter_expression: "",
+              catch_output_reject: false,
+              catch_lookup_reject: false,
+              catch_inner_join_reject: false,
+              schema_type: "Built-in",
+              is_reject: false,
+              columns: [], // Início vazio conforme padrão Talend tMap
+            });
+          }
+        });
+      }
 
-      return [...synced, ...rejectOutputs];
+      return mapped;
     }
 
-    if (rawOutputs.length > 0) {
-      return rawOutputs.map((o) => ({
-        ...o,
-        catch_output_reject: o.catch_output_reject ?? false,
-        catch_lookup_reject: o.catch_lookup_reject ?? false,
-        schema_type: o.schema_type || "Built-in",
-        columns: o.columns.map((c) => ({
-          ...c,
-          type: c.type || "String",
-          nullable: c.nullable ?? true,
-        })),
-      }));
+    // Se temos nós conectados a jusante, criamos uma saída vazia para cada um deles
+    if (downstreamNodes && downstreamNodes.length > 0) {
+      return downstreamNodes.map((dn, idx) => {
+        const flowName = dn.flowName || `out${idx + 1}`;
+        return {
+          id: flowName,
+          name: flowName,
+          targetId: dn.targetId,
+          targetLabel: dn.targetLabel,
+          filter_expression: "",
+          catch_output_reject: false,
+          catch_lookup_reject: false,
+          catch_inner_join_reject: false,
+          schema_type: "Built-in",
+          is_reject: false,
+          columns: [], // Sem inferência cega: inicia vazio
+        };
+      });
     }
 
+    // Padrão Talend tMap: Inicia completamente vazio
     return [
       {
         id: "out1",
@@ -303,15 +330,10 @@ export const TMapModal: React.FC<TMapModalProps> = ({
         filter_expression: "",
         catch_output_reject: false,
         catch_lookup_reject: false,
+        catch_inner_join_reject: false,
         schema_type: "Built-in",
-        columns: mainSchema.map((c) => ({
-          id: `col-${c.name}`,
-          target: c.name,
-          expression: `row1.${c.name}`,
-          type: c.type,
-          nullable: c.nullable,
-          isPrimaryKey: c.isPrimaryKey,
-        })),
+        is_reject: false,
+        columns: [], // INICIA VAZIO (Padrão Talend tMap)
       },
     ];
   });
@@ -322,34 +344,398 @@ export const TMapModal: React.FC<TMapModalProps> = ({
   const [hoveredMapping, setHoveredMapping] = useState<{ source: string; target: string } | null>(null);
 
   // Expanded card toggles
+  const [isMainExpanded, setIsMainExpanded] = useState<boolean>(true);
+  const [collapsedLookups, setCollapsedLookups] = useState<Record<string, boolean>>({});
   const [showLookupSettings, setShowLookupSettings] = useState<Record<string, boolean>>({});
   const [showOutputSettings, setShowOutputSettings] = useState<Record<string, boolean>>({});
 
   const activeOutput = outputs.find((o) => o.id === activeOutputId) || outputs[0];
 
+  // ─── Local Undo / Redo Stack (Isolado do Job global) ─────────
+  interface TMapSnapshot {
+    lookups: TMapLookupConfig[];
+    variables: TMapVariable[];
+    outputs: TMapOutputFlow[];
+  }
+
+  const [historyStack, setHistoryStack] = useState<TMapSnapshot[]>(() => [
+    {
+      lookups,
+      variables,
+      outputs,
+    },
+  ]);
+  const [historyIndex, setHistoryIndex] = useState<number>(0);
+  const isApplyingHistoryRef = useRef(false);
+
+  const pushHistorySnapshot = useCallback(
+    (newLookups: TMapLookupConfig[], newVars: TMapVariable[], newOuts: TMapOutputFlow[]) => {
+      if (isApplyingHistoryRef.current) return;
+      setHistoryStack((prev) => {
+        const sliced = prev.slice(0, historyIndex + 1);
+        const next = [...sliced, { lookups: newLookups, variables: newVars, outputs: newOuts }];
+        if (next.length > 50) next.shift();
+        return next;
+      });
+      setHistoryIndex((prev) => Math.min(prev + 1, 49));
+    },
+    [historyIndex]
+  );
+
+  const handleUndo = useCallback(() => {
+    if (historyIndex > 0) {
+      isApplyingHistoryRef.current = true;
+      const targetIdx = historyIndex - 1;
+      const snap = historyStack[targetIdx];
+      if (snap) {
+        setLookups(snap.lookups);
+        setVariables(snap.variables);
+        setOutputs(snap.outputs);
+        setHistoryIndex(targetIdx);
+      }
+      setTimeout(() => {
+        isApplyingHistoryRef.current = false;
+      }, 0);
+    }
+  }, [historyIndex, historyStack]);
+
+  const handleRedo = useCallback(() => {
+    if (historyIndex < historyStack.length - 1) {
+      isApplyingHistoryRef.current = true;
+      const targetIdx = historyIndex + 1;
+      const snap = historyStack[targetIdx];
+      if (snap) {
+        setLookups(snap.lookups);
+        setVariables(snap.variables);
+        setOutputs(snap.outputs);
+        setHistoryIndex(targetIdx);
+      }
+      setTimeout(() => {
+        isApplyingHistoryRef.current = false;
+      }, 0);
+    }
+  }, [historyIndex, historyStack]);
+
+  const handleModalKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      const isCtrlOrMeta = e.ctrlKey || e.metaKey;
+      if (!isCtrlOrMeta) return;
+
+      const key = e.key.toLowerCase();
+      if (key === "z") {
+        e.preventDefault();
+        e.stopPropagation(); // ISOLA DA HISTÓRIA GLOBAL DO CANVAS
+        if (e.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
+      } else if (key === "y") {
+        e.preventDefault();
+        e.stopPropagation(); // ISOLA DA HISTÓRIA GLOBAL DO CANVAS
+        handleRedo();
+      }
+    },
+    [handleUndo, handleRedo]
+  );
+
+  // ─── Clipboard & Schema Import Operations ─────────────────────
+  const [importModalOutputId, setImportModalOutputId] = useState<string | null>(null);
+
+  const handleCopyOutputColumns = async (outId: string) => {
+    const targetOut = outputs.find((o) => o.id === outId);
+    if (!targetOut || targetOut.columns.length === 0) return;
+    const asSchema: SchemaColumn[] = targetOut.columns.map((c) => ({
+      id: c.id,
+      name: c.target || c.expression || "col",
+      type: c.type || "String",
+      nullable: c.nullable ?? true,
+      length: c.length,
+      precision: c.precision,
+      comment: c.comment,
+    }));
+    await copyColumnsToClipboard(asSchema);
+  };
+
+  const handlePasteOutputColumns = async (outId: string) => {
+    const pasted = await readColumnsFromClipboard();
+    if (!pasted || pasted.length === 0) return;
+    const currentOut = outputs.find((o) => o.id === outId);
+    if (!currentOut) return;
+
+    const currentAsSchema: SchemaColumn[] = currentOut.columns.map((c) => ({
+      id: c.id,
+      name: c.target,
+      type: c.type || "String",
+      nullable: c.nullable ?? true,
+    }));
+
+    const merged = resolveSchemaCollisions(currentAsSchema, pasted, "rename");
+    const newCols: TMapOutputColumn[] = merged.map((col: SchemaColumn) => {
+      const existing = currentOut.columns.find((c) => c.id === col.id);
+      if (existing) return existing;
+      return {
+        id: col.id, // deserializeSchemaColumns já gerou novo UUID
+        target: col.name,
+        expression: col.name,
+        type: col.type,
+        nullable: col.nullable ?? true,
+      };
+    });
+
+    const updatedOutputs = outputs.map((o) => (o.id === outId ? { ...o, columns: newCols } : o));
+    setOutputs(updatedOutputs);
+    pushHistorySnapshot(lookups, variables, updatedOutputs);
+  };
+
+  const handleImportToOutput = (importedCols: SchemaColumn[]) => {
+    if (!importModalOutputId) return;
+    const targetOut = outputs.find((o) => o.id === importModalOutputId);
+    if (!targetOut) return;
+
+    const newCols: TMapOutputColumn[] = importedCols.map((col) => {
+      const existing = targetOut.columns.find(
+        (c) => c.target.toLowerCase() === col.name.toLowerCase()
+      );
+      if (existing) {
+        return {
+          ...existing,
+          type: col.type,
+          nullable: col.nullable,
+        };
+      }
+      return {
+        id: `col-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        target: col.name,
+        expression: col.name,
+        type: col.type,
+        nullable: col.nullable,
+      };
+    });
+
+    const updatedOutputs = outputs.map((o) =>
+      o.id === importModalOutputId ? { ...o, columns: newCols } : o
+    );
+    setOutputs(updatedOutputs);
+    pushHistorySnapshot(lookups, variables, updatedOutputs);
+    setImportModalOutputId(null);
+  };
+
+  // ─── Inline Expression Validation (POST /api/v1/tmap/validate-expression) ───
+  const [validationErrors, setValidationErrors] = useState<Record<string, string | null>>({});
+  const validationTimeouts = useRef<Record<string, any>>({});
+
+  const validateExpressionDebounced = useCallback((key: string, expr: string) => {
+    if (validationTimeouts.current[key]) {
+      clearTimeout(validationTimeouts.current[key]);
+    }
+
+    if (!expr || !expr.trim()) {
+      setValidationErrors((prev) => ({ ...prev, [key]: null }));
+      return;
+    }
+
+    validationTimeouts.current[key] = setTimeout(async () => {
+      try {
+        const baseUrl = getBaseApiUrl();
+        const endpoint = baseUrl.endsWith("/api/v1")
+          ? `${baseUrl}/tmap/validate-expression`
+          : "/api/v1/tmap/validate-expression";
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ expression: expr }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.valid === false) {
+            setValidationErrors((prev) => ({
+              ...prev,
+              [key]: data.error || "Expressão inválida",
+            }));
+          } else {
+            setValidationErrors((prev) => ({ ...prev, [key]: null }));
+          }
+        }
+      } catch (_) {
+        // Offline / mock fallback
+      }
+    }, 400);
+  }, []);
+
+  // Lista unificada de nós e colunas a montante para a barra de sugestões (estilo Iterate)
+  const upstreamSourcesForChips = useMemo(() => {
+    if (availableUpstreamNodes && availableUpstreamNodes.length > 0) {
+      return availableUpstreamNodes.map((un, idx) => ({
+        id: un.id,
+        label: un.label || un.id,
+        alias: un.alias || (idx === 0 ? mainAlias : `row${idx + 1}`),
+        schema: un.schema && un.schema.length > 0 ? un.schema : (idx === 0 ? mainSchema : (lookupSchemas[un.id] || [])),
+        isMain: idx === 0,
+      }));
+    }
+    const list = [
+      {
+        id: "main",
+        label: "Entrada Principal (Main)",
+        alias: mainAlias,
+        schema: mainSchema,
+        isMain: true,
+      },
+    ];
+    lookups.forEach((lk, idx) => {
+      list.push({
+        id: lk.node_id,
+        label: lk.label || lk.node_id,
+        alias: lk.alias || lk.label || `row${idx + 2}`,
+        schema: lk.schema || lookupSchemas[lk.node_id] || [],
+        isMain: false,
+      });
+    });
+    return list;
+  }, [availableUpstreamNodes, mainAlias, mainSchema, lookups, lookupSchemas]);
+
+  // ─── Direct Mapping / Click-to-Map Handler ───────────────────
+  const handleAddOrMapColumnToActiveOutput = (
+    first: string,
+    second: string,
+    colType?: SchemaColumnType
+  ) => {
+    // Normaliza os argumentos caso venham invertidos (expr vs colName)
+    const expr = first.includes(".") || first.startsWith("Var.") ? first : second;
+    const baseColName = (!first.includes(".") && !first.startsWith("Var.")) ? first : second;
+
+    setOutputs((prevOutputs) =>
+      prevOutputs.map((out) => {
+        if (out.id !== activeOutputId) return out;
+
+        // 1. Procura se tem uma linha com expression vazia para preencher
+        const emptyIdx = out.columns.findIndex((c) => !c.expression || !c.expression.trim());
+        if (emptyIdx >= 0) {
+          const updated = [...out.columns];
+          const curr = updated[emptyIdx];
+          let target = curr.target.startsWith("col_") || !curr.target.trim() ? baseColName : curr.target;
+
+          // Se já existir outra coluna com esse target, desambigua
+          const otherTargets = new Set(
+            updated.filter((_, i) => i !== emptyIdx).map((c) => c.target.toLowerCase())
+          );
+          if (otherTargets.has(target.toLowerCase())) {
+            const dotParts = expr.split(".");
+            const aliasPrefix = dotParts.length > 1 ? dotParts[0].trim() : "";
+            if (aliasPrefix && !otherTargets.has(`${aliasPrefix}_${baseColName}`.toLowerCase())) {
+              target = `${aliasPrefix}_${baseColName}`;
+            } else {
+              let counter = 1;
+              while (otherTargets.has(`${baseColName}_${counter}`.toLowerCase())) {
+                counter++;
+              }
+              target = `${baseColName}_${counter}`;
+            }
+          }
+
+          updated[emptyIdx] = {
+            ...curr,
+            expression: expr,
+            target,
+            type: colType || curr.type || "String",
+          };
+          return { ...out, columns: updated };
+        }
+
+        // 2. Se já existir uma coluna com o mesmo target cuja expressão está vazia, atualiza-a
+        const existingIdx = out.columns.findIndex(
+          (c) => c.target.toLowerCase() === baseColName.toLowerCase()
+        );
+        if (
+          existingIdx >= 0 &&
+          (!out.columns[existingIdx].expression || !out.columns[existingIdx].expression.trim())
+        ) {
+          const updated = [...out.columns];
+          updated[existingIdx] = {
+            ...updated[existingIdx],
+            expression: expr,
+            type: colType || updated[existingIdx].type || "String",
+          };
+          return { ...out, columns: updated };
+        }
+
+        // 3. Se já existe uma coluna com esse target e já possui expressão, sugere nome desambiguado
+        const existingTargets = new Set(out.columns.map((c) => c.target.toLowerCase()));
+        let finalTarget = baseColName;
+        if (existingTargets.has(finalTarget.toLowerCase())) {
+          const dotParts = expr.split(".");
+          const aliasPrefix = dotParts.length > 1 ? dotParts[0].trim() : "";
+          if (aliasPrefix && !existingTargets.has(`${aliasPrefix}_${baseColName}`.toLowerCase())) {
+            finalTarget = `${aliasPrefix}_${baseColName}`;
+          } else {
+            let counter = 1;
+            while (existingTargets.has(`${baseColName}_${counter}`.toLowerCase())) {
+              counter++;
+            }
+            finalTarget = `${baseColName}_${counter}`;
+          }
+        }
+
+        const newCol: TMapOutputColumn = {
+          id: `col-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          target: finalTarget,
+          expression: expr,
+          type: colType || "String",
+          nullable: true,
+        };
+        return { ...out, columns: [...out.columns, newCol] };
+      })
+    );
+  };
+
   // ─── Auto Map Handler ─────────────────────────────────────────
   const handleAutoMap = (outId: string) => {
-    const availableSources: { name: string; expr: string; type: SchemaColumnType }[] = [];
-    mainSchema.forEach((c) => availableSources.push({ name: c.name, expr: `row1.${c.name}`, type: c.type }));
-    lookups.forEach((lk) => {
+    const availableSources: { name: string; expr: string; type: SchemaColumnType; prefix: string }[] = [];
+    mainSchema.forEach((c) =>
+      availableSources.push({ name: c.name, expr: `${mainAlias}.${c.name}`, type: c.type, prefix: mainAlias })
+    );
+    lookups.forEach((lk, idx) => {
       const lkCols = lookupSchemas[lk.node_id] || lk.schema || [];
-      const prefix = lk.label || lk.node_id;
-      lkCols.forEach((c) => availableSources.push({ name: c.name, expr: `${prefix}.${c.name}`, type: c.type }));
+      const prefix = lk.alias || lk.label || `row${idx + 2}`;
+      lkCols.forEach((c) =>
+        availableSources.push({ name: c.name, expr: `${prefix}.${c.name}`, type: c.type, prefix })
+      );
     });
     variables.forEach((v) => {
-      if (v.name) availableSources.push({ name: v.name, expr: `Var.${v.name}`, type: v.type || "String" });
+      if (v.name) availableSources.push({ name: v.name, expr: `Var.${v.name}`, type: v.type || "String", prefix: "Var" });
+    });
+
+    const usedTargets = new Set<string>();
+    const newCols: TMapOutputColumn[] = [];
+
+    availableSources.forEach((s) => {
+      let targetName = s.name;
+      if (usedTargets.has(targetName.toLowerCase())) {
+        if (s.prefix && !usedTargets.has(`${s.prefix}_${s.name}`.toLowerCase())) {
+          targetName = `${s.prefix}_${s.name}`;
+        } else {
+          let counter = 1;
+          while (usedTargets.has(`${s.name}_${counter}`.toLowerCase())) {
+            counter++;
+          }
+          targetName = `${s.name}_${counter}`;
+        }
+      }
+      usedTargets.add(targetName.toLowerCase());
+
+      newCols.push({
+        id: `col-${Date.now()}-${targetName}-${Math.random().toString(36).slice(2, 5)}`,
+        target: targetName,
+        expression: s.expr,
+        type: s.type,
+        nullable: true,
+      });
     });
 
     setOutputs((outs) =>
       outs.map((o) => {
         if (o.id !== outId) return o;
-        const newCols: TMapOutputColumn[] = availableSources.map((s) => ({
-          id: `col-${Date.now()}-${s.name}`,
-          target: s.name,
-          expression: s.expr,
-          type: s.type,
-          nullable: true,
-        }));
         return { ...o, columns: newCols };
       })
     );
@@ -402,8 +788,9 @@ export const TMapModal: React.FC<TMapModalProps> = ({
       node_id: `row${count + 1}`,
       label: `row${count + 1}`,
       join_type: "left",
+      join_model: "left_outer",
       lookup_model: "Load once",
-      match_model: "All matches",
+      match_model: "all",
       left_keys: [],
       right_keys: [],
       join_keys: [{ expr_key: "", column: "" }],
@@ -419,24 +806,37 @@ export const TMapModal: React.FC<TMapModalProps> = ({
   // ─── Save & Sync ──────────────────────────────────────────────
   const handleSaveAll = () => {
     // Normaliza os join_keys para left_keys e right_keys para o backend
-    const normalizedLookups = lookups.map((lk) => {
+    const normalizedLookups = lookups.map((lk, idx) => {
       const left_keys: string[] = [];
       const right_keys: string[] = [];
       (lk.join_keys || []).forEach((jk) => {
         if (jk.expr_key && jk.column) {
-          left_keys.push(jk.expr_key);
-          right_keys.push(jk.column);
+          left_keys.push(jk.expr_key.trim());
+          let cleanRight = jk.column.trim();
+          if (cleanRight.includes(".")) {
+            cleanRight = cleanRight.split(".").pop()!.trim();
+          }
+          cleanRight = cleanRight.replace(/["'{}]/g, "").trim();
+          right_keys.push(cleanRight);
         }
       });
-      const joinModel = lk.join_type === "inner" ? "inner" : "left_outer";
+      const isInner = lk.join_type === "inner" || lk.join_model === "inner";
+      const joinType = isInner ? "inner" : "left";
+      const joinModel = isInner ? "inner" : "left_outer";
       let matchModel = "all";
       if (lk.match_model?.toLowerCase().includes("first")) matchModel = "first";
       else if (lk.match_model?.toLowerCase().includes("unique")) matchModel = "unique";
 
+      const flowAlias = lk.alias || lk.label || `row${idx + 2}`;
+
       return {
         ...lk,
+        alias: flowAlias,
+        label: flowAlias,
+        join_type: joinType as "left" | "inner",
         join_model: joinModel,
         match_model: matchModel,
+        join_filter: lk.join_filter || lk.filter_expression || "",
         left_keys: left_keys.length > 0 ? left_keys : lk.left_keys,
         right_keys: right_keys.length > 0 ? right_keys : lk.right_keys,
       };
@@ -473,6 +873,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
 
     onSave(
       {
+        main_alias: mainAlias,
         lookups: normalizedLookups,
         variables,
         outputs: normalizedOutputs,
@@ -493,6 +894,8 @@ export const TMapModal: React.FC<TMapModalProps> = ({
       <div
         className={`modal-container data-mapper-modal ${isMaximized ? "maximized" : ""}`}
         onClick={(e) => e.stopPropagation()}
+        tabIndex={0}
+        onKeyDown={handleModalKeyDown}
       >
         {/* ─── Top Header ─── */}
         <div className="data-mapper-header">
@@ -502,7 +905,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
             <span className="node-badge">{nodeLabel || nodeId}</span>
           </div>
 
-          {/* Quick Search / Find bar (Talend style) */}
+          {/* Quick Search / Find bar */}
           <div className="data-mapper-search-bar">
             <Search size={13} className="search-icon" />
             <input
@@ -520,6 +923,23 @@ export const TMapModal: React.FC<TMapModalProps> = ({
 
           {/* Top Actions */}
           <div className="data-mapper-actions">
+            <button
+              className="btn btn-secondary btn-sm"
+              title="Desfazer localmente no tMap (Ctrl+Z)"
+              onClick={handleUndo}
+              disabled={historyIndex <= 0}
+            >
+              <Undo2 size={13} />
+            </button>
+            <button
+              className="btn btn-secondary btn-sm"
+              title="Refazer localmente no tMap (Ctrl+Y)"
+              onClick={handleRedo}
+              disabled={historyIndex >= historyStack.length - 1}
+            >
+              <Redo2 size={13} />
+            </button>
+
             <button
               className="btn btn-secondary btn-sm"
               title="Mapear colunas automaticamente por correspondência de nome"
@@ -545,6 +965,15 @@ export const TMapModal: React.FC<TMapModalProps> = ({
             </button>
 
             <button
+              className={`btn ${showUpstreamChips ? "btn-primary" : "btn-secondary"} btn-sm`}
+              title="Exibir ou ocultar sugestões de colunas dos nós a montante (estilo Iterate)"
+              onClick={() => setShowUpstreamChips(!showUpstreamChips)}
+            >
+              <Zap size={13} color={showUpstreamChips ? "var(--accent-yellow, #ffd700)" : "currentColor"} />
+              <span>Sugestões ({upstreamSourcesForChips.reduce((acc, s) => acc + (s.schema?.length || 0), 0)})</span>
+            </button>
+
+            <button
               className="icon-btn btn-sm"
               title={isMaximized ? "Restaurar tamanho" : "Maximizar"}
               onClick={() => setIsMaximized(!isMaximized)}
@@ -563,6 +992,74 @@ export const TMapModal: React.FC<TMapModalProps> = ({
           </div>
         </div>
 
+        {/* ─── Upstream Suggestion Chips Bar (Lógica de sugestão de colunas idêntica ao Iterate) ─── */}
+        {showUpstreamChips && upstreamSourcesForChips.some((s) => s.schema && s.schema.length > 0) && (
+          <div className="tmap-upstream-suggestions-bar">
+            <div className="suggestions-bar-header">
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Zap size={14} color="var(--accent-yellow, #ffd700)" />
+                <span className="suggestions-title">⚡ Colunas de Nós a Montante (Mapeamento & Tokens)</span>
+                <span className="suggestions-subtitle">
+                  Clique em qualquer coluna para mapear direto na saída ativa ({activeOutput?.name || activeOutputId}) ou copiar a expressão
+                </span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {copiedChipToken && (
+                  <span className="copied-badge">✓ Copiado: {copiedChipToken}</span>
+                )}
+                <button
+                  type="button"
+                  className="icon-btn btn-xs"
+                  onClick={() => setShowUpstreamChips(false)}
+                  title="Ocultar barra de sugestões"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            </div>
+
+            <div className="suggestions-sources-container">
+              {upstreamSourcesForChips.map((src) => {
+                const cols = src.schema || [];
+                if (cols.length === 0) return null;
+                return (
+                  <div key={src.id} className="suggestions-source-group">
+                    <div className="suggestions-source-tag">
+                      <span className="src-alias-badge">{src.alias}</span>
+                      <span className="src-label-text" title={src.id}>{src.label} ({src.id}):</span>
+                      <span className="src-count">({cols.length})</span>
+                    </div>
+                    <div className="suggestions-chips-row">
+                      {cols.map((col) => {
+                        const token = `{{${src.id}.${col.name}}}`;
+                        const exprToken = `${src.alias}.${col.name}`;
+                        return (
+                          <button
+                            key={col.id || col.name}
+                            type="button"
+                            className="token-chip tmap-chip"
+                            title={`Clique para mapear na saída '${activeOutput?.name || activeOutputId}' e copiar '${exprToken}'`}
+                            onClick={() => {
+                              navigator.clipboard?.writeText?.(token).catch(() => {});
+                              setCopiedChipToken(token);
+                              setTimeout(() => setCopiedChipToken(null), 2500);
+                              handleAddOrMapColumnToActiveOutput(exprToken, col.name, col.type);
+                            }}
+                          >
+                            <span className="chip-alias">{src.alias}.</span>
+                            <span className="chip-colname">{col.name}</span>
+                            <span className="chip-type">{col.type}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* ─── Main 3-Column Studio Workspace ─── */}
         <div className="data-mapper-body">
           {/* ─── LEFT COLUMN: Inputs (row1 Main + Lookups) ─── */}
@@ -578,53 +1075,103 @@ export const TMapModal: React.FC<TMapModalProps> = ({
             </div>
 
             <div className="mapper-pane-scroll">
-              {/* Main Input Table (row1) */}
+              {/* Main Input Table (row1 / main) */}
               <div className="mapper-table-card main-stream">
                 <div className="table-card-header">
                   <div className="card-title-group">
-                    <span className="card-tag main">row1</span>
+                    <input
+                      className="card-tag-input main"
+                      style={{ width: 60, padding: "2px 6px", fontSize: "0.75rem", fontWeight: 700, borderRadius: 4, background: "rgba(0, 212, 255, 0.15)", border: "1px solid var(--accent-cyan)", color: "var(--accent-cyan)", textAlign: "center" }}
+                      value={mainAlias}
+                      title="Namespace / Alias do Main (ex: row1, main)"
+                      onChange={(e) => setMainAlias(e.target.value.trim() || "row1")}
+                    />
                     <span className="card-name">Fluxo Principal</span>
                   </div>
-                  <span className="card-badge">{mainSchema.length} colunas</span>
+                  <div className="card-header-actions" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span className="card-badge">{mainSchema.length} colunas</span>
+                    <button
+                      className="icon-btn btn-xs"
+                      title={isMainExpanded ? "Recolher colunas" : "Expandir colunas"}
+                      onClick={() => setIsMainExpanded(!isMainExpanded)}
+                    >
+                      {isMainExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                    </button>
+                  </div>
                 </div>
 
-                <div className="table-card-columns">
-                  {mainSchema.length > 0 ? (
-                    mainSchema
-                      .filter((c) => matchesSearch(c.name) || matchesSearch("row1"))
-                      .map((c) => (
-                        <div
-                          key={c.id || c.name}
-                          className="col-row-item"
-                          title={`Duplo clique para inserir no output ativo: row1.${c.name}`}
-                          onClick={() => navigator.clipboard.writeText(`row1.${c.name}`)}
-                        >
-                          <span className="col-name">{c.name}</span>
-                          <span className="col-type-tag">{c.type}</span>
-                          <span className="col-anchor" title="Conector de saída" />
-                        </div>
-                      ))
-                  ) : (
-                    <div className="empty-hint">Nenhuma coluna inferida no nó de entrada</div>
-                  )}
-                </div>
+                {isMainExpanded && (
+                  <div className="table-card-columns">
+                    {mainSchema.length > 0 ? (
+                      mainSchema
+                        .filter((c) => matchesSearch(c.name) || matchesSearch(mainAlias))
+                        .map((c) => (
+                          <div
+                            key={c.id || c.name}
+                            className="col-row-item draggable-source"
+                            draggable
+                            onDragStart={(e) => {
+                              const qualified = `${mainAlias}.${c.name}`;
+                              e.dataTransfer.setData("text/plain", qualified);
+                              e.dataTransfer.setData("application/json", JSON.stringify({ flow: mainAlias, col: c.name, type: c.type }));
+                            }}
+                            title={`Clique para mapear no output ativo ou arraste: ${mainAlias}.${c.name}`}
+                            onClick={() => handleAddOrMapColumnToActiveOutput(`${mainAlias}.${c.name}`, c.name, c.type)}
+                          >
+                            <span className="col-name">{c.name}</span>
+                            <span className="col-type-tag">{c.type}</span>
+                            <span className="col-anchor" title="Arraste para mapear na saída" />
+                          </div>
+                        ))
+                    ) : (
+                      <div className="empty-hint">Nenhuma coluna inferida no nó de entrada</div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Lookup Tables (row2, row3...) */}
               {lookups.map((lk, lkIdx) => {
                 const lkCols = lookupSchemas[lk.node_id] || lk.schema || [];
+                const isLookupCollapsed = collapsedLookups[lk.node_id] ?? false;
                 const isSettingsOpen = showLookupSettings[lk.node_id] ?? true;
-                const prefix = lk.label || lk.node_id;
+                const prefix = lk.alias || lk.label || `row${lkIdx + 2}`;
 
                 return (
                   <div key={lk.node_id || lkIdx} className="mapper-table-card lookup-stream">
                     {/* Header */}
                     <div className="table-card-header lookup">
                       <div className="card-title-group">
-                        <span className="card-tag lookup">{prefix}</span>
-                        <span className="card-name">Lookup ({lk.join_type === "left" ? "Left Join" : "Inner Join"})</span>
+                        <input
+                          className="card-tag-input lookup"
+                          style={{ width: 75, padding: "2px 6px", fontSize: "0.75rem", fontWeight: 700, borderRadius: 4, background: "rgba(168, 85, 247, 0.15)", border: "1px solid var(--accent-purple)", color: "var(--accent-purple)", textAlign: "center" }}
+                          value={prefix}
+                          title="Namespace / Alias do Lookup (ex: row2, lk_regiao)"
+                          onChange={(e) => {
+                            const newAlias = e.target.value.trim();
+                            setLookups(
+                              lookups.map((l) =>
+                                l.node_id === lk.node_id ? { ...l, alias: newAlias, label: newAlias } : l
+                              )
+                            );
+                          }}
+                        />
+                        <span className="card-name">{lk.label || lk.node_id} ({lk.join_type === "left" ? "Left" : "Inner"})</span>
                       </div>
-                      <div className="card-header-actions">
+                      <div className="card-header-actions" style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <span className="card-badge">{lkCols.length} colunas</span>
+                        <button
+                          className="icon-btn btn-xs"
+                          title={isLookupCollapsed ? "Expandir tabela" : "Recolher tabela"}
+                          onClick={() =>
+                            setCollapsedLookups((prev) => ({
+                              ...prev,
+                              [lk.node_id]: !isLookupCollapsed,
+                            }))
+                          }
+                        >
+                          {isLookupCollapsed ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
+                        </button>
                         <button
                           className="icon-btn btn-xs"
                           title="Configurações de Join e Modelo"
@@ -647,7 +1194,10 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                       </div>
                     </div>
 
-                    {/* Talend Lookup Model & Match Properties */}
+                    {!isLookupCollapsed && (
+                      <>
+
+                    {/* Lookup Model & Match Properties */}
                     {isSettingsOpen && (
                       <div className="lookup-properties-grid">
                         <div className="prop-row">
@@ -674,7 +1224,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                           <span className="prop-label">Match Model</span>
                           <select
                             className="prop-select"
-                            value={lk.match_model || "All matches"}
+                            value={normalizeMatchModel(lk.match_model)}
                             onChange={(e) =>
                               setLookups(
                                 lookups.map((l) =>
@@ -685,9 +1235,9 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                               )
                             }
                           >
-                            <option value="All matches">All matches</option>
-                            <option value="Unique match">Unique match</option>
-                            <option value="First match">First match</option>
+                            <option value="all">All matches (all)</option>
+                            <option value="unique">Unique match (unique)</option>
+                            <option value="first">First match (first)</option>
                           </select>
                         </div>
 
@@ -695,19 +1245,24 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                           <span className="prop-label">Join Model</span>
                           <select
                             className="prop-select"
-                            value={lk.join_type}
-                            onChange={(e) =>
+                            value={normalizeJoinType(lk.join_type, lk.join_model)}
+                            onChange={(e) => {
+                              const newJoin = e.target.value as "left" | "inner";
                               setLookups(
                                 lookups.map((l) =>
                                   l.node_id === lk.node_id
-                                    ? { ...l, join_type: e.target.value as any }
+                                    ? {
+                                        ...l,
+                                        join_type: newJoin,
+                                        join_model: newJoin === "inner" ? "inner" : "left_outer",
+                                      }
                                     : l
                                 )
-                              )
-                            }
+                              );
+                            }}
                           >
-                            <option value="left">Left Outer Join</option>
-                            <option value="inner">Inner Join</option>
+                            <option value="left">Left Outer Join (left)</option>
+                            <option value="inner">Inner Join (inner)</option>
                           </select>
                         </div>
 
@@ -751,6 +1306,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                                 className="join-key-input"
                                 value={jk.column}
                                 placeholder="ID_coluna"
+                                list={`datalist-lk-${lk.node_id}`}
                                 onChange={(e) => {
                                   const newJks = [...(lk.join_keys || [])];
                                   newJks[jkIdx] = { ...jk, column: e.target.value };
@@ -761,6 +1317,11 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                                   );
                                 }}
                               />
+                              <datalist id={`datalist-lk-${lk.node_id}`}>
+                                {(lk.schema || lookupSchemas[lk.node_id] || []).map((c) => (
+                                  <option key={c.id || c.name} value={c.name} />
+                                ))}
+                              </datalist>
                               <button
                                 className="icon-btn danger btn-xs"
                                 onClick={() => {
@@ -777,6 +1338,25 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                             </div>
                           ))}
                         </div>
+
+                        {/* Join Filter Section */}
+                        <div className="prop-row" style={{ marginTop: 8 }}>
+                          <span className="prop-label">Join Filter</span>
+                          <input
+                            className="prop-input expr-font"
+                            value={lk.join_filter || lk.filter_expression || ""}
+                            placeholder="ex: lk.ativo == true && lk.validade >= row1.data"
+                            title="Filtro condicional avaliado diretamente na cláusula ON do Join"
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setLookups(
+                                lookups.map((l) =>
+                                  l.node_id === lk.node_id ? { ...l, join_filter: val, filter_expression: val } : l
+                                )
+                              );
+                            }}
+                          />
+                        </div>
                       </div>
                     )}
 
@@ -785,15 +1365,24 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                       {lkCols.map((c) => (
                         <div
                           key={c.id || c.name}
-                          className="col-row-item"
-                          onClick={() => navigator.clipboard.writeText(`${prefix}.${c.name}`)}
+                          className="col-row-item draggable-source"
+                          draggable
+                          onDragStart={(e) => {
+                            const qualified = `${prefix}.${c.name}`;
+                            e.dataTransfer.setData("text/plain", qualified);
+                            e.dataTransfer.setData("application/json", JSON.stringify({ flow: prefix, col: c.name, type: c.type }));
+                          }}
+                          title={`Clique para mapear no output ativo ou arraste: ${prefix}.${c.name}`}
+                          onClick={() => handleAddOrMapColumnToActiveOutput(`${prefix}.${c.name}`, c.name, c.type)}
                         >
                           <span className="col-name">{c.name}</span>
                           <span className="col-type-tag">{c.type}</span>
-                          <span className="col-anchor" />
+                          <span className="col-anchor" title="Arraste para mapear na saída" />
                         </div>
                       ))}
                     </div>
+                    </>
+                    )}
                   </div>
                 );
               })}
@@ -912,6 +1501,14 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                     )}
                   </button>
                 ))}
+                <button
+                  className="btn btn-ghost btn-xs"
+                  onClick={() => handleAddOutput(false)}
+                  title="Criar nova saída (out)"
+                  style={{ padding: "2px 7px", height: 22, fontSize: "0.7rem", color: "var(--accent-cyan)", border: "1px dashed rgba(0, 212, 255, 0.4)" }}
+                >
+                  <Plus size={10} /> Saída
+                </button>
               </div>
             </div>
 
@@ -923,7 +1520,22 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                   <div
                     key={out.id}
                     id={`output-card-${out.id}`}
+                    tabIndex={0}
                     className={`mapper-table-card output-stream ${out.id === activeOutputId ? "active-focus" : ""} ${out.is_reject ? "reject-card" : ""}`}
+                    onFocus={() => setActiveOutputId(out.id)}
+                    onKeyDown={(e) => {
+                      const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
+                      if (tag === "input" || tag === "textarea") return;
+                      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleCopyOutputColumns(out.id);
+                      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handlePasteOutputColumns(out.id);
+                      }
+                    }}
                   >
                     {/* Header */}
                     <div className="table-card-header output">
@@ -951,6 +1563,27 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                       <div className="card-header-actions">
                         <button
                           className="icon-btn btn-xs"
+                          title="Importar schema de outro componente"
+                          onClick={() => setImportModalOutputId(out.id)}
+                        >
+                          <Layers size={12} />
+                        </button>
+                        <button
+                          className="icon-btn btn-xs"
+                          title="Copiar colunas desta saída (Ctrl+C)"
+                          onClick={() => handleCopyOutputColumns(out.id)}
+                        >
+                          <Copy size={12} />
+                        </button>
+                        <button
+                          className="icon-btn btn-xs"
+                          title="Colar colunas da área de transferência (Ctrl+V)"
+                          onClick={() => handlePasteOutputColumns(out.id)}
+                        >
+                          <Clipboard size={12} />
+                        </button>
+                        <button
+                          className="icon-btn btn-xs"
                           title="Propriedades e Filtro do Output"
                           onClick={() =>
                             setShowOutputSettings((prev) => ({
@@ -973,7 +1606,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                       </div>
                     </div>
 
-                    {/* Output Filter & Rejects Box (Talend style) */}
+                    {/* Output Filter & Rejects Box */}
                     {isSettingsOpen && (
                       <div className="output-properties-box">
                         <div className="prop-row">
@@ -1027,7 +1660,21 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                     )}
 
                     {/* Mappings Table */}
-                    <div className="output-mappings-table-container">
+                    <div
+                      className="output-mappings-table-container"
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = "copy";
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        const draggedExpr = e.dataTransfer.getData("text/plain");
+                        if (draggedExpr) {
+                          const colBaseName = draggedExpr.split(".").pop() || `col_${out.columns.length + 1}`;
+                          handleAddOrMapColumnToActiveOutput(draggedExpr, colBaseName);
+                        }
+                      }}
+                    >
                       <table className="mapper-out-grid">
                         <thead>
                           <tr>
@@ -1037,39 +1684,134 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                           </tr>
                         </thead>
                         <tbody>
-                          {out.columns.map((col, idx) => (
-                            <tr key={col.id || idx}>
-                              <td>
-                                <input
-                                  className="out-cell-input expr-font"
-                                  value={col.expression}
-                                  placeholder="row1.coluna"
-                                  onChange={(e) => {
-                                    const newCols = [...out.columns];
-                                    newCols[idx] = { ...col, expression: e.target.value };
-                                    setOutputs(
-                                      outputs.map((item) =>
-                                        item.id === out.id ? { ...item, columns: newCols } : item
-                                      )
-                                    );
-                                  }}
-                                />
+                          {out.columns.length === 0 ? (
+                            <tr>
+                              <td colSpan={3} style={{ textAlign: "center", padding: "36px 16px" }}>
+                                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, color: "var(--text-muted)" }}>
+                                  <Wand2 size={26} style={{ opacity: 0.4, color: "var(--accent-cyan)" }} />
+                                  <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "var(--text-primary)" }}>
+                                    Tabela de saída vazia
+                                  </span>
+                                  <span style={{ fontSize: "0.72rem", color: "var(--text-dim)", maxWidth: 320, lineHeight: 1.4 }}>
+                                    Clique no botão <strong>Auto map!</strong> acima ou arraste/clique em colunas das <strong>Entradas</strong> à esquerda para compor este schema.
+                                  </span>
+                                </div>
                               </td>
+                            </tr>
+                          ) : (
+                            out.columns.map((col, idx) => (
+                              <tr key={col.id || idx}>
+                                <td>
+                                  <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+                                    <input
+                                      className={`out-cell-input expr-font ${validationErrors[`${out.id}-${col.id}`] ? "input-expr-error" : ""}`}
+                                      value={col.expression}
+                                      placeholder="row1.coluna"
+                                      title={validationErrors[`${out.id}-${col.id}`] || undefined}
+                                      style={
+                                        validationErrors[`${out.id}-${col.id}`]
+                                          ? { borderColor: "#ef4444", backgroundColor: "rgba(239, 68, 68, 0.08)", paddingRight: 24 }
+                                          : undefined
+                                      }
+                                      onDragOver={(e) => {
+                                        e.preventDefault();
+                                        e.dataTransfer.dropEffect = "copy";
+                                      }}
+                                      onDrop={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        const draggedExpr = e.dataTransfer.getData("text/plain");
+                                        if (draggedExpr) {
+                                          const newCols = [...out.columns];
+                                          const colBaseName = draggedExpr.split(".").pop() || col.target;
+                                          newCols[idx] = {
+                                            ...col,
+                                            expression: draggedExpr,
+                                            target: col.target.startsWith("col_") || !col.target.trim() ? colBaseName : col.target,
+                                          };
+                                          setOutputs(
+                                            outputs.map((item) =>
+                                              item.id === out.id ? { ...item, columns: newCols } : item
+                                            )
+                                          );
+                                          validateExpressionDebounced(`${out.id}-${col.id}`, draggedExpr);
+                                        }
+                                      }}
+                                      onChange={(e) => {
+                                        const newCols = [...out.columns];
+                                        newCols[idx] = { ...col, expression: e.target.value };
+                                        setOutputs(
+                                          outputs.map((item) =>
+                                            item.id === out.id ? { ...item, columns: newCols } : item
+                                          )
+                                        );
+                                        validateExpressionDebounced(`${out.id}-${col.id}`, e.target.value);
+                                      }}
+                                    />
+                                    {validationErrors[`${out.id}-${col.id}`] && (
+                                      <span
+                                        className="validation-badge-error"
+                                        title={`Erro na expressão: ${validationErrors[`${out.id}-${col.id}`]}`}
+                                        style={{
+                                          position: "absolute",
+                                          right: 6,
+                                          color: "#ef4444",
+                                          display: "inline-flex",
+                                          alignItems: "center",
+                                          cursor: "help",
+                                        }}
+                                      >
+                                        <AlertCircle size={13} />
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
                               <td>
-                                <input
-                                  className="out-cell-input"
-                                  value={col.target}
-                                  placeholder="nome_coluna"
-                                  onChange={(e) => {
-                                    const newCols = [...out.columns];
-                                    newCols[idx] = { ...col, target: e.target.value };
-                                    setOutputs(
-                                      outputs.map((item) =>
-                                        item.id === out.id ? { ...item, columns: newCols } : item
-                                      )
-                                    );
-                                  }}
-                                />
+                                {(() => {
+                                  const isDuplicateTarget = Boolean(
+                                    col.target.trim() &&
+                                      out.columns.filter(
+                                        (c) => c.target.trim().toLowerCase() === col.target.trim().toLowerCase()
+                                      ).length > 1
+                                  );
+                                  return (
+                                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                      <input
+                                        className={`out-cell-input ${isDuplicateTarget ? "input-duplicate-warning" : ""}`}
+                                        value={col.target}
+                                        placeholder="nome_coluna"
+                                        style={
+                                          isDuplicateTarget
+                                            ? { borderColor: "#f59e0b", color: "#f59e0b", backgroundColor: "rgba(245, 158, 11, 0.08)" }
+                                            : undefined
+                                        }
+                                        onChange={(e) => {
+                                          const newCols = [...out.columns];
+                                          newCols[idx] = { ...col, target: e.target.value };
+                                          setOutputs(
+                                            outputs.map((item) =>
+                                              item.id === out.id ? { ...item, columns: newCols } : item
+                                            )
+                                          );
+                                        }}
+                                      />
+                                      {isDuplicateTarget && (
+                                        <span
+                                          title="Aviso: Nome de coluna duplicado nesta saída! Renomeie para evitar erro no banco/Sink."
+                                          style={{
+                                            color: "#f59e0b",
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            cursor: "help",
+                                            flexShrink: 0,
+                                          }}
+                                        >
+                                          <AlertCircle size={14} />
+                                        </span>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
                               </td>
                               <td>
                                 <button
@@ -1087,7 +1829,8 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                                 </button>
                               </td>
                             </tr>
-                          ))}
+                          ))
+                        )}
                         </tbody>
                       </table>
 
@@ -1120,7 +1863,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
           </div>
         </div>
 
-        {/* ─── BOTTOM PANEL: Schema Editor & Expression Helper (Talend Style) ─── */}
+        {/* ─── BOTTOM PANEL: Schema Editor & Expression Helper ─── */}
         <div className={`data-mapper-bottom-panel ${bottomExpanded ? "expanded" : "collapsed"}`}>
           {/* Bottom Tabs Bar */}
           <div className="bottom-tabs-bar">
@@ -1160,24 +1903,33 @@ export const TMapModal: React.FC<TMapModalProps> = ({
               <div className="schema-side left-side">
                 <div className="schema-side-header">
                   <span className="side-title">
-                    Origem: <strong>{activeInputId === "main" ? "row1 (Main)" : activeInputId}</strong>
+                    Origem:{" "}
+                    <strong>
+                      {activeInputId === "main"
+                        ? `${mainAlias} (${availableUpstreamNodes[0]?.label || "Main"})`
+                        : lookups.find((l) => l.node_id === activeInputId)?.alias ||
+                          lookups.find((l) => l.node_id === activeInputId)?.label ||
+                          activeInputId}
+                    </strong>
                   </span>
                   <select
                     className="side-stream-picker"
                     value={activeInputId}
                     onChange={(e) => setActiveInputId(e.target.value)}
                   >
-                    <option value="main">row1 (Main)</option>
+                    <option value="main">
+                      {mainAlias} ({availableUpstreamNodes[0]?.label || "Main"})
+                    </option>
                     {lookups.map((lk) => (
                       <option key={lk.node_id} value={lk.node_id}>
-                        {lk.label || lk.node_id} (Lookup)
+                        {lk.alias || lk.label || lk.node_id} ({lk.label || "Lookup"})
                       </option>
                     ))}
                   </select>
                 </div>
 
                 <div className="schema-grid-wrapper">
-                  <table className="schema-talend-table">
+                  <table className="schema-studio-table">
                     <thead>
                       <tr>
                         <th>Column</th>
@@ -1215,20 +1967,45 @@ export const TMapModal: React.FC<TMapModalProps> = ({
               <div className="schema-transfer-center">
                 <button
                   className="transfer-btn"
-                  title="Copiar todas as colunas da entrada para a saída ativa"
+                  title="Copiar todas as colunas da entrada para a saída ativa (sem duplicar nomes)"
                   onClick={() => {
                     const src = activeInputId === "main" ? mainSchema : lookupSchemas[activeInputId] || [];
-                    const prefix = activeInputId === "main" ? "row1" : activeInputId;
-                    const newCols: TMapOutputColumn[] = src.map((c) => ({
-                      id: `col-${Date.now()}-${c.name}`,
-                      target: c.name,
-                      expression: `${prefix}.${c.name}`,
-                      type: c.type,
-                      nullable: c.nullable,
-                      isPrimaryKey: c.isPrimaryKey,
-                    }));
+                    const prefix =
+                      activeInputId === "main"
+                        ? mainAlias
+                        : lookups.find((l) => l.node_id === activeInputId)?.alias ||
+                          lookups.find((l) => l.node_id === activeInputId)?.label ||
+                          activeInputId;
+                    const currentOut = outputs.find((o) => o.id === activeOutputId);
+                    const usedTargets = new Set((currentOut?.columns || []).map((c) => c.target.toLowerCase()));
+
+                    const addedCols: TMapOutputColumn[] = [];
+                    src.forEach((c) => {
+                      let targetName = c.name;
+                      if (usedTargets.has(targetName.toLowerCase())) {
+                        if (prefix && !usedTargets.has(`${prefix}_${c.name}`.toLowerCase())) {
+                          targetName = `${prefix}_${c.name}`;
+                        } else {
+                          let counter = 1;
+                          while (usedTargets.has(`${c.name}_${counter}`.toLowerCase())) {
+                            counter++;
+                          }
+                          targetName = `${c.name}_${counter}`;
+                        }
+                      }
+                      usedTargets.add(targetName.toLowerCase());
+                      addedCols.push({
+                        id: `col-${Date.now()}-${targetName}-${Math.random().toString(36).slice(2, 5)}`,
+                        target: targetName,
+                        expression: `${prefix}.${c.name}`,
+                        type: c.type,
+                        nullable: c.nullable,
+                        isPrimaryKey: c.isPrimaryKey,
+                      });
+                    });
+
                     setOutputs(
-                      outputs.map((o) => (o.id === activeOutputId ? { ...o, columns: newCols } : o))
+                      outputs.map((o) => (o.id === activeOutputId ? { ...o, columns: [...o.columns, ...addedCols] } : o))
                     );
                   }}
                 >
@@ -1263,9 +2040,16 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                     <button
                       className="btn btn-ghost btn-xs"
                       onClick={() => {
+                        const existingTargets = new Set(
+                          (activeOutput?.columns || []).map((c) => c.target.toLowerCase())
+                        );
+                        let counter = (activeOutput?.columns.length || 0) + 1;
+                        while (existingTargets.has(`col_${counter}`.toLowerCase())) {
+                          counter++;
+                        }
                         const newCol: TMapOutputColumn = {
                           id: `col-${Date.now()}`,
-                          target: `col_${(activeOutput?.columns.length || 0) + 1}`,
+                          target: `col_${counter}`,
                           expression: "",
                           type: "String",
                           nullable: true,
@@ -1283,7 +2067,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                 </div>
 
                 <div className="schema-grid-wrapper">
-                  <table className="schema-talend-table">
+                  <table className="schema-studio-table">
                     <thead>
                       <tr>
                         <th>Column</th>
@@ -1485,6 +2269,21 @@ export const TMapModal: React.FC<TMapModalProps> = ({
             </div>
           )}
         </div>
+
+        {importModalOutputId && (
+          <ImportSchemaModal
+            isOpen={Boolean(importModalOutputId)}
+            onClose={() => setImportModalOutputId(null)}
+            onImport={handleImportToOutput}
+            currentSchema={(outputs.find((o) => o.id === importModalOutputId)?.columns || []).map((c) => ({
+              id: c.id,
+              name: c.target,
+              type: c.type || "String",
+              nullable: c.nullable ?? true,
+            }))}
+            title={`Importar Schema para Saída: ${outputs.find((o) => o.id === importModalOutputId)?.name || importModalOutputId}`}
+          />
+        )}
       </div>
     </div>
   );

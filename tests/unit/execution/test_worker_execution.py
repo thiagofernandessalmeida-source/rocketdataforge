@@ -152,3 +152,178 @@ def test_worker_scan_with_schema_definitions(tmp_path):
     out_df = pl.read_parquet(output_parquet)
     assert out_df.height == 3
     assert out_df["vote_count"][2] == "en"
+
+
+def test_worker_db_scan_named_cursor_success(monkeypatch, tmp_path):
+    from unittest.mock import MagicMock
+    import psycopg2
+
+    mock_conn = MagicMock()
+    mock_setup_cur = MagicMock()
+    mock_named_cur = MagicMock()
+
+    named_execute_calls = []
+    def named_execute(q):
+        named_execute_calls.append(q)
+        if len(named_execute_calls) > 1:
+            raise psycopg2.ProgrammingError("can't call .execute() on named cursors more than once")
+
+    mock_named_cur.execute.side_effect = named_execute
+    mock_named_cur.description = [("id", 23), ("val", 1043)]
+    mock_named_cur.fetchmany.side_effect = [[(1, "A"), (2, "B")], []]
+
+    def fake_cursor(name=None):
+        if name:
+            return mock_named_cur
+        mock_ctx = MagicMock()
+        mock_ctx.__enter__.return_value = mock_setup_cur
+        return mock_ctx
+
+    mock_conn.cursor.side_effect = fake_cursor
+    mock_conn.closed = False
+
+    monkeypatch.setattr(psycopg2, "connect", MagicMock(return_value=mock_conn))
+
+    plan = PhysicalPlan(
+        pipeline_id="pipe-db-test",
+        default_chunk_size=10,
+        execution_order=["pg_node"],
+        operators={
+            "pg_node": PhysicalOperator(
+                id="postgres_source_1",
+                operator_type="scan",
+                engine="polars",
+                input_ids=[],
+                config={
+                    "source": "SELECT id, val FROM my_table",
+                    "format": "postgres",
+                    "connection_details": {
+                        "host": "localhost",
+                        "database": "testdb",
+                        "username": "usr",
+                        "password": "pwd"
+                    }
+                }
+            )
+        }
+    )
+
+    execution = Execution(id="exec-db-1", pipeline_version_id="ver-1.0.0", correlation_id="corr-1")
+    file_connector = LocalFileConnector(base_directory=str(tmp_path))
+    worker = ExecutionWorker(file_connector=file_connector)
+
+    res = worker.run(execution, plan)
+    assert res.status == ExecutionStatus.SUCCEEDED
+    assert len(named_execute_calls) == 1
+    assert "SELECT id, val FROM my_table" in named_execute_calls[0]
+    mock_setup_cur.execute.assert_called_once_with("SET statement_timeout = 0;")
+
+
+def test_duckdb_sink_uses_custom_table_name(tmp_path):
+    import duckdb
+
+    db_path = tmp_path / "custom_test.duckdb"
+    plan = PhysicalPlan(
+        pipeline_id="pipe-duckdb-table-test",
+        execution_order=["src_node", "sink_node"],
+        operators={
+            "src_node": PhysicalOperator(
+                id="src_node",
+                operator_type="scan",
+                engine="duckdb",
+                input_ids=[],
+                config={
+                    "format": "duckdb",
+                    "source": "SELECT 101 AS consultant_code, 202601 AS operational_cycle, 95.5 AS index_value",
+                },
+            ),
+            "sink_node": PhysicalOperator(
+                id="sink_node",
+                operator_type="sink",
+                engine="duckdb",
+                input_ids=["src_node"],
+                config={
+                    "format": "duckdb",
+                    "database_path": str(db_path),
+                    "table": "consultant_index",
+                    "target": "consultant_index",
+                    "table_action": "create_if_not_exists",
+                    "data_action": "insert",
+                    "raw_config": {
+                        "table": "consultant_index",
+                    },
+                },
+            ),
+        },
+    )
+
+    execution = Execution(id="exec-table-1", pipeline_version_id="ver-1.0.0", correlation_id="corr-table")
+    worker = ExecutionWorker()
+    res = worker.run(execution, plan)
+
+    assert res.status == ExecutionStatus.SUCCEEDED
+    conn = duckdb.connect(str(db_path))
+    tables = [r[0] for r in conn.execute("SHOW TABLES;").fetchall()]
+    conn.close()
+
+    assert "consultant_index" in tables
+    assert "output_table" not in tables
+
+
+def test_worker_interpolate_tokens_cloned_node_fallback():
+    """Testa se {{postgres_source_1.person_code}} é resolvido quando o nó clonado tem id postgres_source_1_mv9ry0l6hi5f
+
+    e as colunas no dataset estão em UPPERCASE vindo do conector.
+    """
+    worker = ExecutionWorker()
+    row = {"PERSON_CODE": "P12345", "NAME": "Alice"}
+    cloned_upstream_id = "postgres_source_1_mv9ry0l6hi5f"
+
+    # Token com prefixo do nó original antes da clonagem
+    query = "SELECT * FROM consultants WHERE code = {{postgres_source_1.person_code}} AND name = '{{postgres_source_1.name}}'"
+    interpolated = worker._interpolate_tokens(query, row, upstream_id=cloned_upstream_id, is_sql=True)
+
+    assert "code = 'P12345'" in interpolated
+    assert "name = 'Alice'" in interpolated
+
+
+def test_worker_tmap_execution_with_target_id_buffers():
+    """Testa se o ExecutionWorker roteia os buffers do tMap tanto por out_name quanto por targetId."""
+    worker = ExecutionWorker()
+    node_buffers = {
+        "src_main": [pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})]
+    }
+
+    phys_op = PhysicalOperator(
+        id="tmap_1",
+        operator_type="tmap",
+        engine="duckdb",
+        input_ids=["src_main"],
+        config={
+            "main_input_id": "src_main",
+            "main_alias": "main1",
+            "outputs": [
+                {
+                    "name": "out1",
+                    "targetId": "sink_table_4",
+                    "columns": [
+                        {"target": "id", "expression": "main1.id"},
+                        {"target": "val", "expression": "main1.val"}
+                    ]
+                }
+            ]
+        }
+    )
+
+    execution = Execution(id="exec-tmap", pipeline_version_id="ver-1.0.0", correlation_id="corr-tmap")
+    task = execution.add_task("tmap_1")
+
+    worker._execute_tmap_node(phys_op, phys_op.config, None, task, node_buffers)
+
+    # Verifica se os buffers foram mapeados para todas as portas esperadas
+    assert "tmap_1" in node_buffers
+    assert "tmap_1:out1" in node_buffers
+    assert "tmap_1:sink_table_4" in node_buffers
+    assert node_buffers["tmap_1:sink_table_4"][0].height == 2
+
+

@@ -1,0 +1,53 @@
+[
+  {
+    "id": "brm",
+    "name": "brm",
+    "type": "postgresql",
+    "scope": "global",
+    "environments": [
+      "dev",
+      "hml",
+      "prd"
+    ],
+    "config": {
+      "host": "localhost",
+      "port": 5432,
+      "database": "brm",
+      "username": "postgres",
+      "password": ""
+    }
+  },
+  {
+    "id": "oracle_o02hm",
+    "name": "oracle_o02hm",
+    "type": "oracle",
+    "scope": "global",
+    "environments": [
+      "dev",
+      "hml",
+      "prd"
+    ],
+    "config": {
+      "host": "aslx370br.natura.com.br",
+      "port": 1521,
+      "service_name": "o02hm",
+      "database": "o02hm",
+      "username": "THIAGOFERNANDES",
+      "password": ""
+    }
+  },
+  {
+    "id": "duckdb_analytics",
+    "name": "duckdb_analytics",
+    "type": "duckdb",
+    "scope": "global",
+    "environments": [
+      "dev",
+      "hml",
+      "prd"
+    ],
+    "config": {
+      "database_path": "data/analytics.duckdb"
+    }
+  }
+]

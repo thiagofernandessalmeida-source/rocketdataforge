@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Node, Edge } from "reactflow";
 import {
   Plus,
@@ -16,9 +16,12 @@ import {
   ChevronRight,
   RotateCcw,
   RefreshCw,
+  Code,
+  Code2,
 } from "lucide-react";
 
 import { CanvasCellCard } from "./CanvasCellCard";
+import { ExportCodegenModal } from "../codegen/ExportCodegenModal";
 import {
   jobStore,
   CanvasCellData,
@@ -28,6 +31,7 @@ import {
   detectCellCycles,
   validateParallelCellConsistency,
 } from "../../../store/jobStore";
+import { telemetryStore } from "../../../store/telemetryStore";
 import { CanvasNodeData } from "../../../types";
 
 interface MultiCanvasContainerProps {
@@ -56,12 +60,45 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
     job.activeCellId || job.cells?.[0]?.id || "canvas-cell-01"
   );
   const [isOrchestrating, setIsOrchestrating] = useState(false);
+  const [isJobExportModalOpen, setIsJobExportModalOpen] = useState(false);
   const cancelOrchestrationRef = useRef(false);
 
   const cells = job.cells && job.cells.length > 0 ? job.cells : [];
 
   // Sort cells by order
   const sortedCells = [...cells].sort((a, b) => a.order - b.order);
+
+  // Serializa o job inteiro para compilação autônoma (Python / Airflow)
+  const currentJobDef = useMemo(() => ({
+    metadata: {
+      id: job.id,
+      name: job.name,
+    },
+    spec: {
+      cells: sortedCells.map((c) => ({
+        id: c.id,
+        name: c.name,
+        cellType: c.cellType || "CANVAS",
+        codeSnippet: c.codeSnippet || "",
+        order: c.order,
+        preconditions: c.preconditions || [],
+        preconditionOperator: c.preconditionOperator || "AND",
+        is_active: c.is_active !== false,
+        nodes: (c.nodes || []).map((n) => ({
+          id: n.id,
+          component: {
+            type: n.data?.componentType || "generic",
+            version: n.data?.componentVersion || "1.0.0",
+          },
+          config: n.data?.config || {},
+        })),
+        edges: (c.edges || []).map((e) => ({
+          from: e.sourceHandle ? `${e.source}.${e.sourceHandle}` : `${e.source}.output`,
+          to: e.targetHandle ? `${e.target}.${e.targetHandle}` : `${e.target}.input`,
+        })),
+      })),
+    },
+  }), [job, sortedCells]);
 
   // Sync active cell if current one was removed
   useEffect(() => {
@@ -77,6 +114,15 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
     }
   }, [cells, focusCellId]);
 
+  // Sincroniza a célula ativa tanto localmente quanto no jobStore
+  const handleSelectCell = useCallback(
+    (cellId: string) => {
+      setActiveCellId(cellId);
+      jobStore.setActiveCell(job.id, cellId);
+    },
+    [job.id]
+  );
+
   // ─── Cell Operations ──────────────────────────────────────────
 
   const handleAddCell = () => {
@@ -84,6 +130,14 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
     if (newCell) {
       setActiveCellId(newCell.id);
       showToast?.("success", `Nova célula "${newCell.name}" adicionada ao Job!`);
+    }
+  };
+
+  const handleAddPythonCell = () => {
+    const newCell = jobStore.createCell(job.id, undefined, "PYTHON");
+    if (newCell) {
+      setActiveCellId(newCell.id);
+      showToast?.("success", `Nova Célula Python "${newCell.name}" adicionada ao Job!`);
     }
   };
 
@@ -251,6 +305,14 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
               return;
             }
 
+            // Intercepta células desativadas (is_active === false)
+            if (cell.is_active === false) {
+              jobStore.setCellStatus(job.id, cell.id, "skipped");
+              completedStatuses[cell.id] = "skipped";
+              completedStatuses[cell.name] = "skipped";
+              return;
+            }
+
             const canRun = evaluateCellPreconditions(cell, completedStatuses as any, sortedCells);
 
             if (!canRun) {
@@ -387,8 +449,12 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
               className="btn btn-secondary"
               style={{ fontSize: "0.74rem", padding: "4px 9px", color: "#fbbf24", borderColor: "rgba(245, 158, 11, 0.3)" }}
               onClick={() => {
+                const activeCell = sortedCells.find((c) => c.id === activeCellId);
+                if (activeCell && activeCell.status === "running") {
+                  handleStopSingleCell(activeCell);
+                }
                 jobStore.resetCellStatus(job.id, activeCellId);
-                showToast?.("info", `Status da célula "${sortedCells.find((c) => c.id === activeCellId)?.name || activeCellId}" resetado.`);
+                showToast?.("info", `Status da célula "${activeCell?.name || activeCellId}" resetado.`);
               }}
               title="Resetar status da célula ativa para idle"
             >
@@ -400,7 +466,17 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
               className="btn btn-secondary"
               style={{ fontSize: "0.74rem", padding: "4px 9px", color: "#fbbf24", borderColor: "rgba(245, 158, 11, 0.3)" }}
               onClick={() => {
+                if (isOrchestrating) {
+                  handleStopOrchestrated();
+                } else {
+                  sortedCells.forEach((c) => {
+                    if (c.status === "running") {
+                      handleStopSingleCell(c);
+                    }
+                  });
+                }
                 jobStore.resetAllCellsStatus(job.id);
+                telemetryStore.reset();
                 showToast?.("info", "Status de todas as células resetado.");
               }}
               title="Resetar status de todas as células do Job para idle"
@@ -410,16 +486,61 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
             </button>
           </div>
 
-          {/* Add Cell Button */}
+          {/* Add Canvas Cell Button */}
           <button
             type="button"
             className="btn btn-secondary"
             style={{ fontSize: "0.76rem", padding: "4px 11px" }}
             onClick={handleAddCell}
-            title="Adicionar nova etapa (canvas-cell) ao Job"
+            title="Adicionar nova etapa visual (canvas-cell) ao Job"
           >
             <Plus size={13} />
             <span>Nova Canvas-Cell</span>
+          </button>
+
+          {/* Add Python Cell Button (Enterprise Option) */}
+          {jobStore.isPythonCellsEnabled() && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{
+                fontSize: "0.76rem",
+                padding: "4px 11px",
+                borderColor: "rgba(245, 158, 11, 0.4)",
+                color: "#fbbf24",
+                background: "rgba(245, 158, 11, 0.08)",
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+              }}
+              onClick={handleAddPythonCell}
+              title="Adicionar nova etapa de código Python (python-cell / Jupyter Notebook) ao Job"
+            >
+              <Code2 size={13} />
+              <span>Nova Célula Python</span>
+            </button>
+          )}
+
+          {/* Export Full Job Button (Spec 006 - Fase 3) */}
+          <button
+            type="button"
+            className="btn btn-secondary"
+            id="btn-export-full-job"
+            style={{
+              fontSize: "0.76rem",
+              padding: "4px 11px",
+              borderColor: "rgba(99, 102, 241, 0.4)",
+              color: "#a5b4fc",
+              background: "rgba(99, 102, 241, 0.08)",
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+            }}
+            onClick={() => setIsJobExportModalOpen(true)}
+            title="Exportar o Job Inteiro como código Python autônomo (DuckDB/Polars) ou Airflow DAG"
+          >
+            <Code size={13} color="#818cf8" />
+            <span>Exportar Job (Python)</span>
           </button>
 
           {/* Orchestrated Run / Stop Button */}
@@ -446,7 +567,7 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
               type="button"
               className="btn btn-success"
               style={{ fontSize: "0.76rem", padding: "4px 12px", gap: 6 }}
-              onClick={handleRunOrchestrated}
+              onClick={onRunEntireJob || handleRunOrchestrated}
               title="Executa todas as células respeitando ordens, pré-condições e isolamento de escrita DuckDB"
             >
               <Play size={12} fill="currentColor" />
@@ -473,11 +594,12 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
             <CanvasCellCard
               key={focusedCell.id}
               cell={focusedCell}
+              jobId={job.id}
               allCells={sortedCells}
               isFocusMode={true}
               isActive={true}
               canDelete={sortedCells.length > 1}
-              onSelectCell={setActiveCellId}
+              onSelectCell={handleSelectCell}
               onUpdateGraph={handleUpdateGraph}
               onRenameCell={handleRenameCell}
               onUpdateCellMeta={handleUpdateCellMeta}
@@ -487,6 +609,10 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
               onRunSingleCell={handleRunSingleCell}
               onStopSingleCell={handleStopSingleCell}
               onResetStatus={(cellId) => {
+                const target = sortedCells.find((c) => c.id === cellId);
+                if (target && target.status === "running") {
+                  handleStopSingleCell(target);
+                }
                 jobStore.resetCellStatus(job.id, cellId);
                 showToast?.("info", "Status da célula resetado.");
               }}
@@ -501,11 +627,12 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
               <CanvasCellCard
                 key={cell.id}
                 cell={cell}
+                jobId={job.id}
                 allCells={sortedCells}
                 isFocusMode={false}
                 isActive={activeCellId === cell.id}
                 canDelete={sortedCells.length > 1}
-                onSelectCell={setActiveCellId}
+                onSelectCell={handleSelectCell}
                 onUpdateGraph={handleUpdateGraph}
                 onRenameCell={handleRenameCell}
                 onUpdateCellMeta={handleUpdateCellMeta}
@@ -517,6 +644,10 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
                 onRunSingleCell={handleRunSingleCell}
                 onStopSingleCell={handleStopSingleCell}
                 onResetStatus={(cellId) => {
+                  const target = sortedCells.find((c) => c.id === cellId);
+                  if (target && target.status === "running") {
+                    handleStopSingleCell(target);
+                  }
                   jobStore.resetCellStatus(job.id, cellId);
                   showToast?.("info", "Status da célula resetado.");
                 }}
@@ -530,6 +661,8 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
               style={{
                 display: "flex",
                 justifyContent: "center",
+                alignItems: "center",
+                gap: 12,
                 padding: "16px 0 24px",
               }}
             >
@@ -544,12 +677,40 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
                 }}
                 onClick={handleAddCell}
               >
-                <Plus size={14} /> Adicionar Próxima Canvas-Cell
+                <Plus size={14} /> Adicionar Canvas-Cell
               </button>
+
+              {jobStore.isPythonCellsEnabled() && (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{
+                    borderStyle: "dashed",
+                    padding: "8px 20px",
+                    fontSize: "0.8rem",
+                    borderColor: "rgba(245, 158, 11, 0.4)",
+                    color: "#fbbf24",
+                    background: "rgba(245, 158, 11, 0.05)",
+                  }}
+                  onClick={handleAddPythonCell}
+                >
+                  <Code2 size={14} /> Adicionar Célula Python
+                </button>
+              )}
             </div>
           </div>
         )}
       </div>
+      {/* ─── Modal de Exportação do Job Inteiro (Spec 006 - Fase 3) ─── */}
+      <ExportCodegenModal
+        isOpen={isJobExportModalOpen}
+        onClose={() => setIsJobExportModalOpen(false)}
+        pipelineId={job.id}
+        pipelineName={job.name}
+        jobDefinition={currentJobDef}
+        jobName={job.name}
+        initialScope="job"
+      />
     </div>
   );
 };

@@ -77,7 +77,10 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "Oracle Database",
     category: "source",
     description: "Conecta ao Oracle DB via JDBC — suporte a 11g, 12c, 19c, 21c",
-    ports: [{ name: "main", direction: "output", type: "dataset" }],
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" }
+    ],
     config_schema: { connection_ref: "string", query: "string", fetch_size: "number" },
     capabilities: { supports_filter_pushdown: true, supports_projection_pushdown: true, supports_chunked_read: true, supports_bulk_write: false },
   },
@@ -87,7 +90,10 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "SQL Server / Azure SQL",
     category: "source",
     description: "Microsoft SQL Server — suporte a SQL Server 2014+, Azure SQL",
-    ports: [{ name: "main", direction: "output", type: "dataset" }],
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" }
+    ],
     config_schema: { connection_ref: "string", query: "string", fetch_size: "number" },
     capabilities: { supports_filter_pushdown: true, supports_projection_pushdown: true, supports_chunked_read: true, supports_bulk_write: false },
   },
@@ -97,8 +103,11 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "MySQL / MariaDB",
     category: "source",
     description: "MySQL 5.7+ e MariaDB 10.3+ via JDBC",
-    ports: [{ name: "main", direction: "output", type: "dataset" }],
-    config_schema: { connection_ref: "string", query: "string" },
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" }
+    ],
+    config_schema: { connection_ref: "string", query: "string", fetch_size: "number" },
     capabilities: { supports_filter_pushdown: true, supports_projection_pushdown: true, supports_chunked_read: true, supports_bulk_write: false },
   },
   {
@@ -107,8 +116,11 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "PostgreSQL",
     category: "source",
     description: "PostgreSQL 12+ via psycopg2 — suporte a COPY e JSONB",
-    ports: [{ name: "main", direction: "output", type: "dataset" }],
-    config_schema: { connection_ref: "string", query: "string", schema: "string" },
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" }
+    ],
+    config_schema: { connection_ref: "string", query: "string", schema: "string", fetch_size: "number" },
     capabilities: { supports_filter_pushdown: true, supports_projection_pushdown: true, supports_chunked_read: true, supports_bulk_write: false },
   },
   {
@@ -117,8 +129,11 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "Amazon Redshift",
     category: "source",
     description: "Amazon Redshift — data warehouse colunár na AWS",
-    ports: [{ name: "main", direction: "output", type: "dataset" }],
-    config_schema: { connection_ref: "string", query: "string", schema: "string" },
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" }
+    ],
+    config_schema: { connection_ref: "string", query: "string", schema: "string", fetch_size: "number" },
     capabilities: { supports_filter_pushdown: true, supports_projection_pushdown: true, supports_chunked_read: false, supports_bulk_write: false },
   },
   {
@@ -127,7 +142,10 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "Databricks (Delta Lake)",
     category: "source",
     description: "Databricks SQL Warehouse via HTTP — Unity Catalog e Delta",
-    ports: [{ name: "main", direction: "output", type: "dataset" }],
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" }
+    ],
     config_schema: { connection_ref: "string", catalog: "string", schema: "string", query: "string" },
     capabilities: { supports_filter_pushdown: true, supports_projection_pushdown: true, supports_chunked_read: false, supports_bulk_write: false },
   },
@@ -137,7 +155,10 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "Snowflake",
     category: "source",
     description: "Snowflake Data Cloud — suporte a Virtual Warehouses",
-    ports: [{ name: "main", direction: "output", type: "dataset" }],
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" }
+    ],
     config_schema: { connection_ref: "string", warehouse: "string", database: "string", schema: "string", query: "string" },
     capabilities: { supports_filter_pushdown: true, supports_projection_pushdown: true, supports_chunked_read: false, supports_bulk_write: false },
   },
@@ -147,7 +168,10 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "Google BigQuery",
     category: "source",
     description: "BigQuery via Service Account JSON ou ADC",
-    ports: [{ name: "main", direction: "output", type: "dataset" }],
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" }
+    ],
     config_schema: { connection_ref: "string", project: "string", dataset: "string", query: "string" },
     capabilities: { supports_filter_pushdown: true, supports_projection_pushdown: true, supports_chunked_read: false, supports_bulk_write: false },
   },
@@ -158,7 +182,10 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "AWS S3 Bucket",
     category: "source",
     description: "Lê objetos do S3 — suporte a CSV, Parquet, JSON, ORC",
-    ports: [{ name: "main", direction: "output", type: "dataset" }],
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" }
+    ],
     config_schema: { connection_ref: "string", bucket: "string", prefix: "string", format: "string" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: true, supports_chunked_read: true, supports_bulk_write: false },
   },
@@ -168,7 +195,10 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "Azure Blob Storage",
     category: "source",
     description: "Lê blobs do Azure Storage — ADLS Gen2 e Blob",
-    ports: [{ name: "main", direction: "output", type: "dataset" }],
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" }
+    ],
     config_schema: { connection_ref: "string", container: "string", blob_path: "string", format: "string" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: true, supports_chunked_read: true, supports_bulk_write: false },
   },
@@ -178,7 +208,10 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "Google Cloud Storage",
     category: "source",
     description: "Lê arquivos do GCS — suporte a múltiplos formatos",
-    ports: [{ name: "main", direction: "output", type: "dataset" }],
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" }
+    ],
     config_schema: { connection_ref: "string", bucket: "string", object_prefix: "string", format: "string" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: true, supports_bulk_write: false },
   },
@@ -189,7 +222,10 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "REST API Input",
     category: "source",
     description: "Consome endpoints REST com paginação automática",
-    ports: [{ name: "main", direction: "output", type: "dataset" }],
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" }
+    ],
     config_schema: { connection_ref: "string", endpoint: "string", method: "string", pagination_type: "string", data_path: "string" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: true, supports_bulk_write: false },
   },
@@ -199,7 +235,10 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "MongoDB",
     category: "source",
     description: "MongoDB — documentos NoSQL, suporte a aggregation pipeline",
-    ports: [{ name: "main", direction: "output", type: "dataset" }],
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" }
+    ],
     config_schema: { connection_ref: "string", collection: "string", filter: "string" },
     capabilities: { supports_filter_pushdown: true, supports_projection_pushdown: true, supports_chunked_read: false, supports_bulk_write: false },
   },
@@ -209,8 +248,20 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "ScyllaDB / Cassandra",
     category: "source",
     description: "Lê dados distribuídos de alta vazão no ScyllaDB via consultas CQL",
-    ports: [{ name: "main", direction: "output", type: "dataset" }],
-    config_schema: { connection_ref: "string", keyspace: "string", table: "string", query: "string" },
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" }
+    ],
+    config_schema: {
+      connection_ref: "string",
+      keyspace: "string",
+      table: "string",
+      query: "string",
+      fetch_size: "number",
+      consistency_level: "string",
+      parallel_scans: "number",
+      timeout_seconds: "number",
+    },
     capabilities: { supports_filter_pushdown: true, supports_projection_pushdown: true, supports_chunked_read: true, supports_bulk_write: false },
   },
   {
@@ -219,7 +270,10 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "Apache Kafka Consumer",
     category: "source",
     description: "Consome mensagens de streaming em tempo real a partir de tópicos Kafka",
-    ports: [{ name: "main", direction: "output", type: "dataset" }],
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" }
+    ],
     config_schema: { connection_ref: "string", topic: "string", consumer_group: "string", max_messages: "number" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: true, supports_bulk_write: false },
   },
@@ -229,7 +283,10 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "AWS SQS Consumer",
     category: "source",
     description: "Consome mensagens de filas AWS SQS (Standard ou FIFO) com parsing JSON",
-    ports: [{ name: "main", direction: "output", type: "dataset" }],
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" }
+    ],
     config_schema: { connection_ref: "string", queue_url: "string", max_messages: "number", wait_time_seconds: "number" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: true, supports_bulk_write: false },
   },
@@ -392,7 +449,11 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "DuckDB Output",
     category: "target",
     description: "Grava dados em arquivo DuckDB (.duckdb) ou memória com ações de tabela e dados",
-    ports: [{ name: "input", direction: "input", type: "dataset" }],
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" },
+      { name: "reject", direction: "output", type: "reject" },
+    ],
     config_schema: { database_path: "string", table: "string", table_action: "string", data_action: "string" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: true },
   },
@@ -402,7 +463,11 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "File Output",
     category: "target",
     description: "Grava dados em arquivo local (CSV, Parquet, JSON)",
-    ports: [{ name: "input", direction: "input", type: "dataset" }],
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" },
+      { name: "reject", direction: "output", type: "reject" },
+    ],
     config_schema: { path: "string", format: "string", write_mode: "string" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: true },
   },
@@ -413,7 +478,11 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "Oracle Output",
     category: "target",
     description: "Grava dados no Oracle — INSERT, UPSERT, UPDATE",
-    ports: [{ name: "input", direction: "input", type: "dataset" }],
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" },
+      { name: "reject", direction: "output", type: "reject" },
+    ],
     config_schema: { connection_ref: "string", table: "string", write_mode: "string", batch_size: "number" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: true },
   },
@@ -423,8 +492,12 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "SQL Server Output",
     category: "target",
     description: "Grava dados no SQL Server — BulkCopy, MERGE, INSERT",
-    ports: [{ name: "input", direction: "input", type: "dataset" }],
-    config_schema: { connection_ref: "string", table: "string", schema: "string", write_mode: "string" },
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" },
+      { name: "reject", direction: "output", type: "reject" },
+    ],
+    config_schema: { connection_ref: "string", table: "string", schema: "string", write_mode: "string", use_batch_mode: "boolean", batch_size: "number" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: true },
   },
   {
@@ -433,8 +506,12 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "PostgreSQL Output",
     category: "target",
     description: "Grava dados no PostgreSQL — COPY, INSERT ON CONFLICT",
-    ports: [{ name: "input", direction: "input", type: "dataset" }],
-    config_schema: { connection_ref: "string", table: "string", schema: "string", write_mode: "string" },
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" },
+      { name: "reject", direction: "output", type: "reject" },
+    ],
+    config_schema: { connection_ref: "string", table: "string", schema: "string", write_mode: "string", use_batch_mode: "boolean", batch_size: "number" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: true },
   },
   {
@@ -443,8 +520,12 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "MySQL Output",
     category: "target",
     description: "Grava dados no MySQL — LOAD DATA, INSERT, REPLACE",
-    ports: [{ name: "input", direction: "input", type: "dataset" }],
-    config_schema: { connection_ref: "string", table: "string", write_mode: "string" },
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" },
+      { name: "reject", direction: "output", type: "reject" },
+    ],
+    config_schema: { connection_ref: "string", table: "string", write_mode: "string", use_batch_mode: "boolean", batch_size: "number" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: true },
   },
   {
@@ -453,8 +534,12 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "Redshift Output",
     category: "target",
     description: "Grava no Redshift via COPY do S3 ou INSERT",
-    ports: [{ name: "input", direction: "input", type: "dataset" }],
-    config_schema: { connection_ref: "string", table: "string", schema: "string", write_mode: "string" },
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" },
+      { name: "reject", direction: "output", type: "reject" },
+    ],
+    config_schema: { connection_ref: "string", table: "string", schema: "string", write_mode: "string", use_batch_mode: "boolean", batch_size: "number" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: true },
   },
   {
@@ -463,7 +548,11 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "S3 Output",
     category: "target",
     description: "Grava arquivos no S3 — Parquet, CSV, JSON, ORC",
-    ports: [{ name: "input", direction: "input", type: "dataset" }],
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" },
+      { name: "reject", direction: "output", type: "reject" },
+    ],
     config_schema: { connection_ref: "string", bucket: "string", prefix: "string", format: "string", partitioned_by: "array" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: true },
   },
@@ -473,7 +562,11 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "REST API Output",
     category: "target",
     description: "Envia dados para endpoint REST — POST, PUT, PATCH em lotes",
-    ports: [{ name: "input", direction: "input", type: "dataset" }],
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" },
+      { name: "reject", direction: "output", type: "reject" },
+    ],
     config_schema: { connection_ref: "string", endpoint: "string", method: "string", batch_size: "number" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: false },
   },
@@ -483,7 +576,11 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "Databricks Output",
     category: "target",
     description: "Escreve em Delta Tables no Databricks — merge, append, overwrite",
-    ports: [{ name: "input", direction: "input", type: "dataset" }],
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" },
+      { name: "reject", direction: "output", type: "reject" },
+    ],
     config_schema: { connection_ref: "string", catalog: "string", schema: "string", table: "string", write_mode: "string" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: true },
   },
@@ -493,8 +590,22 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "ScyllaDB / Cassandra Output",
     category: "target",
     description: "Grava registros em alta performance no ScyllaDB via batches CQL",
-    ports: [{ name: "input", direction: "input", type: "dataset" }],
-    config_schema: { connection_ref: "string", table: "string", batch_size: "number" },
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" },
+      { name: "reject", direction: "output", type: "reject" },
+    ],
+    config_schema: {
+      connection_ref: "string",
+      keyspace: "string",
+      table: "string",
+      write_strategy: "string",
+      concurrency: "number",
+      batch_size: "number",
+      consistency_level: "string",
+      table_action: "string",
+      timeout_seconds: "number",
+    },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: true },
   },
   {
@@ -503,7 +614,11 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "Apache Kafka Producer",
     category: "target",
     description: "Publica mensagens e eventos serializados em JSON em tópicos Kafka",
-    ports: [{ name: "input", direction: "input", type: "dataset" }],
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" },
+      { name: "reject", direction: "output", type: "reject" },
+    ],
     config_schema: { connection_ref: "string", topic: "string", key_column: "string" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: true },
   },
@@ -513,7 +628,11 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "AWS SQS Producer",
     category: "target",
     description: "Envia mensagens em lote para filas AWS SQS (Standard ou FIFO)",
-    ports: [{ name: "input", direction: "input", type: "dataset" }],
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" },
+      { name: "reject", direction: "output", type: "reject" },
+    ],
     config_schema: { connection_ref: "string", queue_url: "string", message_group_id: "string" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: true },
   },
@@ -523,8 +642,26 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
     name: "AWS SNS Publisher",
     category: "target",
     description: "Dispara eventos e notificações em tópicos Pub/Sub do AWS SNS",
-    ports: [{ name: "input", direction: "input", type: "dataset" }],
+    ports: [
+      { name: "input", direction: "input", type: "dataset" },
+      { name: "main", direction: "output", type: "dataset" },
+      { name: "reject", direction: "output", type: "reject" },
+    ],
     config_schema: { connection_ref: "string", topic_arn: "string", subject: "string" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: true },
+  },
+  {
+    type_id: "control.sync",
+    version: "1.0.0",
+    name: "Sync Barrier (Wait All)",
+    category: "control",
+    description: "Sincroniza e aguarda o término de múltiplas ramificações paralelas antes de liberar o próximo passo",
+    ports: [
+      { name: "trigger", direction: "input", type: "control" as any },
+      { name: "trigger", direction: "output", type: "control" as any },
+      { name: "main", direction: "output", type: "dataset" },
+    ],
+    config_schema: { mode: "string", timeout_seconds: "number", failure_policy: "string" },
+    capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: false },
   },
 ];

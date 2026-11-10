@@ -14,9 +14,9 @@
 | **TASK-031** | Token Parser `{node.col}` e Compilador de Iteração | Compiler | `operators.py`, `logical_planner.py`, `physical_planner.py` | ✅ Concluído |
 | **TASK-032** | Execução Iterativa Parametrizada no Worker | Execution Engine | `worker.py`, `duckdb_runner.py`, `postgres_connector.py` | ✅ Concluído |
 | **TASK-033** | Suporte DuckDB em Arquivos e Componentes `tDuckDb` | Connectors & Engines | `duckdb_runner.py`, `definitions.py`, `components.ts`, `worker.py` | ✅ Concluído |
-| **TASK-034** | Ações de Tabela e Dados no Padrão Talend em DB Outputs | Output Connectors | `postgres_connector.py`, `worker.py`, `PropertyPanel.tsx` | ✅ Concluído |
+| **TASK-034** | Ações de Tabela e Dados no Padrão Studio em DB Outputs | Output Connectors | `postgres_connector.py`, `worker.py`, `PropertyPanel.tsx` | ✅ Concluído |
 | **TASK-035** | Componente `tMap` (Transformação Visual Multi-Fluxo) | Compiler, UI & Engine | `tmap.py`, `operators.py`, `TMapModal.tsx`, `PropertyPanel.tsx` | ✅ Concluído |
-| **TASK-036** | IDs Simples no Estilo Talend e Renomeação de Nós | Frontend Designer | `Canvas.tsx`, `PropertyPanel.tsx`, `App.tsx` | ✅ Concluído |
+| **TASK-036** | IDs Simples no Estilo Studio e Renomeação de Nós | Frontend Designer | `Canvas.tsx`, `PropertyPanel.tsx`, `App.tsx` | ✅ Concluído |
 | **TASK-037** | Correção da Inferência Real de Schema (Bug 1) | Metadata & API | `schema_inferer.py`, `catalog.py`, `PropertyPanel.tsx` | ✅ Concluído |
 | **TASK-038** | Correção de Perda de Foco em Modais Flutuantes (Bug 2) | Frontend Designer | `PropertyPanel.tsx`, `FloatingNodeConfig.tsx` | ✅ Concluído |
 | **TASK-039** | Controles Individuais de Sidebars com Abas Persistentes | Frontend Layout | `App.tsx`, `Header.tsx`, `index.css` | ✅ Concluído |
@@ -40,7 +40,7 @@
   - Adicionar opção *"Tratar como Tabela DuckDB em Memória"* nos componentes de arquivo (CSV, Parquet, JSON, Excel), permitindo queries SQL nativas na leitura.
   - Criar os componentes canônicos `connector.db.duckdb` (`tDuckDbInput`) e `connector.db.duckdb.output` (`tDuckDbOutput`).
 
-### TASK-034: Ações de Tabela e Dados no Padrão Talend em DB Outputs
+### TASK-034: Ações de Tabela e Dados no Padrão Studio em DB Outputs
 - **Descrição:**
   - Adicionar as opções **Ação na Tabela** (`none`, `drop_create`, `create_if_not_exists`, `drop_if_exists_create`, `truncate`, `delete_all`).
   - Adicionar as opções **Ação nos Dados** (`insert`, `update`, `upsert`, `update_or_insert`, `delete`).
@@ -51,7 +51,7 @@
   - Implementar o componente `core.tmap` com suporte a fluxos de entrada (Main + Lookups), junções (Inner, Left Outer), tabela de variáveis (Var), múltiplos fluxos de saída nomeados e filtros booleanos por fluxo.
   - Criar a interface visual `TMapModal.tsx` com arrastar-e-soltar de colunas, auto-map e editor de expressões.
 
-### TASK-036: IDs Simples no Estilo Talend e Renomeação de Nós
+### TASK-036: IDs Simples no Estilo Studio e Renomeação de Nós
 - **Descrição:**
   - Gerar IDs concisos (ex: `tpostgresinput_1`, `tfileinput_1`, `tmap_1`, `tduckdbinput_1`).
   - Permitir a edição do ID no `PropertyPanel`, propagando a alteração para arestas e referências de variáveis.

@@ -38,3 +38,10 @@ class PortMismatchError(DomainError):
     """Lançada quando há tentativa de conectar portas incompatíveis."""
     def __init__(self, message: str, code: str = "ERR_PORT_MISMATCH"):
         super().__init__(message, code)
+
+class TMapExecutionError(DomainError):
+    """Lançada quando ocorre erro na execução do tMap (expressão de variável, join, coerção, etc.)."""
+    def __init__(self, message: str, node_id: str = "", var_name: str = "", code: str = "ERR_TMAP_EXECUTION"):
+        super().__init__(message, code)
+        self.node_id = node_id
+        self.var_name = var_name
