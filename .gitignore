@@ -69,3 +69,9 @@ data/samples/*.tmp
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ─── Packaging & Distribuição Standalone ─────────────────────
+packaging/build/
+packaging/dist/
+ui/release/
+*.spec.bak

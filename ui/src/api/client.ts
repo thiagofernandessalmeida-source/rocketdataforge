@@ -19,34 +19,75 @@ import {
 } from "../types";
 
 
-export const getBaseApiUrl = () => {
-  if (
+declare global {
+  interface Window {
+    cellflow?: {
+      apiBase?: string;
+      token?: string;
+      getConfig?: () => Promise<{ apiBase: string; token: string }>;
+    };
+  }
+}
+
+export const getCellflowConfig = (): { apiBase: string; token: string } => {
+  if (typeof window !== "undefined" && window.cellflow && window.cellflow.apiBase) {
+    return {
+      apiBase: window.cellflow.apiBase,
+      token: window.cellflow.token || "",
+    };
+  }
+  const viteToken =
+    (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_CELLFLOW_TOKEN) ||
+    (typeof process !== "undefined" && process.env?.VITE_CELLFLOW_TOKEN) ||
+    "";
+  const isViteDev =
     typeof window !== "undefined" &&
     window.location &&
     window.location.protocol.startsWith("http") &&
-    window.location.port === "5173"
-  ) {
-    return "/api/v1";
-  }
-  return "http://127.0.0.1:8000/api/v1";
+    window.location.port === "5173";
+  return {
+    apiBase: isViteDev ? "/api/v1" : "http://127.0.0.1:8000/api/v1",
+    token: viteToken,
+  };
 };
 
+export const getBaseApiUrl = () => {
+  return getCellflowConfig().apiBase;
+};
+
+export const getAuthToken = () => {
+  return getCellflowConfig().token;
+};
+
+export function createCellflowWebSocket(path: string): WebSocket {
+  const { apiBase, token } = getCellflowConfig();
+  const wsUrl = apiBase.replace(/^http/, "ws");
+  const separator = path.includes("?") ? "&" : "?";
+  const urlWithToken = token
+    ? `${wsUrl}${path}${separator}token=${encodeURIComponent(token)}`
+    : `${wsUrl}${path}`;
+  return new WebSocket(urlWithToken);
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const headers = {
+  const { apiBase, token } = getCellflowConfig();
+  const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    ...(options?.headers || {})
+    ...((options?.headers as Record<string, string>) || {}),
   };
 
-  const baseUrl = getBaseApiUrl();
+  if (token) {
+    headers["X-CellFlow-Token"] = token;
+  }
+
   let res: Response;
   try {
-    res = await fetch(`${baseUrl}${path}`, { ...options, headers });
+    res = await fetch(`${apiBase}${path}`, { ...options, headers });
   } catch (err: any) {
-    // Network-level failure: proxy itself couldn't reach the backend
+    // Falha em nível de rede
     throw new Error(
-      "Não foi possível conectar ao servidor backend. " +
-      "Certifique-se de que a API (FastAPI) está rodando na porta 8000 " +
-      "e que o frontend foi iniciado com 'npm run dev'."
+      `Não foi possível conectar ao servidor backend em ${apiBase}. ` +
+      "Certifique-se de que a API FastAPI está em execução."
     );
   }
 
