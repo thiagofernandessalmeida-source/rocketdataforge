@@ -73,3 +73,4 @@ jobs:
             ui/release/*.AppImage
             ui/release/*.deb
           if-no-files-found: warn
+

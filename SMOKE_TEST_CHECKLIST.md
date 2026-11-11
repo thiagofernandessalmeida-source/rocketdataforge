@@ -70,3 +70,4 @@ Este documento descreve o procedimento de validação operacional do instalador 
 | **Persistência isolada** | Nada gravado na pasta de instalação (somente CELLFLOW_HOME) | [ ] Aprovado |
 | **Workspace limpo** | Nenhuma referência corporativa; template neutro ativo | [ ] Aprovado |
 | **Desligamento perfeito** | Encerramento em cascata sem processos órfãos | [ ] Aprovado |
+

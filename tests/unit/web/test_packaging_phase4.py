@@ -73,3 +73,4 @@ def test_ci_workflow_and_smoke_test_checklist():
     chk_content = checklist_path.read_text(encoding="utf-8")
     assert "Smoke Test" in chk_content
     assert "cellflow-backend" in chk_content
+

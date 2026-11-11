@@ -67,3 +67,4 @@ def get_default_workspace_dir() -> Path:
     default_ws = docs / "CellFlow" / "Workspaces" / "Meu Workspace"
     default_ws.mkdir(parents=True, exist_ok=True)
     return default_ws
+
