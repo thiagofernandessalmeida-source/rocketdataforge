@@ -12,6 +12,7 @@ from src.core.application.compiler.expressions.nodes import (
     GroupNode
 )
 from src.core.application.compiler.expressions.routines import RoutineRegistry
+from src.core.domain.shared.exceptions import DomainValidationError
 
 
 class DuckDBSqlVisitor:
@@ -110,6 +111,11 @@ class DuckDBSqlVisitor:
                     return f'_tmap_working."{alias_candidate}.{col_lower}"'
                 else:
                     return f'{table_ref}."{real_col}"'
+            elif self.alias_map:
+                available = sorted(list(self.alias_map.keys()))
+                raise DomainValidationError(
+                    f"Alias '{parts[0]}' referenciado na expressão não existe. Aliases disponíveis: {available}"
+                )
 
         # Fallback padrão
         return ".".join(parts)

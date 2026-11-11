@@ -511,7 +511,55 @@ export const TMapModal: React.FC<TMapModalProps> = ({
     setImportModalOutputId(null);
   };
 
-  // ─── Inline Expression Validation (POST /api/v1/tmap/validate-expression) ───
+  // ─── Modal "Ver SQL" (Fase 2.5) ──────────────────────────────
+  const [viewSqlState, setViewSqlState] = useState<{
+    isOpen: boolean;
+    title: string;
+    targetName?: string;
+    expression?: string;
+    sqlQuery: string;
+    error: string | null;
+    loading: boolean;
+  }>({
+    isOpen: false,
+    title: "",
+    sqlQuery: "",
+    error: null,
+    loading: false,
+  });
+
+  const buildValidationContext = useCallback(() => {
+    const effectiveMain = (mainNode?.schema && mainNode.schema.length > 0) ? mainNode.schema : mainSchema;
+    const aliasMap: Record<string, any> = {};
+    const mainCols: Record<string, string> = {};
+    effectiveMain.forEach((c) => {
+      mainCols[c.name.toLowerCase()] = c.name;
+    });
+    aliasMap[mainAlias.toLowerCase()] = { table_ref: "_tmap_working", columns: mainCols };
+    aliasMap["main"] = { table_ref: "_tmap_working", columns: mainCols };
+    aliasMap["row1"] = { table_ref: "_tmap_working", columns: mainCols };
+
+    lookups.forEach((lk, idx) => {
+      const connectedNode = availableUpstreamNodes.find((un) => un.id === lk.node_id);
+      const schema = getLookupEffectiveSchema(lk, connectedNode, lookupSchemas);
+      const cols: Record<string, string> = {};
+      schema.forEach((c) => {
+        cols[c.name.toLowerCase()] = c.name;
+      });
+      const rawAlias = (lk.alias || "").trim();
+      if (rawAlias) {
+        aliasMap[rawAlias.toLowerCase()] = { table_ref: "_tmap_working", columns: cols };
+      } else {
+        aliasMap[`lkp${idx + 1}`] = { table_ref: "_tmap_working", columns: cols };
+        aliasMap[`row${idx + 2}`] = { table_ref: "_tmap_working", columns: cols };
+      }
+    });
+
+    const knownCols = Object.keys(aliasMap).flatMap((a) => Object.keys(aliasMap[a].columns));
+    return { aliasMap, knownCols };
+  }, [mainNode, mainSchema, mainAlias, lookups, availableUpstreamNodes, lookupSchemas]);
+
+  // ─── Inline Expression Validation (POST /api/v1/expressions/validate) ───
   const [validationErrors, setValidationErrors] = useState<Record<string, string | null>>({});
   const validationTimeouts = useRef<Record<string, any>>({});
 
@@ -527,6 +575,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
 
     validationTimeouts.current[key] = setTimeout(async () => {
       try {
+        const { aliasMap, knownCols } = buildValidationContext();
         const baseUrl = getBaseApiUrl();
         const endpoint = baseUrl.endsWith("/api/v1")
           ? `${baseUrl}/tmap/validate-expression`
@@ -534,7 +583,11 @@ export const TMapModal: React.FC<TMapModalProps> = ({
         const res = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ expression: expr }),
+          body: JSON.stringify({
+            expression: expr,
+            alias_map: aliasMap,
+            known_columns: knownCols,
+          }),
         });
         if (res.ok) {
           const data = await res.json();
@@ -551,7 +604,137 @@ export const TMapModal: React.FC<TMapModalProps> = ({
         // Offline / mock fallback
       }
     }, 400);
-  }, []);
+  }, [buildValidationContext]);
+
+  const handleOpenViewSqlForColumn = async (out: TMapOutputFlow, col: TMapOutputColumn) => {
+    setViewSqlState({
+      isOpen: true,
+      title: `SQL Gerado — Coluna [${col.target || "col"}]`,
+      targetName: col.target,
+      expression: col.expression,
+      sqlQuery: "",
+      error: null,
+      loading: true,
+    });
+
+    const { aliasMap, knownCols } = buildValidationContext();
+
+    try {
+      const baseUrl = getBaseApiUrl();
+      const endpoint = baseUrl.endsWith("/api/v1")
+        ? `${baseUrl}/expressions/validate`
+        : "/api/v1/expressions/validate";
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          expression: col.expression,
+          alias_map: aliasMap,
+          known_columns: knownCols,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.valid) {
+          const castType = col.type ? `CAST((${data.sql}) AS ${col.type.toUpperCase()})` : `(${data.sql})`;
+          const finalSql = `${castType} AS "${col.target}"`;
+          setViewSqlState((prev) => ({
+            ...prev,
+            sqlQuery: finalSql,
+            error: null,
+            loading: false,
+          }));
+        } else {
+          setViewSqlState((prev) => ({
+            ...prev,
+            sqlQuery: "",
+            error: data.error || "Erro de validação na expressão",
+            loading: false,
+          }));
+        }
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setViewSqlState((prev) => ({
+          ...prev,
+          sqlQuery: "",
+          error: errData.message || "Erro ao consultar validação",
+          loading: false,
+        }));
+      }
+    } catch (err: any) {
+      setViewSqlState((prev) => ({
+        ...prev,
+        sqlQuery: `(${col.expression}) AS "${col.target}"`,
+        error: null,
+        loading: false,
+      }));
+    }
+  };
+
+  const handleOpenViewSqlForOutput = async (out: TMapOutputFlow) => {
+    setViewSqlState({
+      isOpen: true,
+      title: `SQL Completo do Output [${out.name}]`,
+      targetName: out.name,
+      expression: undefined,
+      sqlQuery: "",
+      error: null,
+      loading: true,
+    });
+
+    const { aliasMap, knownCols } = buildValidationContext();
+
+    try {
+      const baseUrl = getBaseApiUrl();
+      const endpoint = baseUrl.endsWith("/api/v1")
+        ? `${baseUrl}/expressions/validate`
+        : "/api/v1/expressions/validate";
+
+      const colSqlPromises = out.columns.map(async (c) => {
+        const target = (c.target || "col").trim();
+        const expr = (c.expression || target).trim();
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            expression: expr,
+            alias_map: aliasMap,
+            known_columns: knownCols,
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.valid) {
+            const castType = c.type ? `CAST((${data.sql}) AS ${c.type.toUpperCase()})` : `(${data.sql})`;
+            return `  ${castType} AS "${target}"`;
+          } else {
+            throw new Error(`Coluna [${target}]: ${data.error}`);
+          }
+        }
+        return `  (${expr}) AS "${target}"`;
+      });
+
+      const compiledCols = await Promise.all(colSqlPromises);
+      const wherePart = out.filter_expression?.trim()
+        ? `\nWHERE (${out.filter_expression.trim()})`
+        : "";
+      const fullSql = `SELECT\n${compiledCols.join(",\n")}\nFROM _tmap_working${wherePart};`;
+
+      setViewSqlState((prev) => ({
+        ...prev,
+        sqlQuery: fullSql,
+        error: null,
+        loading: false,
+      }));
+    } catch (err: any) {
+      setViewSqlState((prev) => ({
+        ...prev,
+        sqlQuery: "",
+        error: err.message || "Erro ao compilar SQL do Output",
+        loading: false,
+      }));
+    }
+  };
 
   // Lista unificada de nós e colunas a montante para a barra de sugestões (estilo Iterate)
   const upstreamSourcesForChips = useMemo(() => {
@@ -1644,6 +1827,14 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                         >
                           <Filter size={12} />
                         </button>
+                        <button
+                          className="icon-btn btn-xs"
+                          title="Ver SQL gerado para esta saída"
+                          onClick={() => handleOpenViewSqlForOutput(out)}
+                          style={{ color: "var(--accent-cyan)" }}
+                        >
+                          <FileCode size={12} />
+                        </button>
                         {outputs.length > 1 && (
                           <button
                             className="icon-btn danger btn-xs"
@@ -1863,7 +2054,15 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                                   );
                                 })()}
                               </td>
-                              <td>
+                              <td style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                                <button
+                                  className="icon-btn btn-xs"
+                                  title="Ver SQL gerado para esta coluna"
+                                  onClick={() => handleOpenViewSqlForColumn(out, col)}
+                                  style={{ color: "var(--accent-cyan)", padding: "2px 4px" }}
+                                >
+                                  <FileCode size={11} />
+                                </button>
                                 <button
                                   className="icon-btn danger btn-xs"
                                   onClick={() => {
@@ -2344,6 +2543,170 @@ export const TMapModal: React.FC<TMapModalProps> = ({
             }))}
             title={`Importar Schema para Saída: ${outputs.find((o) => o.id === importModalOutputId)?.name || importModalOutputId}`}
           />
+        )}
+
+        {viewSqlState.isOpen && (
+          <div
+            className="modal-overlay"
+            style={{
+              position: "fixed",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: "rgba(0, 0, 0, 0.75)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 9999,
+              backdropFilter: "blur(4px)",
+            }}
+            onClick={() => setViewSqlState((prev) => ({ ...prev, isOpen: false }))}
+          >
+            <div
+              className="modal-content"
+              style={{
+                backgroundColor: "#131722",
+                border: "1px solid var(--border-color)",
+                borderRadius: 8,
+                width: "90%",
+                maxWidth: 680,
+                maxHeight: "80vh",
+                display: "flex",
+                flexDirection: "column",
+                boxShadow: "0 20px 40px rgba(0, 0, 0, 0.6)",
+                overflow: "hidden",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "12px 18px",
+                  borderBottom: "1px solid var(--border-color)",
+                  backgroundColor: "rgba(255, 255, 255, 0.02)",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <FileCode size={16} style={{ color: "var(--accent-cyan)" }} />
+                  <span style={{ fontWeight: 600, fontSize: "0.95rem", color: "var(--text-primary)" }}>
+                    {viewSqlState.title}
+                  </span>
+                </div>
+                <button
+                  className="icon-btn btn-xs"
+                  onClick={() => setViewSqlState((prev) => ({ ...prev, isOpen: false }))}
+                >
+                  <X size={15} />
+                </button>
+              </div>
+
+              <div style={{ padding: 18, overflowY: "auto", display: "flex", flexDirection: "column", gap: 14 }}>
+                {viewSqlState.expression !== undefined && (
+                  <div>
+                    <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
+                      Expressão Original:
+                    </span>
+                    <div
+                      style={{
+                        padding: "8px 12px",
+                        backgroundColor: "rgba(0, 0, 0, 0.3)",
+                        borderRadius: 4,
+                        fontFamily: "monospace",
+                        fontSize: "0.85rem",
+                        color: "var(--accent-cyan)",
+                        border: "1px solid rgba(255, 255, 255, 0.05)",
+                      }}
+                    >
+                      {viewSqlState.expression || "(sem expressão)"}
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                    <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                      SQL DuckDB Compilado:
+                    </span>
+                    {viewSqlState.sqlQuery && (
+                      <button
+                        className="btn btn-ghost btn-xs"
+                        style={{ fontSize: "0.7rem", padding: "2px 8px", gap: 4 }}
+                        onClick={() => navigator.clipboard.writeText(viewSqlState.sqlQuery)}
+                        title="Copiar SQL"
+                      >
+                        <Copy size={11} /> Copiar SQL
+                      </button>
+                    )}
+                  </div>
+
+                  {viewSqlState.loading ? (
+                    <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)", fontSize: "0.85rem" }}>
+                      Compilando e validando expressão...
+                    </div>
+                  ) : viewSqlState.error ? (
+                    <div
+                      style={{
+                        padding: 12,
+                        backgroundColor: "rgba(239, 68, 68, 0.1)",
+                        border: "1px solid #ef4444",
+                        borderRadius: 4,
+                        color: "#ef4444",
+                        fontSize: "0.82rem",
+                        display: "flex",
+                        alignItems: "flex-start",
+                        gap: 8,
+                      }}
+                    >
+                      <AlertCircle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+                      <div>
+                        <strong>Erro de validação:</strong>
+                        <p style={{ margin: "4px 0 0 0", fontFamily: "monospace" }}>{viewSqlState.error}</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <pre
+                      style={{
+                        margin: 0,
+                        padding: 14,
+                        backgroundColor: "#0d1117",
+                        borderRadius: 6,
+                        border: "1px solid rgba(255, 255, 255, 0.1)",
+                        color: "#e6edf3",
+                        fontFamily: "var(--font-mono, monospace)",
+                        fontSize: "0.84rem",
+                        lineHeight: 1.5,
+                        overflowX: "auto",
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                      }}
+                    >
+                      <code>{viewSqlState.sqlQuery}</code>
+                    </pre>
+                  )}
+                </div>
+              </div>
+
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "flex-end",
+                  padding: "10px 18px",
+                  borderTop: "1px solid var(--border-color)",
+                  backgroundColor: "rgba(255, 255, 255, 0.02)",
+                }}
+              >
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => setViewSqlState((prev) => ({ ...prev, isOpen: false }))}
+                >
+                  Fechar
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </div>

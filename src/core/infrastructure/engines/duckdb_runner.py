@@ -4,11 +4,11 @@ import re
 import tempfile
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import duckdb
 import polars as pl
-from src.core.domain.shared.exceptions import DomainError, TMapExecutionError
+from src.core.domain.shared.exceptions import DomainError, DomainValidationError, TMapExecutionError
 from src.core.application.compiler.expressions.compiler import compile_expression
 from src.core.infrastructure.execution.cancellation import (
     register_active_connection,
@@ -100,6 +100,52 @@ class DuckDBRunner:
         self._conn: Optional[duckdb.DuckDBPyConnection] = None
         self._write_lock = threading.RLock()
         self._preview_metadata: Dict[str, Dict[str, Any]] = {}
+
+    @staticmethod
+    def map_schema_type_to_duckdb(col_type: Optional[str]) -> Optional[str]:
+        """Mapeia tipos de schema do CellFlow/RocketDataForge para tipos SQL DuckDB."""
+        if not col_type:
+            return None
+        ct = str(col_type).strip().lower()
+        mapping = {
+            "string": "VARCHAR",
+            "str": "VARCHAR",
+            "varchar": "VARCHAR",
+            "text": "VARCHAR",
+            "char": "VARCHAR",
+            "integer": "INTEGER",
+            "int": "INTEGER",
+            "int32": "INTEGER",
+            "long": "BIGINT",
+            "bigint": "BIGINT",
+            "int64": "BIGINT",
+            "short": "SMALLINT",
+            "smallint": "SMALLINT",
+            "int16": "SMALLINT",
+            "byte": "TINYINT",
+            "tinyint": "TINYINT",
+            "int8": "TINYINT",
+            "double": "DOUBLE",
+            "float8": "DOUBLE",
+            "float": "FLOAT",
+            "float4": "FLOAT",
+            "real": "FLOAT",
+            "decimal": "DECIMAL(18, 4)",
+            "numeric": "DECIMAL(18, 4)",
+            "boolean": "BOOLEAN",
+            "bool": "BOOLEAN",
+            "date": "DATE",
+            "datetime": "TIMESTAMP",
+            "timestamp": "TIMESTAMP",
+            "timestamp_tz": "TIMESTAMPTZ",
+            "timestamptz": "TIMESTAMPTZ",
+            "time": "TIME",
+            "json": "JSON",
+            "blob": "BLOB",
+            "binary": "BLOB",
+            "bytes": "BLOB",
+        }
+        return mapping.get(ct)
 
     def get_connection(self) -> duckdb.DuckDBPyConnection:
         """Obtém ou inicializa a conexão com DuckDB com limites de memória, scratch e isolamento de segurança."""
@@ -721,6 +767,8 @@ class DuckDBRunner:
                 vars_map=vars_map,
                 known_columns=known_columns
             )
+        except DomainValidationError:
+            raise
         except Exception as e:
             logger.debug(f"AST compiler fallback for expression '{expr}': {e}")
             return cls._legacy_compile_tmap_expression(
@@ -916,10 +964,42 @@ class DuckDBRunner:
             inner_join_checks = []
             all_lookup_aliases: Set[str] = set()
 
+            # Validação determinística de aliases duplicados entre lookups (Fase 2.1)
+            explicit_aliases_tracker: Dict[str, List[str]] = {}
+            for idx, lk in enumerate(lookups):
+                raw_alias = (lk.get("alias") or "").strip()
+                if raw_alias:
+                    raw_lower = raw_alias.lower()
+                    lk_desc = f"'{raw_alias}' (lookup {idx+1}: {lk.get('label') or lk.get('node_id') or 'sem_id'})"
+                    explicit_aliases_tracker.setdefault(raw_lower, []).append(lk_desc)
+
+            dup_aliases = {k: v for k, v in explicit_aliases_tracker.items() if len(v) > 1}
+            if dup_aliases:
+                dup_msgs = [f"alias '{k}' utilizado em {', '.join(v)}" for k, v in dup_aliases.items()]
+                raise DomainValidationError(
+                    f"Alias duplicado entre lookups do tMap: {'; '.join(dup_msgs)}",
+                    code="ERR_DUPLICATE_LOOKUP_ALIAS"
+                )
+
             for idx, lk in enumerate(lookups):
                 node_id = lk.get("node_id") or lk.get("id") or ""
-                raw_alias = lk.get("alias") or lk.get("label") or f"lkp{idx+1}"
-                safe_lk_alias = re.sub(r'[^a-zA-Z0-9_]', '_', str(raw_alias).strip()) or f"lkp{idx+1}"
+                raw_alias = (lk.get("alias") or "").strip()
+                has_explicit_alias = bool(raw_alias)
+
+                if has_explicit_alias:
+                    safe_lk_alias = re.sub(r'[^a-zA-Z0-9_]', '_', raw_alias) or f"lkp{idx+1}"
+                    # Alias explícito vence: nomes posicionais rowN/lkpN NÃO são incluídos
+                    lk_aliases = {safe_lk_alias.lower(), raw_alias.lower()}
+                    if node_id:
+                        lk_aliases.add(str(node_id).lower())
+                        lk_aliases.add(re.sub(r'[^a-zA-Z0-9_]', '_', str(node_id).strip()).lower())
+                else:
+                    # Nomes posicionais só valem como fallback quando o lookup não tem alias
+                    safe_lk_alias = f"lkp{idx+1}"
+                    lk_aliases = {f"lkp{idx+1}".lower(), f"row{idx+2}".lower()}
+                    if lk.get("label"):
+                        lk_aliases.add(str(lk.get("label")).lower())
+
                 lk_df = lookup_dfs.get(node_id, pl.DataFrame())
                 # Se o DataFrame for vazio e não possuir colunas, infere colunas das chaves de junção
                 if len(lk_df.columns) == 0:
@@ -935,13 +1015,6 @@ class DuckDBRunner:
 
                 conn.register(f"_{safe_lk_alias}_raw", lk_df.to_arrow())
                 lk_col_map = {c.lower(): c for c in lk_df.columns}
-
-                lk_aliases = {safe_lk_alias.lower(), f"row{idx+2}".lower(), f"lkp{idx+1}".lower()}
-                if node_id:
-                    lk_aliases.add(str(node_id).lower())
-                    lk_aliases.add(re.sub(r'[^a-zA-Z0-9_]', '_', str(node_id).strip()).lower())
-                if lk.get("label"):
-                    lk_aliases.add(str(lk.get("label")).lower())
 
                 all_lookup_aliases.update(lk_aliases)
 
@@ -1256,77 +1329,33 @@ class DuckDBRunner:
 
                 where_sql = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
-                # Constrói SELECT com Deduplicação Defensiva de Colunas
+                # Constrói SELECT com Validação Estrita de Colunas e Type Casting (Fase 2.3 e 2.4)
                 if cols:
                     select_items = []
-                    seen_targets = {}
+                    seen_targets = set()
                     for c in cols:
                         target_name = (c.get("name") or c.get("target") or "col").strip()
                         raw_expr = (c.get("expression") or target_name).strip()
                         target_lower = target_name.lower()
 
                         if target_lower in seen_targets:
-                            # Coluna duplicada detectada!
-                            prev_entry = seen_targets[target_lower]
-                            prev_expr = prev_entry["raw_expr"]
-                            prev_idx = prev_entry["index"]
-
-                            def detect_flow_type(expr_str: str) -> str:
-                                s_low = expr_str.lower()
-                                for ma in main_aliases:
-                                    if re.search(rf'\b{re.escape(ma)}\.', s_low):
-                                        return "main"
-                                for la in all_lookup_aliases:
-                                    if re.search(rf'\b{re.escape(la)}\.', s_low):
-                                        return "lookup"
-                                if "lkp" in s_low or re.search(r'\brow[2-9]\b', s_low):
-                                    return "lookup"
-                                for c_m in main_df.columns:
-                                    if re.search(rf'\b{re.escape(c_m.lower())}\b', s_low):
-                                        return "main"
-                                return "unknown"
-
-                            flow_prev = detect_flow_type(prev_expr)
-                            flow_curr = detect_flow_type(raw_expr)
-
-                            is_lkp_main_pair = (
-                                (flow_prev == "main" and flow_curr == "lookup") or
-                                (flow_prev == "lookup" and flow_curr == "main") or
-                                (flow_prev == "lookup" and flow_curr == "lookup") or
-                                ("lkp" in raw_expr.lower() and ("main" in prev_expr.lower() or "row1" in prev_expr.lower())) or
-                                ("lkp" in prev_expr.lower() and ("main" in raw_expr.lower() or "row1" in raw_expr.lower()))
+                            raise DomainValidationError(
+                                f"Coluna de saída duplicada '{target_name}' no output '{out_name}'. "
+                                f"Cada coluna de saída deve possuir um nome único.",
+                                code="ERR_DUPLICATE_OUTPUT_COLUMN"
                             )
-                            if is_lkp_main_pair:
-                                t_expr_curr = self.compile_tmap_expression(raw_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
-                                prev_compiled = prev_entry.get("compiled_expr")
-                                if not prev_compiled:
-                                    prev_compiled = self.compile_tmap_expression(prev_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
+                        seen_targets.add(target_lower)
 
-                                consolidated_sql = f'COALESCE(({prev_compiled}), ({t_expr_curr}))'
+                        t_expr = self.compile_tmap_expression(raw_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
 
-                                select_items[prev_idx] = f'{consolidated_sql} AS "{target_name}"'
-                                prev_entry["compiled_expr"] = consolidated_sql
-                                prev_entry["raw_expr"] = f"COALESCE({prev_expr}, {raw_expr})"
-                                logger.warning(
-                                    f"Coluna de saída duplicada '{target_name}' no output '{out_name}' consolidada com COALESCE({prev_expr}, {raw_expr})."
-                                )
-                            else:
-                                # Desambigua renomeando para target_1, target_2, ...
-                                counter = 1
-                                new_target = f"{target_name}_{counter}"
-                                while new_target.lower() in seen_targets:
-                                    counter += 1
-                                    new_target = f"{target_name}_{counter}"
-                                t_expr = self.compile_tmap_expression(raw_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
-                                select_items.append(f'({t_expr}) AS "{new_target}"')
-                                seen_targets[new_target.lower()] = {"raw_expr": raw_expr, "index": len(select_items) - 1, "compiled_expr": t_expr}
-                                logger.warning(
-                                    f"Coluna de saída duplicada '{target_name}' no output '{out_name}' renomeada defensivamente para '{new_target}'."
-                                )
+                        col_type = c.get("type") or c.get("data_type")
+                        duckdb_type = self.map_schema_type_to_duckdb(col_type)
+                        if duckdb_type:
+                            col_expr = f'CAST(({t_expr}) AS {duckdb_type})'
                         else:
-                            t_expr = self.compile_tmap_expression(raw_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
-                            select_items.append(f'({t_expr}) AS "{target_name}"')
-                            seen_targets[target_lower] = {"raw_expr": raw_expr, "index": len(select_items) - 1, "compiled_expr": t_expr}
+                            col_expr = f'({t_expr})'
+
+                        select_items.append(f'{col_expr} AS "{target_name}"')
 
                     select_sql = ", ".join(select_items)
                 else:
@@ -1344,8 +1373,31 @@ class DuckDBRunner:
                 try:
                     out_df = self.execute_query_to_polars(query, conn=conn)
                 except Exception as e:
+                    err_str = str(e)
+                    # Se for erro de conversão de tipo, testa coluna a coluna para erro explícito com coluna e valor (2.3)
+                    if "Conversion Error" in err_str or "Could not convert" in err_str or "Cannot cast" in err_str:
+                        if cols:
+                            for c in cols:
+                                t_name = (c.get("name") or c.get("target") or "col").strip()
+                                c_type = c.get("type") or c.get("data_type")
+                                c_duckdb_type = self.map_schema_type_to_duckdb(c_type)
+                                if c_duckdb_type:
+                                    r_expr = (c.get("expression") or t_name).strip()
+                                    t_expr_col = self.compile_tmap_expression(r_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
+                                    test_query = f'SELECT CAST(({t_expr_col}) AS {c_duckdb_type}) FROM _tmap_working{where_sql} LIMIT 50;'
+                                    try:
+                                        conn.execute(test_query).fetchall()
+                                    except Exception as col_err:
+                                        raise DomainValidationError(
+                                            f"Erro de conversão de tipo na coluna '{t_name}' (tipo {c_type}) do output '{out_name}': {str(col_err)}",
+                                            code="ERR_TYPE_CONVERSION"
+                                        ) from col_err
+                        raise DomainValidationError(
+                            f"Erro de conversão de tipo no output '{out_name}': {err_str}",
+                            code="ERR_TYPE_CONVERSION"
+                        ) from e
                     raise DomainError(
-                        f"Falha na execução da saída '{out_name}' do Data Mapper (tMap): {str(e)} (Query: {query})",
+                        f"Falha na execução da saída '{out_name}' do Data Mapper (tMap): {err_str} (Query: {query})",
                         code="ERR_ENGINE_DUCKDB"
                     )
 

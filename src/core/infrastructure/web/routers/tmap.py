@@ -20,11 +20,15 @@ class ValidateExpressionResponse(BaseModel):
     valid: bool
     sql: Optional[str] = None
     error: Optional[str] = None
+    position: Optional[int] = None
+    line: Optional[int] = None
+    column: Optional[int] = None
 
 
+@router.post("/expressions/validate", response_model=ValidateExpressionResponse)
 @router.post("/tmap/validate-expression", response_model=ValidateExpressionResponse)
 def validate_tmap_expression(req: ValidateExpressionRequest) -> ValidateExpressionResponse:
-    """Valida sintaticamente uma expressão do tMap em tempo real e retorna a prévia SQL."""
+    """Valida sintaticamente uma expressão do tMap em tempo real e retorna a prévia SQL com posição de erro."""
     result = validate_expression(
         expr=req.expression,
         alias_map=req.alias_map,
@@ -34,5 +38,8 @@ def validate_tmap_expression(req: ValidateExpressionRequest) -> ValidateExpressi
     return ValidateExpressionResponse(
         valid=result["valid"],
         sql=result.get("sql"),
-        error=result.get("error")
+        error=result.get("error"),
+        position=result.get("position"),
+        line=result.get("line"),
+        column=result.get("column")
     )

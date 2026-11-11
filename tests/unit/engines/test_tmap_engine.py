@@ -5,6 +5,7 @@ Valida Match Models, Inner Join Rejects, Output Rejects, Variáveis Intermediár
 
 import polars as pl
 import pytest
+from src.core.domain.shared.exceptions import DomainValidationError
 from src.core.infrastructure.engines.duckdb_runner import DuckDBRunner
 
 
@@ -288,14 +289,37 @@ def test_tmap_exact_user_scenario_main1_and_lkp1_case_insensitive_and_coalesce_d
         "expression": "row1.Title"
     }]
 
-    # Saída com target duplicado "person_code" vindo de lkp1 e main1
-    outputs = [{
+    # Saída com target duplicado "person_code" vindo de lkp1 e main1 deve falhar por validação estrita (2.4)
+    outputs_dup = [{
         "name": "out1",
         "catch_output_reject": False,
         "catch_inner_join_reject": False,
         "columns": [
             {"target": "person_code", "expression": "main1.person_code"},
             {"target": "person_code", "expression": "lkp1.person_code"},
+            {"target": "name", "expression": "main1.name"},
+            {"target": "status", "expression": "lkp1.STATUS"}
+        ]
+    }]
+
+    with pytest.raises(DomainValidationError):
+        runner.execute_tmap_transform(
+            main_df=main_df,
+            lookups=lookups,
+            lookup_dfs={"oracle_source_1": oracle_df},
+            variables=variables,
+            outputs=outputs_dup,
+            main_alias="main1",
+            main_node_id="postgres_source_1"
+        )
+
+    # Saída com colunas únicas
+    outputs = [{
+        "name": "out1",
+        "catch_output_reject": False,
+        "catch_inner_join_reject": False,
+        "columns": [
+            {"target": "person_code", "expression": "main1.person_code"},
             {"target": "name", "expression": "main1.name"},
             {"target": "status", "expression": "lkp1.STATUS"}
         ]
@@ -608,6 +632,32 @@ def test_tmap_ghost_variable_elimination_and_duplicate_target_prevention(runner)
         ]
     }]
 
+    # 1. Alvos duplicados devem gerar erro de validação estrito (Fase 2.4)
+    with pytest.raises(DomainValidationError):
+        runner.execute_tmap_transform(
+            main_df=main_df,
+            lookups=[{
+                "node_id": "lookup_1",
+                "alias": "lkp1",
+                "join_keys": [{"expr_key": "main1.id", "column": "lkp1.id"}],
+                "join_model": "left_outer",
+                "match_model": "unique"
+            }],
+            lookup_dfs={"lookup_1": lookup_df},
+            variables=variables,
+            outputs=outputs,
+            main_alias="main1"
+        )
+
+    # 2. Com alvos únicos e eliminação de variável fantasma
+    outputs_clean = [{
+        "name": "clean_out",
+        "columns": [
+            {"target": "val", "expression": "lkp1.val"},
+            {"target": "doubled", "expression": "Var.var_active"}
+        ]
+    }]
+
     res = runner.execute_tmap_transform(
         main_df=main_df,
         lookups=[{
@@ -619,13 +669,12 @@ def test_tmap_ghost_variable_elimination_and_duplicate_target_prevention(runner)
         }],
         lookup_dfs={"lookup_1": lookup_df},
         variables=variables,
-        outputs=outputs,
+        outputs=outputs_clean,
         main_alias="main1"
     )
 
     clean_out = res["clean_out"]
     assert clean_out.height == 2
-    # Confirma deduplicação no schema final
     assert clean_out.columns == ["val", "doubled"]
     assert clean_out["val"].to_list() == [100, 200]
     assert clean_out["doubled"].to_list() == [20, 40]
@@ -697,7 +746,7 @@ def test_tmap_case_insensitive_postgres_oracle_joins(runner):
 
 
 def test_tmap_coalesce_duplicate_target_custom_aliases(runner):
-    """Valida consolidação via COALESCE quando colunas são mapeadas de Main e Lookup com aliases arbitrários (ex: pg_src e oracle_ref)."""
+    """Valida erro de validação estrito em colunas duplicadas (2.4) e uso de expressão COALESCE explícita."""
     main_df = pl.DataFrame({
         "id": [1, 2, 3],
         "email": ["user1@empresa.com", None, "user3@empresa.com"]
@@ -707,11 +756,35 @@ def test_tmap_coalesce_duplicate_target_custom_aliases(runner):
         "email_secundario": ["backup1@gmail.com", "backup2@gmail.com", "backup3@gmail.com"]
     })
 
-    outputs = [{
+    outputs_dup = [{
         "name": "contatos",
         "columns": [
             {"target": "email_final", "expression": "pg_src.email"},
             {"target": "email_final", "expression": "oracle_ref.email_secundario"}
+        ]
+    }]
+
+    with pytest.raises(DomainValidationError):
+        runner.execute_tmap_transform(
+            main_df=main_df,
+            lookups=[{
+                "node_id": "oracle_ref_id",
+                "alias": "oracle_ref",
+                "left_keys": ["pg_src.id"],
+                "right_keys": ["oracle_ref.id"],
+                "match_model": "unique"
+            }],
+            lookup_dfs={"oracle_ref_id": lookup_df},
+            variables=[],
+            outputs=outputs_dup,
+            main_alias="pg_src"
+        )
+
+    # Com expressão COALESCE explícita em coluna única
+    outputs_clean = [{
+        "name": "contatos",
+        "columns": [
+            {"target": "email_final", "expression": "COALESCE(pg_src.email, oracle_ref.email_secundario)"}
         ]
     }]
 
@@ -726,16 +799,13 @@ def test_tmap_coalesce_duplicate_target_custom_aliases(runner):
         }],
         lookup_dfs={"oracle_ref_id": lookup_df},
         variables=[],
-        outputs=outputs,
+        outputs=outputs_clean,
         main_alias="pg_src"
     )
 
     out = res["contatos"]
     assert out.columns == ["email_final"]
     assert out.height == 3
-    # id 1 tem email no main -> mantem user1@empresa.com
-    # id 2 tem None no main -> pega backup2@gmail.com do lookup
-    # id 3 tem email no main -> mantem user3@empresa.com
     assert out["email_final"].to_list() == ["user1@empresa.com", "backup2@gmail.com", "user3@empresa.com"]
 
 
