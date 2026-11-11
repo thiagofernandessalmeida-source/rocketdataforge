@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from src.core.domain.policy.policy_model import PolicyDocument
+from src.core.infrastructure.config.cellflow_paths import get_cellflow_subpath
 from src.core.infrastructure.security.policy_crypto import PolicyCryptoService
 
 
@@ -25,7 +26,12 @@ class LocalFilePolicyStore(PolicyStorageProvider):
     """Armazenamento de políticas em arquivos .jws no sistema de arquivos local."""
 
     def __init__(self, base_dir: Optional[str] = None):
-        self.base_dir = Path(base_dir or os.environ.get("RDF_POLICIES_DIR", "./.policies"))
+        if base_dir:
+            self.base_dir = Path(base_dir)
+        elif os.environ.get("RDF_POLICIES_DIR"):
+            self.base_dir = Path(os.environ["RDF_POLICIES_DIR"])
+        else:
+            self.base_dir = get_cellflow_subpath("policies")
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def _get_path(self, principal: str) -> Path:

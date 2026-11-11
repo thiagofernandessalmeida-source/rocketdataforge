@@ -10,12 +10,21 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
+from src.core.infrastructure.config.cellflow_paths import (
+    get_cellflow_home,
+    get_cellflow_subpath,
+    get_default_workspace_dir,
+)
+
 
 class WorkspaceManager:
     """Gerencia workspaces locais no sistema de arquivos do usuário."""
 
     def __init__(self, config_dir: Optional[str] = None):
-        self.config_dir = config_dir or os.path.join(os.path.expanduser("~"), ".cellflow")
+        if config_dir:
+            self.config_dir = config_dir
+        else:
+            self.config_dir = str(get_cellflow_subpath("config"))
         self.config_file = os.path.join(self.config_dir, "workspaces.json")
         self._ensure_config_dir()
 
@@ -26,36 +35,13 @@ class WorkspaceManager:
             pass
 
     def get_default_workspace_path(self) -> str:
-        """Retorna o caminho padrão do workspace na pasta do usuário."""
-        env_ws = os.environ.get("CELLFLOW_WORKSPACE")
-        if env_ws and env_ws.strip():
-            return os.path.abspath(env_ws.strip())
-
-        # Se existir harmonizacao_brasil na máquina ou no repositório, usa como padrão prioritário
-        candidate_natura = r"C:\Natura\harmonizacao_brasil"
-        if os.path.isdir(candidate_natura):
-            return os.path.abspath(candidate_natura)
-
-        candidate_repo = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "workspaces", "harmonizacao_brasil")
-        )
-        if os.path.isdir(candidate_repo):
-            return os.path.abspath(candidate_repo)
-
-        return os.path.join(os.path.expanduser("~"), "harmonizacao_brasil")
+        """Retorna o caminho padrão do workspace neutro na pasta do usuário."""
+        return str(get_default_workspace_dir())
 
     def _load_config(self) -> Dict[str, Any]:
         """Carrega a configuração global de workspaces."""
         default_path = self.get_default_workspace_path()
         recent_candidates = [default_path]
-        candidate_repo = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "workspaces", "harmonizacao_brasil")
-        )
-        if os.path.isdir(candidate_repo) and candidate_repo not in recent_candidates:
-            recent_candidates.append(candidate_repo)
-        candidate_natura = r"C:\Natura\harmonizacao_brasil"
-        if os.path.isdir(candidate_natura) and candidate_natura not in recent_candidates:
-            recent_candidates.append(candidate_natura)
 
         if os.path.isfile(self.config_file):
             try:
@@ -88,7 +74,9 @@ class WorkspaceManager:
     def get_active_workspace_path(self) -> str:
         """Retorna o caminho absoluto do workspace ativo atual."""
         cfg = self._load_config()
-        active = cfg.get("active_workspace") or self.get_default_workspace_path()
+        active = cfg.get("active_workspace")
+        if not active or not os.path.exists(active):
+            active = self.get_default_workspace_path()
         return os.path.abspath(active)
 
     def ensure_workspace_structure(self, workspace_path: Optional[str] = None) -> str:
@@ -104,7 +92,7 @@ class WorkspaceManager:
         meta_file = os.path.join(ws_path, "workspace.json")
         if not os.path.isfile(meta_file):
             meta = {
-                "name": os.path.basename(ws_path) or "CellFlow_Workspace",
+                "name": os.path.basename(ws_path) or "Meu Workspace",
                 "path": ws_path,
                 "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "lastOpenedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -112,6 +100,39 @@ class WorkspaceManager:
             try:
                 with open(meta_file, "w", encoding="utf-8") as f:
                     json.dump(meta, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+
+        # Cria job de exemplo 'boas_vindas.rdf' se o workspace for novo ou não tiver jobs (3.3)
+        jobs_file = os.path.join(ws_path, "jobs", "jobs.json")
+        welcome_file = os.path.join(ws_path, "jobs", "boas_vindas.rdf")
+        if not os.path.isfile(jobs_file) and not os.path.isfile(welcome_file):
+            welcome_job = {
+                "id": "job_boas_vindas",
+                "name": "boas_vindas",
+                "label": "Boas-Vindas ao CellFlow",
+                "description": "Job de exemplo inicial do CellFlow Data Studio",
+                "version": "1.0.0",
+                "schemaVersion": "rdf.job/v2",
+                "cells": [
+                    {
+                        "id": "cell_1",
+                        "name": "Boas-Vindas e Demonstração",
+                        "nodes": [],
+                        "edges": []
+                    }
+                ],
+                "nodes": [],
+                "edges": [],
+                "activeCellId": "cell_1",
+                "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            }
+            try:
+                with open(welcome_file, "w", encoding="utf-8") as f:
+                    json.dump(welcome_job, f, indent=2, ensure_ascii=False)
+                with open(jobs_file, "w", encoding="utf-8") as f:
+                    json.dump({"activeJobId": "job_boas_vindas", "jobs": [welcome_job]}, f, indent=2, ensure_ascii=False)
             except Exception:
                 pass
 

@@ -32,6 +32,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from src.core.domain.shared.identifiers import generate_ulid
+from src.core.infrastructure.config.cellflow_paths import get_cellflow_subpath
 
 logger = logging.getLogger(__name__)
 
@@ -152,8 +153,7 @@ class SchedulerService:
         notifier: Optional[WebhookNotifier] = None
     ):
         if not db_url:
-            db_dir = os.path.join(os.getcwd(), "data")
-            os.makedirs(db_dir, exist_ok=True)
+            db_dir = str(get_cellflow_subpath("db"))
             db_file = os.path.join(db_dir, "scheduler.db")
             self.db_url = f"sqlite:///{db_file}"
         else:

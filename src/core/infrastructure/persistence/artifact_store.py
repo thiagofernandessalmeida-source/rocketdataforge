@@ -10,13 +10,17 @@ import os
 from typing import Any, Dict, Optional, Tuple
 
 from src.core.domain.shared.exceptions import DomainError, SecurityViolationError
+from src.core.infrastructure.config.cellflow_paths import get_cellflow_subpath
 
 
 class LocalFileSystemArtifactStore:
     """Implementação da porta de ArtifactStore baseada no sistema de arquivos local."""
 
     def __init__(self, base_directory: Optional[str] = None):
-        self.base_directory = os.path.abspath(base_directory or os.path.join(os.getcwd(), ".rdf", "artifacts"))
+        if base_directory:
+            self.base_directory = os.path.abspath(base_directory)
+        else:
+            self.base_directory = str(get_cellflow_subpath("artifacts"))
         os.makedirs(self.base_directory, exist_ok=True)
 
     def _resolve_safe_path(self, relative_path: str) -> str:

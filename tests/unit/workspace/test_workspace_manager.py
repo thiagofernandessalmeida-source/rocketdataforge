@@ -10,9 +10,10 @@ def test_workspace_manager_initialization():
         mgr = WorkspaceManager(config_dir=tmpdir)
         info = mgr.get_workspace_info()
 
-        assert info["name"] in ("harmonizacao_brasil", "CellFlow_Workspace")
+        assert info["name"] in ("Meu Workspace", "harmonizacao_brasil", "CellFlow_Workspace")
         assert os.path.exists(info["path"])
         assert os.path.exists(info["jobsDir"])
+        assert os.path.exists(os.path.join(info["jobsDir"], "boas_vindas.rdf"))
         assert os.path.exists(info["dataDir"])
         assert os.path.exists(info["connectionsDir"])
         assert os.path.exists(info["queriesDir"])
