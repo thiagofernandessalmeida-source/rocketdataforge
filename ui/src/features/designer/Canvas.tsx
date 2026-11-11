@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from "react";
-import { GitMerge, X, Plus, Check, Play, Table as TableIcon, GitBranch, Sliders, Eye, Clock, Code } from "lucide-react";
+import { GitMerge, X, Plus, Check, Play, Table as TableIcon, GitBranch, Sliders, Eye, Clock, Code, MoreVertical, ChevronDown } from "lucide-react";
 import ReactFlow, {
   Background,
   Controls,
@@ -123,6 +123,22 @@ interface TMapOutputChoice {
 
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
+  const actionsMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleOutsideClick = (event: MouseEvent) => {
+      if (actionsMenuRef.current && !actionsMenuRef.current.contains(event.target as unknown as HTMLElement)) {
+        setIsActionsMenuOpen(false);
+      }
+    };
+    if (isActionsMenuOpen) {
+      document.addEventListener("mousedown", handleOutsideClick);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleOutsideClick);
+    };
+  }, [isActionsMenuOpen]);
 
   const activeJob = jobStore.getActiveJob();
   const activeCellName = activeJob?.cells?.find((c) => c.id === cellId)?.name || cellId || "Célula Atual";
@@ -967,67 +983,137 @@ interface TMapOutputChoice {
         </>
       )}
 
-      {/* ─── Botão de Exportação Autônoma (Spec 006 - Fase 3 / T-3.5) ─── */}
-      <button
-        type="button"
-        className="btn-export-codegen"
-        id="btn-export-codegen"
-        onClick={() => setIsExportModalOpen(true)}
-        title="Exportar como Código Autônomo (Python DuckDB/Polars ou Airflow DAG)"
+      {/* ─── Menu Suspenso de Ações da Célula (Spec 006 - Fase 1 e 3) ─── */}
+      <div
+        className="cell-actions-dropdown-container"
+        ref={actionsMenuRef}
         style={{
           position: "absolute",
-          top: 14,
-          right: 154,
-          background: "rgba(15, 23, 42, 0.92)",
-          border: "1px solid rgba(99, 102, 241, 0.4)",
-          borderRadius: 8,
-          padding: "6px 12px",
-          boxShadow: "0 4px 14px rgba(0, 0, 0, 0.4)",
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          zIndex: 800,
-          color: "#a5b4fc",
-          cursor: "pointer",
-          fontSize: "0.8rem",
-          fontWeight: 500,
-          backdropFilter: "blur(6px)",
+          top: 12,
+          right: 14,
+          zIndex: 30,
         }}
       >
-        <Code size={14} color="#818cf8" />
-        <span>Exportar Código</span>
-      </button>
+        <button
+          type="button"
+          onClick={() => setIsActionsMenuOpen((v) => !v)}
+          title="Menu de Ações da Célula"
+          className="btn-cell-actions-menu"
+          style={{
+            background: "rgba(15, 23, 42, 0.88)",
+            border: "1px solid rgba(99, 102, 241, 0.35)",
+            borderRadius: 6,
+            padding: "5px 10px",
+            color: "#cbd5e1",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            fontSize: "0.76rem",
+            fontWeight: 500,
+            boxShadow: "0 2px 8px rgba(0,0,0,0.35)",
+            backdropFilter: "blur(6px)",
+            transition: "all 0.15s ease",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.borderColor = "rgba(99, 102, 241, 0.6)";
+            e.currentTarget.style.color = "#ffffff";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.borderColor = "rgba(99, 102, 241, 0.35)";
+            e.currentTarget.style.color = "#cbd5e1";
+          }}
+        >
+          <MoreVertical size={13} color="#818cf8" />
+          <span>Ações</span>
+          <ChevronDown size={11} style={{ opacity: 0.7 }} />
+        </button>
 
-      {/* ─── Botão de Agendamentos e Automação Cron (Spec 006 - Fase 1) ─── */}
-      <button
-        type="button"
-        className="btn-open-schedules"
-        id="btn-open-schedules"
-        onClick={() => setIsScheduleModalOpen(true)}
-        title="Gerenciador de Agendamentos e Automação Cron"
-        style={{
-          position: "absolute",
-          top: 14,
-          right: 20,
-          background: "rgba(15, 23, 42, 0.92)",
-          border: "1px solid rgba(99, 102, 241, 0.4)",
-          borderRadius: 8,
-          padding: "6px 12px",
-          boxShadow: "0 4px 14px rgba(0, 0, 0, 0.4)",
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          zIndex: 800,
-          color: "#a5b4fc",
-          cursor: "pointer",
-          fontSize: "0.8rem",
-          fontWeight: 500,
-          backdropFilter: "blur(6px)",
-        }}
-      >
-        <Clock size={14} color="#818cf8" />
-        <span>Agendamentos</span>
-      </button>
+        {isActionsMenuOpen && (
+          <div
+            className="cell-actions-dropdown-menu"
+            style={{
+              position: "absolute",
+              top: "calc(100% + 4px)",
+              right: 0,
+              background: "#0f172a",
+              border: "1px solid #334155",
+              borderRadius: 8,
+              boxShadow: "0 10px 25px rgba(0, 0, 0, 0.6)",
+              padding: 4,
+              display: "flex",
+              flexDirection: "column",
+              gap: 2,
+              minWidth: 170,
+              zIndex: 35,
+            }}
+          >
+            <button
+              type="button"
+              className="btn-export-codegen"
+              id="btn-export-codegen"
+              onClick={() => {
+                setIsExportModalOpen(true);
+                setIsActionsMenuOpen(false);
+              }}
+              title="Exportar como Código Autônomo (Python DuckDB/Polars ou Airflow DAG)"
+              style={{
+                background: "transparent",
+                border: "none",
+                borderRadius: 5,
+                padding: "6px 10px",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                color: "#cbd5e1",
+                cursor: "pointer",
+                fontSize: "0.78rem",
+                fontWeight: 500,
+                textAlign: "left",
+                width: "100%",
+                transition: "background 0.15s",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(99, 102, 241, 0.15)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              <Code size={14} color="#818cf8" />
+              <span>Exportar Código</span>
+            </button>
+
+            <button
+              type="button"
+              className="btn-open-schedules"
+              id="btn-open-schedules"
+              onClick={() => {
+                setIsScheduleModalOpen(true);
+                setIsActionsMenuOpen(false);
+              }}
+              title="Gerenciador de Agendamentos e Automação Cron"
+              style={{
+                background: "transparent",
+                border: "none",
+                borderRadius: 5,
+                padding: "6px 10px",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                color: "#cbd5e1",
+                cursor: "pointer",
+                fontSize: "0.78rem",
+                fontWeight: 500,
+                textAlign: "left",
+                width: "100%",
+                transition: "background 0.15s",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(99, 102, 241, 0.15)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              <Clock size={14} color="#818cf8" />
+              <span>Agendamentos</span>
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* ─── Modal de Agendamentos (T-1.4) ─── */}
       <ScheduleModal

@@ -3,6 +3,7 @@ import { Node } from "reactflow";
 import { CanvasNodeData, DatasetProfile, SchemaDriftReport, ColumnProfile } from "../../types";
 import { SchemaEditor, SchemaEditorModal } from "./SchemaEditor";
 import { ImportSchemaModal } from "./ImportSchemaModal";
+import { FileBrowserModal } from "./files/FileBrowserModal";
 import { TMapModal, TMapConfig } from "./TMapModal";
 import { api } from "../../api/client";
 import {
@@ -32,6 +33,7 @@ import {
   RefreshCw,
   Activity,
   X,
+  FolderOpen,
 } from "lucide-react";
 import { ConnectionEntry, ContextVariable, SchemaColumn, Environment, QueryEntry, QueryDialect, ConnectionType } from "../../store/jobStore";
 import { SqlAutocompleteTextarea, AutocompleteSource } from "../../components/common/SqlAutocompleteTextarea";
@@ -448,6 +450,8 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
   const [showSchemaModal, setShowSchemaModal] = useState(false);
   const [showImportSchemaModal, setShowImportSchemaModal] = useState(false);
   const [showTMapModal, setShowTMapModal] = useState(false);
+  const [isFileBrowserOpen, setIsFileBrowserOpen] = useState(false);
+  const [fileBrowserField, setFileBrowserField] = useState<string>("path");
   const [activeTab, setActiveTab] = useState<"config" | "schema" | "documentation">("config");
   const [editingNodeId, setEditingNodeId] = useState<string>("");
   const [isRenamingId, setIsRenamingId] = useState(false);
@@ -1659,11 +1663,39 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                       </button>
                     </div>
                   </div>
-                  <DebouncedInput
-                    value={config.path ?? ""}
-                    placeholder="data/users.csv"
-                    onChange={(v) => handleChange("path", v)}
-                  />
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <div style={{ flex: 1 }}>
+                      <DebouncedInput
+                        value={config.path ?? ""}
+                        placeholder="data/users.csv"
+                        onChange={(v) => handleChange("path", v)}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      style={{
+                        padding: "6px 10px",
+                        fontSize: "0.76rem",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 5,
+                        borderColor: "var(--accent-cyan)",
+                        color: "var(--accent-cyan)",
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                        flexShrink: 0,
+                      }}
+                      title="Navegar no sistema operacional ou no workspace para selecionar um arquivo existente"
+                      onClick={() => {
+                        setFileBrowserField("path");
+                        setIsFileBrowserOpen(true);
+                      }}
+                    >
+                      <FolderOpen size={14} />
+                      <span>Procurar...</span>
+                    </button>
+                  </div>
                   <button
                     type="button"
                     className="btn btn-secondary"
@@ -2215,11 +2247,39 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
               <>
                 <div className="form-group">
                   <label className="form-label">Caminho do Arquivo Destino</label>
-                  <DebouncedInput
-                    value={config.path ?? ""}
-                    placeholder="data/output.parquet"
-                    onChange={(v) => handleChange("path", v)}
-                  />
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <div style={{ flex: 1 }}>
+                      <DebouncedInput
+                        value={config.path ?? ""}
+                        placeholder="data/output.parquet"
+                        onChange={(v) => handleChange("path", v)}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      style={{
+                        padding: "6px 10px",
+                        fontSize: "0.76rem",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 5,
+                        borderColor: "var(--accent-cyan)",
+                        color: "var(--accent-cyan)",
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                        flexShrink: 0,
+                      }}
+                      title="Navegar no sistema operacional ou no workspace para selecionar o arquivo"
+                      onClick={() => {
+                        setFileBrowserField("path");
+                        setIsFileBrowserOpen(true);
+                      }}
+                    >
+                      <FolderOpen size={14} />
+                      <span>Procurar...</span>
+                    </button>
+                  </div>
                 </div>
                 <div className="form-group">
                   <label className="form-label">Formato</label>
@@ -2546,6 +2606,15 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
           </>
         )}
       </div>
+
+      {/* File Browser Modal (TASK OS File Browser) */}
+      <FileBrowserModal
+        isOpen={isFileBrowserOpen}
+        onClose={() => setIsFileBrowserOpen(false)}
+        currentPath={config[fileBrowserField] || ""}
+        onSelectFile={(filePath) => handleChange(fileBrowserField, filePath)}
+        title={fileBrowserField === "path" ? "Selecionar Arquivo de Dados" : "Selecionar Banco de Dados DuckDB"}
+      />
 
       {/* Import Schema Modal */}
       {showImportSchemaModal && (

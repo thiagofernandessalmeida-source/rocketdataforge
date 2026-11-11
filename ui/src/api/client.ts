@@ -211,6 +211,17 @@ export const api = {
 
   // Git integration
   getGitStatus: () =>
-    request<{ branch: string; clean: boolean; commit_hash: string; commit_message: string }>("/git/status")
+    request<{ branch: string; clean: boolean; commit_hash: string; commit_message: string }>("/git/status"),
+
+  // Filesystem & Arquivos Locais
+  browseLocalFile: (initialDir?: string, fileTypes?: string) =>
+    request<{ status: string; path: string | null }>("/workspaces/local/browse-file", {
+      method: "POST",
+      body: JSON.stringify({ initial_dir: initialDir, file_types: fileTypes }),
+    }),
+  listLocalFiles: (directory?: string) =>
+    request<{ current_dir: string; items: Array<{ name: string; path: string; type: "file" | "directory"; extension?: string; size?: number }> }>(
+      `/workspaces/local/files${directory ? `?directory=${encodeURIComponent(directory)}` : ""}`
+    ),
 };
 

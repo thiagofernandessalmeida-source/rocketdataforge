@@ -320,6 +320,137 @@ class WorkspaceManager:
 
         return None
 
+    def browse_native_file(self, initial_dir: Optional[str] = None, file_types: Optional[str] = None) -> Optional[str]:
+        """Abre a janela nativa do SO (Windows / macOS / Linux) para o usuário escolher um arquivo existente."""
+        import subprocess
+        import sys
+
+        clean_initial = str(initial_dir).strip().strip('"\'') if initial_dir else ""
+        init_dir = os.path.abspath(clean_initial) if clean_initial and os.path.isdir(clean_initial) else ""
+        if not init_dir:
+            ws_root = self.get_active_workspace_path()
+            data_dir = os.path.join(ws_root, "data")
+            init_dir = data_dir if os.path.isdir(data_dir) else ws_root
+
+        def _format_result(file_path: str) -> str:
+            norm = os.path.normpath(file_path)
+            ws_root = os.path.normpath(self.get_active_workspace_path())
+            try:
+                if norm.lower().startswith(ws_root.lower() + os.sep):
+                    return os.path.relpath(norm, ws_root).replace("\\", "/")
+            except Exception:
+                pass
+            return norm.replace("\\", "/")
+
+        # 1. Tenta via tkinter askopenfilename em processo isolado
+        picker_code = (
+            "import tkinter\n"
+            "from tkinter import filedialog\n"
+            "try:\n"
+            "    root = tkinter.Tk()\n"
+            "    root.withdraw()\n"
+            "    root.attributes('-topmost', True)\n"
+            "    ftypes = [('Arquivos de Dados', '*.csv;*.parquet;*.json;*.jsonl;*.xlsx;*.xls;*.duckdb;*.tsv;*.txt'), ('Todos os Arquivos', '*.*')]\n"
+            f"    file_selected = filedialog.askopenfilename(title='Selecione o Arquivo de Dados', initialdir={repr(init_dir)}, filetypes=ftypes)\n"
+            "    root.destroy()\n"
+            "    if file_selected:\n"
+            "        print(file_selected.strip())\n"
+            "except Exception:\n"
+            "    pass\n"
+        )
+
+        try:
+            res = subprocess.run(
+                [sys.executable, "-c", picker_code],
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            out = res.stdout.strip()
+            if out and os.path.isfile(out):
+                return _format_result(out)
+        except Exception:
+            pass
+
+        # 2. Fallback PowerShell OpenFileDialog no Windows
+        if os.name == "nt":
+            filter_str = "Arquivos de Dados (*.csv;*.parquet;*.json;*.xlsx;*.duckdb)|*.csv;*.parquet;*.json;*.jsonl;*.xlsx;*.xls;*.duckdb;*.tsv;*.txt|Todos os Arquivos (*.*)|*.*"
+            escaped_init = init_dir.replace("'", "''")
+            ps_script = (
+                "Add-Type -AssemblyName System.Windows.Forms; "
+                "$f = New-Object System.Windows.Forms.OpenFileDialog; "
+                "$f.Title = 'Selecione o Arquivo de Dados'; "
+                f"$f.Filter = '{filter_str}'; "
+                f"$f.InitialDirectory = '{escaped_init}'; "
+                "if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.FileName }"
+            )
+            try:
+                res_ps = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", ps_script],
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                )
+                out_ps = res_ps.stdout.strip()
+                if out_ps and os.path.isfile(out_ps):
+                    return _format_result(out_ps)
+            except Exception:
+                pass
+
+        return None
+
+    def list_files_in_workspace(self, sub_dir: Optional[str] = None) -> Dict[str, Any]:
+        """Lista pastas e arquivos suportados dentro do workspace ou subdiretório seguro."""
+        ws_root = os.path.abspath(self.get_active_workspace_path())
+        target_dir = os.path.abspath(os.path.join(ws_root, sub_dir)) if sub_dir else ws_root
+
+        # Evita path traversal fora do workspace raiz
+        if not target_dir.startswith(ws_root):
+            target_dir = ws_root
+
+        if not os.path.exists(target_dir):
+            os.makedirs(target_dir, exist_ok=True)
+
+        supported_exts = {".csv", ".tsv", ".parquet", ".json", ".jsonl", ".xlsx", ".xls", ".duckdb", ".txt"}
+        items: List[Dict[str, Any]] = []
+
+        try:
+            with os.scandir(target_dir) as entries:
+                for entry in entries:
+                    if entry.name.startswith(".") or entry.name in {"__pycache__", "node_modules", ".venv"}:
+                        continue
+                    if entry.is_dir():
+                        rel = os.path.relpath(entry.path, ws_root).replace("\\", "/")
+                        items.append({
+                            "name": entry.name,
+                            "path": rel,
+                            "type": "directory"
+                        })
+                    elif entry.is_file():
+                        _, ext = os.path.splitext(entry.name.lower())
+                        if ext in supported_exts:
+                            rel = os.path.relpath(entry.path, ws_root).replace("\\", "/")
+                            try:
+                                sz = entry.stat().st_size
+                            except Exception:
+                                sz = 0
+                            items.append({
+                                "name": entry.name,
+                                "path": rel,
+                                "type": "file",
+                                "extension": ext.lstrip("."),
+                                "size": sz
+                            })
+        except Exception as e:
+            return {"error": str(e), "files": [], "current_dir": os.path.relpath(target_dir, ws_root).replace("\\", "/")}
+
+        items.sort(key=lambda x: (x["type"] != "directory", x["name"].lower()))
+        rel_current = os.path.relpath(target_dir, ws_root).replace("\\", "/")
+        return {
+            "current_dir": "" if rel_current == "." else rel_current,
+            "items": items
+        }
+
     def load_workspace_state(self) -> Dict[str, Any]:
         """Carrega jobs, conexões e queries do workspace ativo."""
         ws_path = self.ensure_workspace_structure()

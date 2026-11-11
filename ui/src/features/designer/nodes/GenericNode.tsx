@@ -3,6 +3,7 @@ import { Handle, Position, NodeProps, useReactFlow } from "reactflow";
 import { CanvasNodeData, PortDefinition } from "../../../types";
 import { EXPANDED_CATALOG } from "../../../catalog/components";
 import { useNodeTelemetry } from "../../../store/telemetryStore";
+import { getTechnologyMeta } from "../utils/technologyTheme";
 import {
   Database,
   FileText,
@@ -171,6 +172,9 @@ export const GenericNode: React.FC<NodeProps<CanvasNodeData>> = memo(({ id, data
   const catalogComp = EXPANDED_CATALOG.find((c) => c.type_id === data.componentType);
   const compDescription = catalogComp?.description || "Operador de processamento de dados";
 
+  // Identifica a tecnologia específica da fonte de dados (Postgres, Oracle, Databricks, DuckDB, Parquet, CSV, etc.)
+  const tech = getTechnologyMeta(data.componentType, data.config);
+
   // Componentes de Origem (Source) sempre expõem a porta 'input' para receber
   // arestas de iteração e repetição em loop (tFlowToIterate direto entre inputs)
   const hasDeclaredInput = data.ports?.some((p) => p.direction === "input");
@@ -262,17 +266,18 @@ export const GenericNode: React.FC<NodeProps<CanvasNodeData>> = memo(({ id, data
       <div
         className="rdf-node-header"
         style={{
-          borderLeft: `3px solid ${
-            data.category === "source"
+          borderLeft: `3.5px solid ${
+            tech.borderColor ||
+            (data.category === "source"
               ? "var(--cat-source)"
               : data.category === "transform"
               ? "var(--cat-transform)"
-              : "var(--cat-target)"
+              : "var(--cat-target)")
           }`,
         }}
       >
         <div className="rdf-node-title" onDoubleClick={(e) => { e.stopPropagation(); setIsEditing(true); }}>
-          {getCategoryIcon(data.componentType)}
+          {tech.icon || getCategoryIcon(data.componentType)}
           {isEditing ? (
             <input
               className="rdf-node-rename-input"
@@ -311,6 +316,24 @@ export const GenericNode: React.FC<NodeProps<CanvasNodeData>> = memo(({ id, data
           )}
           {data.status === "failed" && (
             <AlertCircle size={13} color="var(--status-danger)" />
+          )}
+          {tech.key !== "generic" && (
+            <span
+              className="badge tech-badge"
+              style={{
+                background: tech.bgColor,
+                color: tech.color,
+                border: `1px solid ${tech.borderColor}`,
+                fontSize: "0.62rem",
+                fontWeight: 600,
+                padding: "1px 5px",
+                borderRadius: 4,
+                boxShadow: "0 1px 3px rgba(0,0,0,0.25)",
+              }}
+              title={`Tecnologia: ${tech.name}`}
+            >
+              {tech.badgeLabel}
+            </span>
           )}
           <span
             className="badge"

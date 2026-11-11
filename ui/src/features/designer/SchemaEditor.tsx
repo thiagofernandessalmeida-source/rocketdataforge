@@ -794,12 +794,13 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
                                 <select
                                   className="schema-cell-select"
                                   value={col.type}
+                                  style={{ colorScheme: "dark" }}
                                   onChange={(e) =>
                                     updateColumn(col.id, "type", e.target.value as SchemaColumnType)
                                   }
                                 >
                                   {COLUMN_TYPES.map((t) => (
-                                    <option key={t} value={t}>{t}</option>
+                                    <option key={t} value={t} style={{ backgroundColor: "#0f172a", color: "#f8fafc" }}>{t}</option>
                                   ))}
                                 </select>
                               </div>
@@ -929,12 +930,12 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
                                     </label>
                                     <select
                                       className="schema-cell-select masking-select"
-                                      style={{ width: 170 }}
+                                      style={{ width: 170, colorScheme: "dark" }}
                                       value={col.masking || "NONE"}
                                       onChange={(e) => updateColumn(col.id, "masking", e.target.value === "NONE" ? undefined : e.target.value)}
                                     >
                                       {MASKING_OPTIONS.map((opt) => (
-                                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                        <option key={opt.value} value={opt.value} style={{ backgroundColor: "#0f172a", color: "#f8fafc" }}>{opt.label}</option>
                                       ))}
                                     </select>
                                     {col.masking === "MASK_HASH" && (
@@ -1220,12 +1221,13 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
                         <select
                           className="schema-cell-select"
                           value={col.type}
+                          style={{ colorScheme: "dark" }}
                           onChange={(e) =>
                             updateColumn(col.id, "type", e.target.value as SchemaColumnType)
                           }
                         >
                           {COLUMN_TYPES.map((t) => (
-                            <option key={t} value={t}>{t}</option>
+                            <option key={t} value={t} style={{ backgroundColor: "#0f172a", color: "#f8fafc" }}>{t}</option>
                           ))}
                         </select>
                       </div>
@@ -1372,12 +1374,12 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
                             </label>
                             <select
                               className="schema-cell-select masking-select"
-                              style={{ width: 170 }}
+                              style={{ width: 170, colorScheme: "dark" }}
                               value={col.masking || "NONE"}
                               onChange={(e) => updateColumn(col.id, "masking", e.target.value === "NONE" ? undefined : e.target.value)}
                             >
                               {MASKING_OPTIONS.map((opt) => (
-                                <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                <option key={opt.value} value={opt.value} style={{ backgroundColor: "#0f172a", color: "#f8fafc" }}>{opt.label}</option>
                               ))}
                             </select>
                             {col.masking === "MASK_HASH" && (

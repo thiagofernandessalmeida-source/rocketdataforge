@@ -209,3 +209,25 @@ async def browse_workspace_folder(payload: dict = None):
     return {"status": "ok", "path": selected_path}
 
 
+@router.post("/workspaces/local/browse-file")
+async def browse_workspace_file(payload: dict = None):
+    """Abre a janela nativa de seleção de arquivos do SO (Windows / macOS / Linux) e retorna o arquivo selecionado."""
+    import asyncio
+    from src.core.application.workspace.workspace_manager import workspace_manager
+
+    initial_dir = (payload or {}).get("initial_dir")
+    file_types = (payload or {}).get("file_types")
+    loop = asyncio.get_event_loop()
+    selected_file = await loop.run_in_executor(
+        None, workspace_manager.browse_native_file, initial_dir, file_types
+    )
+    return {"status": "ok", "path": selected_file}
+
+
+@router.get("/workspaces/local/files")
+def list_workspace_files(directory: str = None):
+    """Lista pastas e arquivos de dados dentro do workspace para navegação web."""
+    from src.core.application.workspace.workspace_manager import workspace_manager
+    return workspace_manager.list_files_in_workspace(directory)
+
+

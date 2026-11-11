@@ -128,3 +128,27 @@ def test_workspace_manager_api_select_workspace():
         data2 = resp2.json()
         assert data2["name"] == "Harmonizacao Test 2"
         assert os.path.isdir(data2["path"])
+
+
+def test_workspace_manager_list_files():
+    """Valida a listagem de arquivos de dados no workspace para o FileBrowser."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        mgr = WorkspaceManager(config_dir=tmpdir)
+        ws_info = mgr.set_active_workspace(path=tmpdir, name="BrowseTest")
+        data_dir = os.path.join(tmpdir, "data")
+        os.makedirs(data_dir, exist_ok=True)
+
+        # Cria arquivos de teste
+        with open(os.path.join(data_dir, "customers.csv"), "w") as f:
+            f.write("id,name\n1,Alpha\n")
+        with open(os.path.join(data_dir, "sales.parquet"), "w") as f:
+            f.write("fake parquet")
+        with open(os.path.join(data_dir, "unsupported.exe"), "w") as f:
+            f.write("ignore me")
+
+        result = mgr.list_files_in_workspace("data")
+        assert "items" in result
+        names = [item["name"] for item in result["items"]]
+        assert "customers.csv" in names
+        assert "sales.parquet" in names
+        assert "unsupported.exe" not in names
