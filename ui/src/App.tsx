@@ -2467,13 +2467,23 @@ export const App: React.FC = () => {
           })
           .filter((d) => Boolean(d.targetId));
 
-        const mainSchema: SchemaColumn[] = (upstreamNodes[0]?.data as any)?.schema || (liveTMap.data as any)?.schema || [];
+        const tmapConfig = (liveTMap.data?.config || {}) as TMapConfig;
+        const mainInputId = tmapConfig.main_input_id;
+        const mainNode = (mainInputId ? upstreamNodes.find((n) => n.id === mainInputId) : null) || upstreamNodes[0];
+        const mainSchema: SchemaColumn[] = (mainNode?.data as any)?.schema || (liveTMap.data as any)?.schema || [];
+
+        const lookupNodes = upstreamNodes.filter((un) => un.id !== mainNode?.id);
         const lookupSchemas: Record<string, SchemaColumn[]> = {};
-        upstreamNodes.slice(1).forEach((un) => {
+        lookupNodes.forEach((un) => {
           lookupSchemas[un.id] = (un.data as any)?.schema || [];
         });
 
-        const availableUpstreamNodes = upstreamNodes.map((un, idx) => {
+        // Coloca o mainNode explicitamente como primeiro e os lookups na sequência
+        const orderedUpstreamNodes = mainNode
+          ? [mainNode, ...lookupNodes]
+          : upstreamNodes;
+
+        const availableUpstreamNodes = orderedUpstreamNodes.map((un, idx) => {
           const edge = incomingEdges.find((e) => e.source === un.id);
           const alias = edge?.data?.flowName || (idx === 0 ? "row1" : `row${idx + 1}`);
           return {

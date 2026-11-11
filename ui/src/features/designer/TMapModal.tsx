@@ -2,7 +2,7 @@ import React, { useState, useMemo, useRef, useEffect, useCallback } from "react"
 import {
   X, Check, Plus, Trash2, GitMerge, ArrowRight, ArrowLeft,
   Table2, Layers, Play, Wand2, Search, Maximize2, Minimize2,
-  ChevronDown, ChevronUp, Key, Filter, HelpCircle, AlertCircle,
+  ChevronDown, ChevronUp, Key, Filter, HelpCircle, AlertCircle, AlertTriangle,
   Copy, RefreshCw, ChevronsRight, FileCode, CheckSquare, Sparkles,
   Sliders, Link2, Info, Zap, Undo2, Redo2, Clipboard
 } from "lucide-react";
@@ -14,6 +14,13 @@ import {
 } from "../../utils/schemaClipboard";
 import { ImportSchemaModal } from "./ImportSchemaModal";
 import { getBaseApiUrl } from "../../api/client";
+import {
+  deriveTMapLookups,
+  getLookupEffectiveSchema,
+  getMainInputNode,
+  normalizeJoinType,
+  normalizeMatchModel,
+} from "./utils/tmapLookupUtils";
 
 // ─── Interfaces ────────────────────────────────────────────────
 
@@ -89,6 +96,7 @@ export interface TMapOutputFlow {
 }
 
 export interface TMapConfig {
+  main_input_id?: string;
   main_alias?: string;
   lookups?: TMapLookupConfig[];
   variables?: TMapVariable[];
@@ -151,19 +159,6 @@ const FUNCTION_CATALOG: FunctionDoc[] = [
   { category: "Condicional / Lógica", name: "CAST", syntax: "CAST(expr AS VARCHAR)", description: "Converte explicitamente o tipo do dado", example: "CAST(row1.id AS VARCHAR)" },
 ];
 
-const normalizeMatchModel = (val?: string): "all" | "unique" | "first" => {
-  const s = (val || "").toLowerCase();
-  if (s.includes("unique")) return "unique";
-  if (s.includes("first")) return "first";
-  return "all";
-};
-
-const normalizeJoinType = (type?: string, model?: string): "left" | "inner" => {
-  const s = (type || model || "").toLowerCase();
-  if (s.includes("inner")) return "inner";
-  return "left";
-};
-
 // ─── Main Component ────────────────────────────────────────────
 
 export const TMapModal: React.FC<TMapModalProps> = ({
@@ -187,49 +182,44 @@ export const TMapModal: React.FC<TMapModalProps> = ({
   const [copiedChipToken, setCopiedChipToken] = useState<string | null>(null);
 
   // Main Alias state (row1 / main)
-  const initialMainAlias = config.main_alias || availableUpstreamNodes[0]?.alias || "main1";
+  const mainNode = getMainInputNode(availableUpstreamNodes, config.main_input_id);
+  const initialMainAlias = config.main_alias || mainNode?.alias || "row1";
   const [mainAlias, setMainAlias] = useState<string>(initialMainAlias);
 
-  // Lookups state with fallback keys, aliases and auto-sync with upstream nodes
+  // Lookups state derivado dos nós conectados que não são o main (1.1)
   const [lookups, setLookups] = useState<TMapLookupConfig[]>(() => {
-    const rawLookups = config.lookups || [];
-    const upstreamLookups = availableUpstreamNodes.slice(1);
-
-    if (upstreamLookups.length > 0 && rawLookups.length === 0) {
-      return upstreamLookups.map((un, idx) => ({
-        node_id: un.id,
-        label: un.label || `lkp${idx + 1}`,
-        alias: un.alias || `row${idx + 2}`,
-        join_type: "left",
-        join_model: "left_outer",
-        lookup_model: "Load once",
-        match_model: "all",
-        left_keys: [],
-        right_keys: [],
-        join_keys: [{ expr_key: "", column: "" }],
-        filter_expression: "",
-        join_filter: "",
-        schema: un.schema || lookupSchemas[un.id] || [],
-      }));
-    }
-
-    return rawLookups.map((lk, idx) => ({
-      ...lk,
-      alias: lk.alias || lk.label || `row${idx + 2}`,
-      lookup_model: lk.lookup_model || "Load once",
-      match_model: normalizeMatchModel(lk.match_model),
-      join_type: normalizeJoinType(lk.join_type, lk.join_model),
-      join_model: normalizeJoinType(lk.join_type, lk.join_model) === "inner" ? "inner" : "left_outer",
-      join_keys:
-        lk.join_keys ||
-        (lk.left_keys && lk.left_keys.length > 0
-          ? lk.left_keys.map((k, i) => ({ expr_key: k, column: lk.right_keys?.[i] || "" }))
-          : [{ expr_key: "", column: "" }]),
-      filter_expression: lk.filter_expression || "",
-      join_filter: lk.join_filter || lk.filter_expression || "",
-      schema: lk.schema || lookupSchemas[lk.node_id] || [],
-    }));
+    return deriveTMapLookups(
+      availableUpstreamNodes,
+      (config.lookups || []) as any,
+      lookupSchemas,
+      config.main_input_id
+    ).lookups as TMapLookupConfig[];
   });
+
+  const [disconnectedWarnings, setDisconnectedWarnings] = useState<string[]>(() => {
+    return deriveTMapLookups(
+      availableUpstreamNodes,
+      (config.lookups || []) as any,
+      lookupSchemas,
+      config.main_input_id
+    ).disconnectedWarnings;
+  });
+
+  const [lookupNotice, setLookupNotice] = useState<string | null>(null);
+
+  // 1.1: Recalcula quando as conexões upstream mudarem, preservando edições locais
+  useEffect(() => {
+    setLookups((currentLookups) => {
+      const derived = deriveTMapLookups(
+        availableUpstreamNodes,
+        currentLookups.length > 0 ? (currentLookups as any) : ((config.lookups || []) as any),
+        lookupSchemas,
+        config.main_input_id
+      );
+      setDisconnectedWarnings(derived.disconnectedWarnings);
+      return derived.lookups as TMapLookupConfig[];
+    });
+  }, [availableUpstreamNodes, lookupSchemas, config.main_input_id]);
 
   // Variables state (inicia vazio para novos mappers - sem mocks fantasmas como row1.Title)
   const [variables, setVariables] = useState<TMapVariable[]>(
@@ -584,11 +574,12 @@ export const TMapModal: React.FC<TMapModalProps> = ({
       },
     ];
     lookups.forEach((lk, idx) => {
+      const connectedNode = availableUpstreamNodes.find((un) => un.id === lk.node_id);
       list.push({
         id: lk.node_id,
         label: lk.label || lk.node_id,
         alias: lk.alias || lk.label || `row${idx + 2}`,
-        schema: lk.schema || lookupSchemas[lk.node_id] || [],
+        schema: getLookupEffectiveSchema(lk, connectedNode, lookupSchemas),
         isMain: false,
       });
     });
@@ -696,10 +687,11 @@ export const TMapModal: React.FC<TMapModalProps> = ({
       availableSources.push({ name: c.name, expr: `${mainAlias}.${c.name}`, type: c.type, prefix: mainAlias })
     );
     lookups.forEach((lk, idx) => {
-      const lkCols = lookupSchemas[lk.node_id] || lk.schema || [];
+      const connectedNode = availableUpstreamNodes.find((un) => un.id === lk.node_id);
+      const lkCols = getLookupEffectiveSchema(lk, connectedNode, lookupSchemas);
       const prefix = lk.alias || lk.label || `row${idx + 2}`;
       lkCols.forEach((c) =>
-        availableSources.push({ name: c.name, expr: `${prefix}.${c.name}`, type: c.type, prefix })
+        availableSources.push({ name: c.name, expr: `${prefix}.${c.name}`, type: (c.type as SchemaColumnType) || "String", prefix })
       );
     });
     variables.forEach((v) => {
@@ -781,22 +773,30 @@ export const TMapModal: React.FC<TMapModalProps> = ({
     setActiveOutputId(remaining[0].id);
   };
 
-  // ─── Lookup Actions ───────────────────────────────────────────
+  // ─── Lookup Actions (1.2) ───────────────────────────────────────────
   const handleAddLookup = () => {
-    const count = lookups.length + 1;
-    const newLk: TMapLookupConfig = {
-      node_id: `row${count + 1}`,
-      label: `row${count + 1}`,
-      join_type: "left",
-      join_model: "left_outer",
-      lookup_model: "Load once",
-      match_model: "all",
-      left_keys: [],
-      right_keys: [],
-      join_keys: [{ expr_key: "", column: "" }],
-      filter_expression: "",
-    };
-    setLookups([...lookups, newLk]);
+    // Procura nós upstream conectados que ainda não estão configurados como lookup
+    const connectedLookupIds = new Set(lookups.map((l) => l.node_id));
+    const mainNodeId = getMainInputNode(availableUpstreamNodes, config.main_input_id)?.id;
+    const availableUnconnected = availableUpstreamNodes.filter(
+      (un) => un.id && un.id !== mainNodeId && !connectedLookupIds.has(un.id)
+    );
+
+    if (availableUnconnected.length === 0) {
+      setLookupNotice("Para adicionar uma tabela de Lookup, conecte um nó de origem ou transformação a este tMap no Canvas.");
+      setTimeout(() => setLookupNotice(null), 6000);
+      return;
+    }
+
+    // Associa o próximo nó upstream conectado real
+    const nextNode = availableUnconnected[0];
+    const derived = deriveTMapLookups(
+      availableUpstreamNodes,
+      [...lookups, { node_id: nextNode.id, label: nextNode.label, alias: nextNode.alias } as any],
+      lookupSchemas,
+      config.main_input_id
+    );
+    setLookups(derived.lookups as TMapLookupConfig[]);
   };
 
   const handleRemoveLookup = (nodeId: string) => {
@@ -873,6 +873,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
 
     onSave(
       {
+        main_input_id: config.main_input_id || mainNode?.id,
         main_alias: mainAlias,
         lookups: normalizedLookups,
         variables,
@@ -1075,6 +1076,50 @@ export const TMapModal: React.FC<TMapModalProps> = ({
             </div>
 
             <div className="mapper-pane-scroll">
+              {/* Avisos de Lookups desconectados (1.2 e 1.5(c)) */}
+              {disconnectedWarnings.map((warn, i) => (
+                <div
+                  key={i}
+                  className="disconnected-lookup-warning"
+                  style={{
+                    margin: "6px 8px",
+                    padding: "6px 10px",
+                    background: "rgba(239, 68, 68, 0.15)",
+                    border: "1px solid rgba(239, 68, 68, 0.4)",
+                    borderRadius: 6,
+                    color: "#fca5a5",
+                    fontSize: "0.72rem",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <AlertTriangle size={13} color="#ef4444" style={{ flexShrink: 0 }} />
+                  <span>{warn}</span>
+                </div>
+              ))}
+
+              {lookupNotice && (
+                <div
+                  className="lookup-notice"
+                  style={{
+                    margin: "6px 8px",
+                    padding: "6px 10px",
+                    background: "rgba(245, 158, 11, 0.15)",
+                    border: "1px solid rgba(245, 158, 11, 0.4)",
+                    borderRadius: 6,
+                    color: "#fde68a",
+                    fontSize: "0.72rem",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <AlertCircle size={13} color="#f59e0b" style={{ flexShrink: 0 }} />
+                  <span>{lookupNotice}</span>
+                </div>
+              )}
+
               {/* Main Input Table (row1 / main) */}
               <div className="mapper-table-card main-stream">
                 <div className="table-card-header">
@@ -1132,7 +1177,8 @@ export const TMapModal: React.FC<TMapModalProps> = ({
 
               {/* Lookup Tables (row2, row3...) */}
               {lookups.map((lk, lkIdx) => {
-                const lkCols = lookupSchemas[lk.node_id] || lk.schema || [];
+                const connectedNode = availableUpstreamNodes.find((un) => un.id === lk.node_id);
+                const lkCols = getLookupEffectiveSchema(lk, connectedNode, lookupSchemas);
                 const isLookupCollapsed = collapsedLookups[lk.node_id] ?? false;
                 const isSettingsOpen = showLookupSettings[lk.node_id] ?? true;
                 const prefix = lk.alias || lk.label || `row${lkIdx + 2}`;
@@ -1318,7 +1364,11 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                                 }}
                               />
                               <datalist id={`datalist-lk-${lk.node_id}`}>
-                                {(lk.schema || lookupSchemas[lk.node_id] || []).map((c) => (
+                                {getLookupEffectiveSchema(
+                                  lk,
+                                  availableUpstreamNodes.find((un) => un.id === lk.node_id),
+                                  lookupSchemas
+                                ).map((c) => (
                                   <option key={c.id || c.name} value={c.name} />
                                 ))}
                               </datalist>
@@ -1373,7 +1423,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                             e.dataTransfer.setData("application/json", JSON.stringify({ flow: prefix, col: c.name, type: c.type }));
                           }}
                           title={`Clique para mapear no output ativo ou arraste: ${prefix}.${c.name}`}
-                          onClick={() => handleAddOrMapColumnToActiveOutput(`${prefix}.${c.name}`, c.name, c.type)}
+                          onClick={() => handleAddOrMapColumnToActiveOutput(`${prefix}.${c.name}`, c.name, (c.type as SchemaColumnType) || "String")}
                         >
                           <span className="col-name">{c.name}</span>
                           <span className="col-type-tag">{c.type}</span>
@@ -1944,7 +1994,11 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                     <tbody>
                       {(activeInputId === "main"
                         ? mainSchema
-                        : lookupSchemas[activeInputId] || []
+                        : getLookupEffectiveSchema(
+                            lookups.find((l) => l.node_id === activeInputId) || { node_id: activeInputId },
+                            availableUpstreamNodes.find((un) => un.id === activeInputId),
+                            lookupSchemas
+                          )
                       ).map((c, i) => (
                         <tr key={c.id || i}>
                           <td className="col-name-cell">{c.name}</td>
@@ -1969,7 +2023,14 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                   className="transfer-btn"
                   title="Copiar todas as colunas da entrada para a saída ativa (sem duplicar nomes)"
                   onClick={() => {
-                    const src = activeInputId === "main" ? mainSchema : lookupSchemas[activeInputId] || [];
+                    const src =
+                      activeInputId === "main"
+                        ? mainSchema
+                        : getLookupEffectiveSchema(
+                            lookups.find((l) => l.node_id === activeInputId) || { node_id: activeInputId },
+                            availableUpstreamNodes.find((un) => un.id === activeInputId),
+                            lookupSchemas
+                          );
                     const prefix =
                       activeInputId === "main"
                         ? mainAlias
@@ -1998,7 +2059,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                         id: `col-${Date.now()}-${targetName}-${Math.random().toString(36).slice(2, 5)}`,
                         target: targetName,
                         expression: `${prefix}.${c.name}`,
-                        type: c.type,
+                        type: (c.type as SchemaColumnType) || "String",
                         nullable: c.nullable,
                         isPrimaryKey: c.isPrimaryKey,
                       });

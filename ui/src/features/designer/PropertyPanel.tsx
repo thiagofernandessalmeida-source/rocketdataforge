@@ -2648,24 +2648,40 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
           nodeId={id}
           nodeLabel={data.label || id}
           config={config as TMapConfig}
-          mainSchema={(upstreamNodes[0]?.data as any)?.schema || schema || []}
+          mainSchema={(() => {
+            const tmapCfg = config as TMapConfig;
+            const mainInputId = tmapCfg?.main_input_id;
+            const mainNode = (mainInputId ? upstreamNodes.find((n) => n.id === mainInputId) : null) || upstreamNodes[0];
+            return (mainNode?.data as any)?.schema || schema || [];
+          })()}
           lookupSchemas={(() => {
+            const tmapCfg = config as TMapConfig;
+            const mainInputId = tmapCfg?.main_input_id;
+            const mainNode = (mainInputId ? upstreamNodes.find((n) => n.id === mainInputId) : null) || upstreamNodes[0];
+            const lookupNodes = upstreamNodes.filter((un) => un.id !== mainNode?.id);
             const lkSchemas: Record<string, SchemaColumn[]> = {};
-            upstreamNodes.slice(1).forEach((un) => {
+            lookupNodes.forEach((un) => {
               lkSchemas[un.id] = (un.data as any)?.schema || [];
             });
             return lkSchemas;
           })()}
-          availableUpstreamNodes={upstreamNodes.map((un, idx) => {
-            const edge = incomingEdges.find((e) => e.source === un.id);
-            const alias = edge?.data?.flowName || (idx === 0 ? "row1" : `row${idx + 1}`);
-            return {
-              id: un.id,
-              label: un.data?.label || un.id,
-              alias: alias,
-              schema: (un.data as any)?.schema || [],
-            };
-          })}
+          availableUpstreamNodes={(() => {
+            const tmapCfg = config as TMapConfig;
+            const mainInputId = tmapCfg?.main_input_id;
+            const mainNode = (mainInputId ? upstreamNodes.find((n) => n.id === mainInputId) : null) || upstreamNodes[0];
+            const lookupNodes = upstreamNodes.filter((un) => un.id !== mainNode?.id);
+            const ordered = mainNode ? [mainNode, ...lookupNodes] : upstreamNodes;
+            return ordered.map((un, idx) => {
+              const edge = incomingEdges.find((e) => e.source === un.id);
+              const alias = edge?.data?.flowName || (idx === 0 ? "row1" : `row${idx + 1}`);
+              return {
+                id: un.id,
+                label: un.data?.label || un.id,
+                alias: alias,
+                schema: (un.data as any)?.schema || [],
+              };
+            });
+          })()}
           downstreamNodes={downstreamNodes}
           onSave={(newCfg, targetSchemaUpdates) => {
             onUpdateConfig(id, { ...config, ...newCfg });
