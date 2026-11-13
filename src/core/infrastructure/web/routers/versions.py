@@ -1,5 +1,6 @@
 """Endpoints de Versões de Pipeline: Compilação e Execução (TASK-022, TASK-023)."""
 
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -19,7 +20,7 @@ from src.core.infrastructure.web.dependencies import (
     get_db_session,
     get_execution_manager,
 )
-from src.core.infrastructure.web.dto.execution import ExecutionResponse
+from src.core.infrastructure.web.dto.execution import ExecutionResponse, ExecuteVersionRequest
 from src.core.infrastructure.web.dto.pipeline import CompiledPlans
 
 router = APIRouter(tags=["Pipeline Versions"])
@@ -94,6 +95,7 @@ def compile_pipeline_version(
 @router.post("/pipeline-versions/{version_id}/execute", response_model=ExecutionResponse, status_code=status.HTTP_202_ACCEPTED)
 def execute_pipeline_version(
     version_id: str,
+    payload: Optional[ExecuteVersionRequest] = None,
     session: Session = Depends(get_db_session),
     manager: ExecutionManager = Depends(get_execution_manager)
 ):
@@ -124,11 +126,13 @@ def execute_pipeline_version(
     execution_id = generate_ulid()
     correlation_id = generate_ulid()
 
+    ctx_vars = payload.context_variables if payload and payload.context_variables else {}
     execution = Execution(
         id=execution_id,
         pipeline_version_id=version.definition_hash,
         correlation_id=correlation_id,
-        status=ExecutionStatus.CREATED
+        status=ExecutionStatus.CREATED,
+        context_variables=ctx_vars
     )
 
     # Persiste a execução inicial

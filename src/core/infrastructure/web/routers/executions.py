@@ -140,7 +140,8 @@ def execute_partial_pipeline(
         id=execution_id,
         pipeline_version_id=payload.version_id or payload.pipeline_id or draft.id,
         correlation_id=correlation_id,
-        status=ExecutionStatus.CREATED
+        status=ExecutionStatus.CREATED,
+        context_variables=payload.context_variables if payload and payload.context_variables else {}
     )
 
     exec_repo = SqlAlchemyExecutionRepository(session)

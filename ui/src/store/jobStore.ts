@@ -6,6 +6,7 @@ import { Node, Edge } from "reactflow";
 import { CanvasNodeData, ComponentCategory } from "../types/index";
 import { telemetryStore } from "./telemetryStore";
 import { getBaseApiUrl } from "../api/client";
+import { buildContextVariablesMap, applyContextVarUpdates } from "../utils/contextVariableUtils";
 
 export type JobStatus = "draft" | "saved" | "published";
 export type Environment = "dev" | "hml" | "prd";
@@ -2439,6 +2440,23 @@ print("Dados publicados com sucesso via context.write_output!")
     const cv = state.contextVariables.find((v) => v.key === key);
     if (!cv) return `\${${key}}`;
     return cv.values[activeEnv] ?? cv.values["dev"] ?? `\${${key}}`;
+  },
+
+  /** Retorna mapa de variáveis de contexto convertidas pelo tipo para o job e ambiente ativo */
+  getContextVariablesMap(jobId?: string, env?: Environment): Record<string, any> {
+    const activeEnv = env ?? state.activeEnvironment;
+    return buildContextVariablesMap(state.contextVariables, activeEnv, jobId);
+  },
+
+  /** Atualiza valores de variáveis existentes a partir de mutações de células Python */
+  updateContextVarsFromMap(updates: Record<string, any>, env?: Environment): void {
+    const activeEnv = env ?? state.activeEnvironment;
+    const { updatedVars, modified } = applyContextVarUpdates(state.contextVariables, updates, activeEnv);
+    if (modified) {
+      state = { ...state, contextVariables: updatedVars as ContextVariable[] };
+      saveState(state);
+      notify();
+    }
   },
 
   // ─── Query Bank ────────────────────────────────────────────

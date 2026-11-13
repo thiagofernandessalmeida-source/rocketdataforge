@@ -378,20 +378,18 @@ class ExecutionManager:
             runner = PythonCellRunner()
             cid = cell.get("id") or cell.get("name", "python-cell")
             cname = cell.get("name", cid)
+            ctx_vars = getattr(execution, "context_variables", {}) or {}
             context = PythonCellContext(
                 cell_id=cid,
                 cell_name=cname,
-                job_id=execution.id,
-                preceding_cell_ids=[
-                    p.get("target_cell_id") or p.get("targetCellId")
-                    for p in (cell.get("preconditions") or [])
-                    if p.get("target_cell_id") or p.get("targetCellId")
-                ]
+                variables=ctx_vars,
             )
             code = cell.get("code_snippet") or cell.get("codeSnippet") or ""
-            res = runner.execute_code(code, context)
+            res = runner.run(code, context)
             if not res.get("success", False):
                 raise RuntimeError(res.get("error") or "Erro na execução da célula Python")
+            if "context_variables" in res and isinstance(res["context_variables"], dict):
+                execution.context_variables.update(res["context_variables"])
         else:
             # Canvas Cell
             pass

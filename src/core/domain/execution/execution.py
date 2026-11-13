@@ -29,6 +29,7 @@ class Execution:
     status: ExecutionStatus = ExecutionStatus.CREATED
     attempt: int = 1
     tasks: Dict[str, TaskRun] = field(default_factory=dict)
+    context_variables: Dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None

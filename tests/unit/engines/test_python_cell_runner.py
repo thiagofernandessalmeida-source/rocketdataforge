@@ -76,3 +76,39 @@ def test_python_cell_runner_runtime_error():
     result = runner.run(code, context)
     assert result["success"] is False
     assert "division by zero" in result["error"]
+
+
+def test_python_cell_runner_variables_mutable():
+    """Valida item 1.2: context.variables mutável (leitura, escrita, criação) e retornado ao final."""
+    runner = PythonCellRunner()
+    initial_vars = {"contador": 10, "ambiente": "dev"}
+    context = PythonCellContext(
+        cell_id="py-vars",
+        cell_name="teste_variaveis",
+        variables=initial_vars
+    )
+    code = """
+# Leitura
+c = context.variables["contador"]
+# Escrita / Mutação
+context.variables["contador"] = c + 5
+# Criação de nova variável
+context.variables["nova_chave"] = "criada_no_script"
+"""
+    result = runner.run(code, context)
+    assert result["success"] is True
+    assert result["context_variables"]["contador"] == 15
+    assert result["context_variables"]["nova_chave"] == "criada_no_script"
+    assert result["context_variables"]["ambiente"] == "dev"
+
+
+def test_python_cell_runner_returns_variables_on_syntax_error():
+    """Valida item 1.2: devolver context_variables ao final, inclusive em erro de sintaxe."""
+    runner = PythonCellRunner()
+    initial_vars = {"k": "v"}
+    context = PythonCellContext(cell_id="py-syn", cell_name="syntax_err", variables=initial_vars)
+    code = "def erro(:"
+    result = runner.run(code, context)
+    assert result["success"] is False
+    assert result["context_variables"] == {"k": "v"}
+

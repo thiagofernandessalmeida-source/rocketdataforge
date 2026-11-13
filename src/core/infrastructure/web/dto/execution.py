@@ -16,6 +16,11 @@ class PartialExecutionRequest(BaseModel):
     pipeline_id: Optional[str] = None
     version_id: Optional[str] = None
     draft_definition: Optional[dict] = None
+    context_variables: Optional[dict] = None
+
+
+class ExecuteVersionRequest(BaseModel):
+    context_variables: Optional[dict] = None
 
 
 class TaskRunDetail(BaseModel):

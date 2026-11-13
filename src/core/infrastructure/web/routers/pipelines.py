@@ -357,6 +357,12 @@ def execute_python_cell(payload: dict):
     cell_id = payload.get("cell_id", "python-cell-01")
     cell_name = payload.get("cell_name", "python-cell-01")
     shared_data = payload.get("shared_outputs", {})
+    context_vars = payload.get("context_variables") or payload.get("variables") or {}
+    if not isinstance(context_vars, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="context_variables deve ser um objeto/dicionário chave-valor."
+        )
 
     from src.core.infrastructure.engines.python_cell_runner import PythonCellContext, PythonCellRunner
     import polars as pl
@@ -376,6 +382,7 @@ def execute_python_cell(payload: dict):
         cell_id=cell_id,
         cell_name=cell_name,
         shared_outputs=shared_outputs,
+        variables=context_vars,
     )
     runner = PythonCellRunner()
     result = runner.run(code=code, context=context)

@@ -38,7 +38,7 @@ class PythonCellContext:
         self.cell_id = cell_id
         self.cell_name = cell_name
         self._shared_outputs = shared_outputs if shared_outputs is not None else {}
-        self._variables = variables or {}
+        self._variables = dict(variables) if variables is not None else {}
         self._written_output: Optional[Any] = None
         self._logs: List[Dict[str, Any]] = []
         self._duckdb_con = duckdb_con or duckdb.connect(database=":memory:")
@@ -154,6 +154,13 @@ class PythonCellContext:
         """Variáveis de contexto e ambiente disponíveis."""
         return self._variables
 
+    @variables.setter
+    def variables(self, val: Any) -> None:
+        if isinstance(val, dict):
+            self._variables = dict(val)
+        else:
+            raise TypeError("context.variables deve ser um dicionário")
+
 
 class PythonCellRunner:
     """Executor seguro de código Python em memória para células do tipo PYTHON."""
@@ -194,6 +201,7 @@ class PythonCellRunner:
                 "error": f"Erro de Sintaxe (linha {e.lineno}): {e.msg}",
                 "output_preview": None,
                 "duration_ms": duration_ms,
+                "context_variables": dict(context.variables),
             }
 
         # Constrói o namespace global isolado
@@ -259,4 +267,5 @@ class PythonCellRunner:
             "output_preview": output_preview,
             "duration_ms": duration_ms,
             "rows_out": written_output.height if isinstance(written_output, pl.DataFrame) else (1 if written_output else 0),
+            "context_variables": dict(context.variables),
         }

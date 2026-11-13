@@ -49,12 +49,14 @@ hiddenimports = [
     "sqlalchemy",
     "apscheduler",
     "httpx",
+    "openpyxl",
 ]
 hiddenimports += collect_submodules("src")
 hiddenimports += collect_submodules("duckdb")
 hiddenimports += collect_submodules("polars")
 hiddenimports += collect_submodules("pydantic_core")
 hiddenimports += collect_submodules("sqlglot")
+hiddenimports += collect_submodules("openpyxl")
 
 a = Analysis(
     [str(ROOT_DIR / "src" / "core" / "infrastructure" / "web" / "main.py")],

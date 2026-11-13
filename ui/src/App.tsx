@@ -1148,23 +1148,18 @@ export const App: React.FC = () => {
             }
           }
 
-          const res = await fetch(`${getBaseApiUrl()}/pipelines/cells/python/execute`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              code: cell.codeSnippet || "",
-              cell_id: cell.id,
-              cell_name: cell.name,
-              shared_outputs: sharedOutputs,
-            }),
+          const ctxVars = jobStore.getContextVariablesMap(activeJobId || undefined);
+          const data = await api.executePythonCell({
+            code: cell.codeSnippet || "",
+            cell_id: cell.id,
+            cell_name: cell.name,
+            shared_outputs: sharedOutputs,
+            context_variables: ctxVars,
           });
 
-          if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error(err.detail || `Erro HTTP ${res.status}`);
+          if (data.context_variables) {
+            jobStore.updateContextVarsFromMap(data.context_variables);
           }
-
-          const data = await res.json();
           const isSuccess = Boolean(data.success);
           const rowsOut = data.rows_out || (data.output_preview?.rowCount ?? 0);
 
@@ -1190,7 +1185,7 @@ export const App: React.FC = () => {
               level: "ERROR",
               execution_id: `py-${cell.id}`,
               node_id: cell.id,
-              message: data.stderr || data.error,
+              message: (data.stderr || data.error) || "",
             });
           }
 
@@ -1333,7 +1328,8 @@ export const App: React.FC = () => {
         const versionTag = `cell-${cell.id}-${Date.now().toString().slice(-6)}`;
         const pubVersion = await api.publishVersion(activePid, versionTag);
 
-        const execRes = await api.executeVersion(pubVersion.id);
+        const ctxVars = jobStore.getContextVariablesMap(activeJobId || undefined);
+        const execRes = await api.executeVersion(pubVersion.id, ctxVars);
         activeCellExecutionsRef.current.set(cell.id, execRes.execution_id);
         setConsoleVisible(true);
         setConsoleTab("metrics");
@@ -1876,7 +1872,8 @@ export const App: React.FC = () => {
         setPublishedVersionId(version.id);
         showToast("info", `Versão v${tag} auto-publicada.`);
       }
-      const res = await api.executeVersion(vId);
+      const ctxVars = jobStore.getContextVariablesMap(activeJobId || undefined);
+      const res = await api.executeVersion(vId, ctxVars);
       telemetryStore.setNodesQueued(nodes.map((n) => n.id));
       showToast("info", `Execução iniciada: ${res.execution_id}`);
       if (pollingRef.current) clearInterval(pollingRef.current);

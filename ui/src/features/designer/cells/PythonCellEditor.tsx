@@ -12,7 +12,7 @@ import {
   Code2,
 } from "lucide-react";
 import { CanvasCellData, jobStore } from "../../../store/jobStore";
-import { getBaseApiUrl } from "../../../api/client";
+import { api } from "../../../api/client";
 
 interface PythonCellEditorProps {
   cell: CanvasCellData;
@@ -119,23 +119,18 @@ export const PythonCellEditor: React.FC<PythonCellEditorProps> = ({
     }
 
     try {
-      const res = await fetch(`${getBaseApiUrl()}/pipelines/cells/python/execute`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          code: latestCode,
-          cell_id: cell.id,
-          cell_name: cell.name,
-          shared_outputs: sharedOutputs,
-        }),
+      const contextVars = jobStore.getContextVariablesMap(jobId);
+      const data = await api.executePythonCell({
+        code: latestCode,
+        cell_id: cell.id,
+        cell_name: cell.name,
+        shared_outputs: sharedOutputs,
+        context_variables: contextVars,
       });
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || `Erro HTTP ${res.status}`);
+      if (data.context_variables) {
+        jobStore.updateContextVarsFromMap(data.context_variables);
       }
-
-      const data = await res.json();
       setStdout(data.stdout || "");
       setStderr(data.stderr || "");
       setErrorMsg(data.error || null);

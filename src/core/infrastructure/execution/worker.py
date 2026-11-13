@@ -25,6 +25,7 @@ from src.core.infrastructure.connectors.aws_messaging_connector import AwsMessag
 from src.core.infrastructure.engines.duckdb_runner import DuckDBRunner
 from src.core.infrastructure.engines.polars_runner import PolarsRunner, batch_to_polars_df
 from src.core.infrastructure.execution.cancellation import CancellationToken
+from src.core.infrastructure.execution.context_variable_interpolation import interpolate_context_variables
 from src.core.infrastructure.security.redaction import sanitize_message
 from src.core.infrastructure.security.secret_resolver import SecretResolver
 
@@ -142,7 +143,8 @@ class ExecutionWorker:
                 task.started_at = datetime.now(timezone.utc)
 
                 op_type = phys_op.operator_type
-                cfg = phys_op.config
+                context_vars = getattr(execution, "context_variables", {}) or {}
+                cfg = interpolate_context_variables(phys_op.config, context_vars)
 
                 # Suporte a Resiliência (Retries) e Throttling (Sleep) (Tópico 6)
                 raw_cfg = cfg.get("raw_config") or {}

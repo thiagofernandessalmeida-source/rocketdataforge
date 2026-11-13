@@ -162,11 +162,34 @@ export const api = {
   // Compilation & Execution
   compileVersion: (versionId: string) =>
     request<CompiledPlans>(`/pipeline-versions/${versionId}/compile`, { method: "POST" }),
-  executeVersion: (versionId: string) =>
+  executeVersion: (versionId: string, context_variables?: Record<string, any>) =>
     request<{ execution_id: string; status: string; correlation_id: string }>(
       `/pipeline-versions/${versionId}/execute`,
-      { method: "POST" }
+      {
+        method: "POST",
+        body: context_variables ? JSON.stringify({ context_variables }) : undefined,
+      }
     ),
+  executePythonCell: (params: {
+    code: string;
+    cell_id: string;
+    cell_name: string;
+    shared_outputs?: Record<string, any>;
+    context_variables?: Record<string, any>;
+  }) =>
+    request<{
+      success: boolean;
+      stdout: string;
+      stderr: string;
+      error: string | null;
+      output_preview: any;
+      duration_ms?: number;
+      rows_out?: number;
+      context_variables?: Record<string, any>;
+    }>("/pipelines/cells/python/execute", {
+      method: "POST",
+      body: JSON.stringify(params),
+    }),
   getExecution: (executionId: string) => request<ExecutionDetail>(`/executions/${executionId}`),
   cancelExecution: (executionId: string) =>
     request<ExecutionDetail>(`/executions/${executionId}/cancel`, { method: "POST" }),
@@ -176,7 +199,13 @@ export const api = {
   },
 
   // Live Preview, Partial Execution & Lineage (Spec 005)
-  executePartial: (params: { target_node_id: string; pipeline_id?: string; version_id?: string; draft_definition?: any }) =>
+  executePartial: (params: {
+    target_node_id: string;
+    pipeline_id?: string;
+    version_id?: string;
+    draft_definition?: any;
+    context_variables?: Record<string, any>;
+  }) =>
     request<{ execution_id: string; status: string; correlation_id: string }>("/executions/partial", {
       method: "POST",
       body: JSON.stringify(params),
