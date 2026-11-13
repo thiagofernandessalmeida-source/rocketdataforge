@@ -517,6 +517,129 @@ export function remapNodeReferences<T = any>(obj: T, idMap: Record<string, strin
   return obj;
 }
 
+export interface CloneNodesOptions {
+  targetCellId: string;
+  existingNodes: Node<CanvasNodeData>[];
+  sourceNodeSchemas?: Record<string, SchemaColumn[]>;
+  offset?: { x: number; y: number };
+}
+
+export interface CloneResult {
+  clonedNodes: Node<CanvasNodeData>[];
+  clonedEdges: Edge[];
+  clonedSchemas: Record<string, SchemaColumn[]>;
+  idMap: Record<string, string>;
+}
+
+export function cloneNodes(
+  nodesToClone: Node<CanvasNodeData>[],
+  edgesToClone: Edge[] = [],
+  options: CloneNodesOptions
+): CloneResult {
+  if (!nodesToClone || nodesToClone.length === 0) {
+    return { clonedNodes: [], clonedEdges: [], clonedSchemas: {}, idMap: {} };
+  }
+
+  // 1. Clone profundo de nós e arestas para isolamento absoluto de referências
+  const rawNodes: Node<CanvasNodeData>[] = JSON.parse(JSON.stringify(nodesToClone));
+  const rawEdges: Edge[] = JSON.parse(JSON.stringify(edgesToClone || []));
+
+  const sourceNodeIds = new Set(rawNodes.map((n) => n.id));
+  const idMap: Record<string, string> = {};
+  const accumulatedForIdGen: Node<CanvasNodeData>[] = [...options.existingNodes];
+
+  // 2. Geração determinística de IDs canônicos
+  for (const n of rawNodes) {
+    const compType = n.data?.componentType || "node";
+    const newId = generateRocketNodeId(compType, accumulatedForIdGen);
+    idMap[n.id] = newId;
+    accumulatedForIdGen.push({ ...n, id: newId });
+  }
+
+  // 3. Filtragem de arestas: apenas arestas cujos dois extremos estão dentro da seleção
+  const internalEdges = rawEdges.filter(
+    (e) => sourceNodeIds.has(e.source) && sourceNodeIds.has(e.target)
+  );
+
+  // 4. Clonagem e remapeamento de nós
+  const clonedNodes: Node<CanvasNodeData>[] = rawNodes.map((n, idx) => {
+    const newId = idMap[n.id];
+    const deepData = remapNodeReferences(n.data || {}, idMap);
+
+    // Limpa referências a nós que não fazem parte do conjunto clonado
+    if (deepData.config) {
+      if (deepData.config.main_input_id && !idMap[deepData.config.main_input_id]) {
+        delete deepData.config.main_input_id;
+      }
+      if (Array.isArray(deepData.config.lookups)) {
+        deepData.config.lookups = deepData.config.lookups.filter((lk: any) => {
+          const lkNodeId = lk.node_id;
+          return lkNodeId && (idMap[lkNodeId] || sourceNodeIds.has(lkNodeId));
+        });
+      }
+    }
+
+    // Zera estados efêmeros e ajusta cellId
+    deepData.status = undefined;
+    deepData.metrics = undefined;
+    deepData.cellId = options.targetCellId;
+
+    // Resolução de nomes: adiciona '(Cópia)' somente se houver colisão de label na célula de destino
+    const hasLabelCollision = options.existingNodes.some(
+      (en) =>
+        en.data?.cellId === options.targetCellId &&
+        en.data?.label === deepData.label
+    );
+    if (hasLabelCollision) {
+      deepData.label = `${deepData.label || newId} (Cópia)`;
+    }
+
+    const offsetX = (options.offset?.x ?? 35) * (idx + 1);
+    const offsetY = (options.offset?.y ?? 35) * (idx + 1);
+
+    return {
+      ...n,
+      id: newId,
+      position: {
+        x: n.position.x + offsetX,
+        y: n.position.y + offsetY,
+      },
+      selected: false,
+      data: deepData,
+    };
+  });
+
+  // 5. Clonagem e remapeamento de arestas internas
+  const clonedEdges: Edge[] = internalEdges.map((e) => {
+    const deepData = remapNodeReferences(e.data || {}, idMap);
+    return {
+      ...e,
+      id: `edge_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+      source: idMap[e.source] || e.source,
+      target: idMap[e.target] || e.target,
+      selected: false,
+      data: deepData,
+    };
+  });
+
+  // 6. Cópia profunda dos schemas das colunas
+  const clonedSchemas: Record<string, SchemaColumn[]> = {};
+  if (options.sourceNodeSchemas) {
+    for (const [oldId, schema] of Object.entries(options.sourceNodeSchemas)) {
+      if (idMap[oldId]) {
+        clonedSchemas[idMap[oldId]] = JSON.parse(JSON.stringify(schema));
+      }
+    }
+  }
+
+  return {
+    clonedNodes,
+    clonedEdges,
+    clonedSchemas,
+    idMap,
+  };
+}
+
 /**
  * Garante que todos os nós em todas as células de um Job possuam IDs únicos globais.
  * Se múltiplos nós possuírem o mesmo ID (por exemplo, criados em células distintas em versões anteriores),
@@ -1050,6 +1173,8 @@ export function takeSnapshot(jobId: string, force = false): void {
 
 interface ClipboardData {
   nodes: Node<CanvasNodeData>[];
+  edges?: Edge[];
+  nodeSchemas?: Record<string, SchemaColumn[]>;
   sourceCellId?: string;
 }
 
@@ -1153,7 +1278,7 @@ export const jobStore = {
     return true;
   },
 
-  // ─── Clipboard (Copy / Paste) ─────────────────────────────
+  // ─── Clipboard (Copy / Paste / Duplicate) ─────────────────
 
   copyNodes(jobId: string, cellId: string, nodeIds: string[]): boolean {
     const job = state.jobs.find((j) => j.id === jobId);
@@ -1162,8 +1287,22 @@ export const jobStore = {
     if (!cell) return false;
     const targetNodes = (cell.nodes || []).filter((n) => nodeIds.includes(n.id));
     if (targetNodes.length === 0) return false;
+
+    const targetIds = new Set(targetNodes.map((n) => n.id));
+    const targetEdges = (cell.edges || []).filter((e) => targetIds.has(e.source) && targetIds.has(e.target));
+    const targetSchemas: Record<string, SchemaColumn[]> = {};
+    if (cell.nodeSchemas) {
+      for (const id of targetIds) {
+        if (cell.nodeSchemas[id]) {
+          targetSchemas[id] = JSON.parse(JSON.stringify(cell.nodeSchemas[id]));
+        }
+      }
+    }
+
     nodeClipboard = {
       nodes: JSON.parse(JSON.stringify(targetNodes)),
+      edges: JSON.parse(JSON.stringify(targetEdges)),
+      nodeSchemas: targetSchemas,
       sourceCellId: cellId,
     };
     return true;
@@ -1184,45 +1323,88 @@ export const jobStore = {
     takeSnapshot(jobId, true);
 
     const allJobNodes = (job.cells || []).flatMap((c) => c.nodes || []);
-    const pastedNodes: Node<CanvasNodeData>[] = [];
+    const { clonedNodes, clonedEdges, clonedSchemas } = cloneNodes(
+      nodeClipboard.nodes,
+      nodeClipboard.edges || [],
+      {
+        targetCellId: targetCell.id,
+        existingNodes: allJobNodes,
+        sourceNodeSchemas: nodeClipboard.nodeSchemas,
+        offset: { x: 40, y: 40 },
+      }
+    );
 
-    nodeClipboard.nodes.forEach((originalNode, idx) => {
-      const newId = generateRocketNodeId(originalNode.data?.componentType || "node", [...allJobNodes, ...pastedNodes]);
-
-      const clonedNode: Node<CanvasNodeData> = {
-        ...JSON.parse(JSON.stringify(originalNode)),
-        id: newId,
-        position: {
-          x: originalNode.position.x + 35 * (idx + 1),
-          y: originalNode.position.y + 35 * (idx + 1),
-        },
-        selected: true,
-        data: {
-          ...originalNode.data,
-          label: `${originalNode.data?.label || originalNode.id} (Cópia)`,
-          cellId: targetCell.id,
-          status: undefined,
-          metrics: undefined,
-        },
-      };
-      pastedNodes.push(clonedNode);
-    });
+    // Marca os nós recém colados como selecionados
+    const selectedPastedNodes = clonedNodes.map((n) => ({ ...n, selected: true }));
 
     const unselectedExistingNodes = (targetCell.nodes || []).map((n) => ({
       ...n,
       selected: false,
     }));
 
-    const updatedNodes = [...unselectedExistingNodes, ...pastedNodes];
+    const updatedNodes = [...unselectedExistingNodes, ...selectedPastedNodes];
+    const updatedEdges = [...(targetCell.edges || []), ...clonedEdges];
+    const updatedSchemas = { ...(targetCell.nodeSchemas || {}), ...clonedSchemas };
 
     state = {
       ...state,
       jobs: state.jobs.map((j) => {
         if (j.id !== jobId) return j;
         const updatedCells = (j.cells || []).map((c) =>
-          c.id === targetCell.id ? { ...c, nodes: updatedNodes } : c
+          c.id === targetCell.id
+            ? { ...c, nodes: updatedNodes, edges: updatedEdges, nodeSchemas: updatedSchemas }
+            : c
         );
         const isActive = j.activeCellId === targetCell.id;
+        return {
+          ...j,
+          cells: updatedCells,
+          nodes: isActive ? updatedNodes : j.nodes,
+          edges: isActive ? updatedEdges : j.edges,
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+    return selectedPastedNodes;
+  },
+
+  duplicateNode(jobId: string, cellId: string, nodeId: string): Node<CanvasNodeData> | null {
+    const job = state.jobs.find((j) => j.id === jobId);
+    if (!job) return null;
+    const cell = (job.cells || []).find((c) => c.id === cellId);
+    if (!cell) return null;
+    const targetNode = (cell.nodes || []).find((n) => n.id === nodeId);
+    if (!targetNode) return null;
+
+    takeSnapshot(jobId, true);
+    const allJobNodes = (job.cells || []).flatMap((c) => c.nodes || []);
+    const { clonedNodes, clonedSchemas } = cloneNodes(
+      [targetNode],
+      [],
+      {
+        targetCellId: cell.id,
+        existingNodes: allJobNodes,
+        sourceNodeSchemas: cell.nodeSchemas,
+        offset: { x: 45, y: 45 },
+      }
+    );
+
+    if (clonedNodes.length === 0) return null;
+    const duplicatedNode = { ...clonedNodes[0], selected: true };
+    const unselectedExisting = (cell.nodes || []).map((n) => ({ ...n, selected: false }));
+    const updatedNodes = [...unselectedExisting, duplicatedNode];
+    const updatedSchemas = { ...(cell.nodeSchemas || {}), ...clonedSchemas };
+
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) =>
+          c.id === cell.id ? { ...c, nodes: updatedNodes, nodeSchemas: updatedSchemas } : c
+        );
+        const isActive = j.activeCellId === cell.id;
         return {
           ...j,
           cells: updatedCells,
@@ -1233,7 +1415,7 @@ export const jobStore = {
     };
     saveState(state);
     notify();
-    return pastedNodes;
+    return duplicatedNode;
   },
 
   // ─── Folders ──────────────────────────────────────────────
@@ -1677,56 +1859,44 @@ print("Dados publicados com sucesso via context.write_output!")
     if (!sourceCell) return null;
 
     const existingCells = job.cells || [];
-    const nextIndex = existingCells.length + 1;
-    const newName = `Cópia de ${sourceCell.name}`.slice(0, 50);
     const maxOrder = existingCells.reduce((max, c) => Math.max(max, c.order || 0), 0);
-
-    // Deep clone nodes and edges with id mapping and template token interpolation remapping
-    const idMap: Record<string, string> = {};
-    const clonedNodesRaw = (sourceCell.nodes || []).map((n) => {
-      const uniqueSuffix = Date.now().toString(36) + Math.random().toString(36).substr(2, 4);
-      const newNId = `${n.id}_${uniqueSuffix}`;
-      idMap[n.id] = newNId;
-      return { n, newNId };
-    });
 
     const isPython = sourceCell.cellType === "PYTHON";
     const prefix = isPython ? "python-cell" : "canvas-cell";
-    const newId = `${prefix}-${String(nextIndex).padStart(2, "0")}`;
 
-    const clonedNodes = clonedNodesRaw.map(({ n, newNId }) => {
-      const deepData = JSON.parse(JSON.stringify(n.data || {}));
-      const remappedData = remapNodeReferences(deepData, idMap);
-      return {
-        ...n,
-        id: newNId,
-        position: { x: n.position.x + 30, y: n.position.y + 30 },
-        data: {
-          ...remappedData,
-          cellId: newId,
-        },
-      };
-    });
-
-    const clonedEdges = (sourceCell.edges || []).map((e) => {
-      const deepData = JSON.parse(JSON.stringify(e.data || {}));
-      const remappedData = remapNodeReferences(deepData, idMap);
-      return {
-        ...e,
-        id: `edge_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
-        source: idMap[e.source] || e.source,
-        target: idMap[e.target] || e.target,
-        data: remappedData,
-      };
-    });
-
-    const clonedNodeSchemas: Record<string, SchemaColumn[]> = {};
-    if (sourceCell.nodeSchemas) {
-      for (const [oldId, schema] of Object.entries(sourceCell.nodeSchemas)) {
-        const mappedId = idMap[oldId] || oldId;
-        clonedNodeSchemas[mappedId] = JSON.parse(JSON.stringify(schema));
-      }
+    // Garante que o novo ID nunca se repete, mesmo após exclusão de células intermediárias
+    const regex = new RegExp(`^${prefix}-(\\d+)$`);
+    const usedNumbers = new Set<number>();
+    for (const c of existingCells) {
+      const m = c.id.match(regex);
+      if (m) usedNumbers.add(parseInt(m[1], 10));
     }
+    let candidateNum = 1;
+    while (usedNumbers.has(candidateNum)) {
+      candidateNum++;
+    }
+    const newId = `${prefix}-${String(candidateNum).padStart(2, "0")}`;
+    const newName = `Cópia de ${sourceCell.name}`.slice(0, 50);
+
+    takeSnapshot(jobId, true);
+
+    const allJobNodes = existingCells.flatMap((c) => c.nodes || []);
+    const { clonedNodes, clonedEdges, clonedSchemas } = cloneNodes(
+      sourceCell.nodes || [],
+      sourceCell.edges || [],
+      {
+        targetCellId: newId,
+        existingNodes: allJobNodes,
+        sourceNodeSchemas: sourceCell.nodeSchemas,
+        offset: { x: 30, y: 30 },
+      }
+    );
+
+    // Clona pré-condições em profundidade com novos IDs únicos
+    const clonedPreconditions = (sourceCell.preconditions || []).map((p: any) => ({
+      ...JSON.parse(JSON.stringify(p)),
+      id: `prec_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+    }));
 
     const newCell: CanvasCellData = {
       id: newId,
@@ -1735,29 +1905,33 @@ print("Dados publicados com sucesso via context.write_output!")
       codeSnippet: sourceCell.codeSnippet,
       description: sourceCell.description || "",
       order: maxOrder + 1,
-      preconditions: [...(sourceCell.preconditions || [])],
+      preconditions: clonedPreconditions,
       preconditionOperator: sourceCell.preconditionOperator || "AND",
       nodes: clonedNodes,
       edges: clonedEdges,
       viewport: sourceCell.viewport ? { ...sourceCell.viewport } : undefined,
-      nodeSchemas: clonedNodeSchemas,
-      status: "idle",
-      is_active: sourceCell.is_active !== undefined ? sourceCell.is_active : true,
-      is_minimized: false,
+      nodeSchemas: clonedSchemas,
+      layoutDirection: sourceCell.layoutDirection || "LR",
+      is_active: sourceCell.is_active ?? true,
+      showMetricsPanel: false,
+      status: undefined,
+      metrics: undefined,
+      logs: undefined,
     };
 
     state = {
       ...state,
-      jobs: state.jobs.map((j) =>
-        j.id === jobId
-          ? {
-              ...j,
-              cells: [...(j.cells || []), newCell],
-              activeCellId: newCell.id,
-              updatedAt: new Date().toISOString(),
-            }
-          : j
-      ),
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        return {
+          ...j,
+          cells: [...(j.cells || []), newCell],
+          activeCellId: newId,
+          nodes: clonedNodes,
+          edges: clonedEdges,
+          updatedAt: new Date().toISOString(),
+        };
+      }),
     };
     saveState(state);
     notify();

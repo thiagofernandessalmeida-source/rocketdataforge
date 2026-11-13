@@ -816,15 +816,36 @@ export const App: React.FC = () => {
         return;
       }
 
-      // Copiar Nó Selecionado (Ctrl+C)
+      // Copiar Nós Selecionados (Ctrl+C)
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
+        if (activeJobId) {
+          const currentJob = jobStore.getJob(activeJobId);
+          const activeCell = (currentJob?.cells || []).find((c) => c.id === currentJob?.activeCellId) || currentJob?.cells?.[0];
+          if (activeCell) {
+            const selectedNodesList = (activeCell.nodes || []).filter((n) => n.selected);
+            const nodesToCopy = selectedNodesList.length > 0 ? selectedNodesList : (selectedNode ? [selectedNode] : []);
+            if (nodesToCopy.length > 0) {
+              e.preventDefault();
+              jobStore.copyNodes(activeJobId, activeCell.id, nodesToCopy.map((n) => n.id));
+              showToast("info", `${nodesToCopy.length} componente(s) copiado(s) (Ctrl+C).`);
+            }
+          }
+        }
+        return;
+      }
+
+      // Duplicar Nó Selecionado (Ctrl+D)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "d") {
         if (selectedNode && activeJobId) {
           const targetCellId =
             (selectedNode.data as any)?.cellId || activeJob?.activeCellId || activeJob?.cells?.[0]?.id;
           if (targetCellId) {
             e.preventDefault();
-            jobStore.copyNodes(activeJobId, targetCellId, [selectedNode.id]);
-            showToast("info", `Componente "${selectedNode.data?.label || selectedNode.id}" copiado (Ctrl+C).`);
+            const dup = jobStore.duplicateNode(activeJobId, targetCellId, selectedNode.id);
+            if (dup) {
+              setSelectedNode(dup);
+              showToast("success", `Componente "${dup.data?.label || dup.id}" duplicado (Ctrl+D)!`);
+            }
           }
         }
         return;

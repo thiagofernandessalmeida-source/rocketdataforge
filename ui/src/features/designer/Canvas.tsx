@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from "react";
-import { GitMerge, X, Plus, Check, Play, Table as TableIcon, GitBranch, Sliders, Eye, Clock, Code, MoreVertical, ChevronDown } from "lucide-react";
+import { GitMerge, X, Plus, Check, Play, Table as TableIcon, GitBranch, Sliders, Eye, Clock, Code, MoreVertical, ChevronDown, Copy, Clipboard, CopyPlus, Trash2, CheckSquare, LayoutGrid } from "lucide-react";
 import ReactFlow, {
   Background,
   Controls,
@@ -97,6 +97,11 @@ interface TMapOutputChoice {
   // ─── Menu de Contexto, Live Preview & Linhagem (Spec 005) ────────
   const [nodeContextMenu, setNodeContextMenu] = useState<{
     node: Node<CanvasNodeData>;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  const [paneContextMenu, setPaneContextMenu] = useState<{
     x: number;
     y: number;
   } | null>(null);
@@ -584,6 +589,8 @@ interface TMapOutputChoice {
   );
 
   const onPaneClick = useCallback(() => {
+    setNodeContextMenu(null);
+    setPaneContextMenu(null);
     onSelectNode(null);
   }, [onSelectNode]);
 
@@ -600,8 +607,14 @@ interface TMapOutputChoice {
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
         onPaneClick={onPaneClick}
+        onPaneContextMenu={(event) => {
+          event.preventDefault();
+          setNodeContextMenu(null);
+          setPaneContextMenu({ x: event.clientX, y: event.clientY });
+        }}
         onNodeContextMenu={(event, node) => {
           event.preventDefault();
+          setPaneContextMenu(null);
           setNodeContextMenu({ node: node as Node<CanvasNodeData>, x: event.clientX, y: event.clientY });
         }}
         nodeTypes={nodeTypes}
@@ -978,6 +991,266 @@ interface TMapOutputChoice {
             >
               <Sliders size={14} />
               <span>Configurar Propriedades</span>
+            </button>
+
+            {/* Ação 5: Copiar (Ctrl+C) */}
+            <button
+              id="ctx-btn-copy-node"
+              className="ctx-menu-item"
+              onClick={() => {
+                const targetNode = nodeContextMenu.node;
+                setNodeContextMenu(null);
+                const activeJobId = jobStore.getActiveJob()?.id;
+                if (activeJobId && cellId) {
+                  jobStore.copyNodes(activeJobId, cellId, [targetNode.id]);
+                }
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                width: "100%",
+                padding: "8px 14px",
+                border: "none",
+                background: "transparent",
+                color: "#cbd5e1",
+                fontSize: "0.82rem",
+                cursor: "pointer",
+                textAlign: "left",
+                transition: "background 0.15s ease",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255, 255, 255, 0.08)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              <Copy size={14} color="#38bdf8" />
+              <span style={{ flex: 1 }}>Copiar</span>
+              <kbd style={{ fontSize: "0.65rem", opacity: 0.6, background: "rgba(255,255,255,0.1)", padding: "1px 4px", borderRadius: 3 }}>Ctrl+C</kbd>
+            </button>
+
+            {/* Ação 6: Colar (Ctrl+V) */}
+            <button
+              id="ctx-btn-paste-node"
+              className="ctx-menu-item"
+              disabled={!jobStore.hasClipboardNodes()}
+              onClick={() => {
+                setNodeContextMenu(null);
+                const activeJobId = jobStore.getActiveJob()?.id;
+                if (activeJobId && cellId) {
+                  const pasted = jobStore.pasteNodes(activeJobId, cellId);
+                  if (pasted.length > 0) {
+                    setNodes((prev) => [...prev.map((n) => ({ ...n, selected: false })), ...pasted]);
+                  }
+                }
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                width: "100%",
+                padding: "8px 14px",
+                border: "none",
+                background: "transparent",
+                color: jobStore.hasClipboardNodes() ? "#cbd5e1" : "#475569",
+                fontSize: "0.82rem",
+                cursor: jobStore.hasClipboardNodes() ? "pointer" : "not-allowed",
+                textAlign: "left",
+                transition: "background 0.15s ease",
+              }}
+              onMouseEnter={(e) => {
+                if (jobStore.hasClipboardNodes()) e.currentTarget.style.background = "rgba(255, 255, 255, 0.08)";
+              }}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              <Clipboard size={14} color="var(--accent-cyan)" />
+              <span style={{ flex: 1 }}>Colar</span>
+              <kbd style={{ fontSize: "0.65rem", opacity: 0.6, background: "rgba(255,255,255,0.1)", padding: "1px 4px", borderRadius: 3 }}>Ctrl+V</kbd>
+            </button>
+
+            {/* Ação 7: Duplicar (Ctrl+D) */}
+            <button
+              id="ctx-btn-duplicate-node"
+              className="ctx-menu-item"
+              onClick={() => {
+                const targetNode = nodeContextMenu.node;
+                setNodeContextMenu(null);
+                const activeJobId = jobStore.getActiveJob()?.id;
+                if (activeJobId && cellId) {
+                  const dup = jobStore.duplicateNode(activeJobId, cellId, targetNode.id);
+                  if (dup) {
+                    setNodes((prev) => [...prev.map((n) => ({ ...n, selected: false })), dup]);
+                  }
+                }
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                width: "100%",
+                padding: "8px 14px",
+                border: "none",
+                background: "transparent",
+                color: "#cbd5e1",
+                fontSize: "0.82rem",
+                cursor: "pointer",
+                textAlign: "left",
+                transition: "background 0.15s ease",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255, 255, 255, 0.08)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              <CopyPlus size={14} color="#818cf8" />
+              <span style={{ flex: 1 }}>Duplicar</span>
+              <kbd style={{ fontSize: "0.65rem", opacity: 0.6, background: "rgba(255,255,255,0.1)", padding: "1px 4px", borderRadius: 3 }}>Ctrl+D</kbd>
+            </button>
+
+            {/* Ação 8: Excluir (Delete) */}
+            <button
+              id="ctx-btn-delete-node"
+              className="ctx-menu-item"
+              onClick={() => {
+                const targetNode = nodeContextMenu.node;
+                setNodeContextMenu(null);
+                const activeJobId = jobStore.getActiveJob()?.id;
+                if (activeJobId && cellId) {
+                  jobStore.deleteNode(activeJobId, cellId, targetNode.id);
+                  setNodes((prev) => prev.filter((n) => n.id !== targetNode.id));
+                  setEdges((prev) => prev.filter((e) => e.source !== targetNode.id && e.target !== targetNode.id));
+                }
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                width: "100%",
+                padding: "8px 14px",
+                border: "none",
+                background: "transparent",
+                color: "#f87171",
+                fontSize: "0.82rem",
+                cursor: "pointer",
+                textAlign: "left",
+                borderTop: "1px solid rgba(255, 255, 255, 0.08)",
+                marginTop: 4,
+                transition: "background 0.15s ease",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(239, 68, 68, 0.15)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              <Trash2 size={14} color="#f87171" />
+              <span style={{ flex: 1 }}>Excluir</span>
+              <kbd style={{ fontSize: "0.65rem", opacity: 0.7, background: "rgba(239,68,68,0.2)", padding: "1px 4px", borderRadius: 3 }}>Del</kbd>
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* ─── Menu de Contexto do Fundo do Canvas ───────────── */}
+      {paneContextMenu && (
+        <>
+          <div
+            className="ctx-overlay"
+            style={{ position: "fixed", inset: 0, zIndex: 998 }}
+            onClick={() => setPaneContextMenu(null)}
+          />
+          <div
+            className="rdf-pane-context-menu"
+            id="rdf-pane-context-menu"
+            style={{
+              position: "fixed",
+              top: paneContextMenu.y,
+              left: paneContextMenu.x,
+              background: "rgba(15, 23, 42, 0.97)",
+              border: "1px solid rgba(56, 189, 248, 0.25)",
+              borderRadius: 8,
+              boxShadow: "0 8px 30px rgba(0, 0, 0, 0.7)",
+              backdropFilter: "blur(12px)",
+              padding: "6px 0",
+              zIndex: 999,
+              minWidth: 200,
+              fontFamily: "Inter, sans-serif",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                padding: "6px 14px",
+                fontSize: "0.72rem",
+                color: "#64748b",
+                borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
+                marginBottom: 4,
+                fontWeight: 600,
+              }}
+            >
+              Área do Canvas
+            </div>
+
+            {/* Colar nós */}
+            <button
+              id="ctx-pane-btn-paste"
+              className="ctx-menu-item"
+              disabled={!jobStore.hasClipboardNodes()}
+              onClick={() => {
+                setPaneContextMenu(null);
+                const activeJobId = jobStore.getActiveJob()?.id;
+                if (activeJobId && cellId) {
+                  const pasted = jobStore.pasteNodes(activeJobId, cellId);
+                  if (pasted.length > 0) {
+                    setNodes((prev) => [...prev.map((n) => ({ ...n, selected: false })), ...pasted]);
+                  }
+                }
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                width: "100%",
+                padding: "8px 14px",
+                border: "none",
+                background: "transparent",
+                color: jobStore.hasClipboardNodes() ? "#cbd5e1" : "#475569",
+                fontSize: "0.82rem",
+                cursor: jobStore.hasClipboardNodes() ? "pointer" : "not-allowed",
+                textAlign: "left",
+                transition: "background 0.15s ease",
+              }}
+              onMouseEnter={(e) => {
+                if (jobStore.hasClipboardNodes()) e.currentTarget.style.background = "rgba(255, 255, 255, 0.08)";
+              }}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              <Clipboard size={14} color="var(--accent-cyan)" />
+              <span style={{ flex: 1 }}>Colar Componentes</span>
+              <kbd style={{ fontSize: "0.65rem", opacity: 0.6, background: "rgba(255,255,255,0.1)", padding: "1px 4px", borderRadius: 3 }}>Ctrl+V</kbd>
+            </button>
+
+            {/* Selecionar Tudo */}
+            <button
+              id="ctx-pane-btn-select-all"
+              className="ctx-menu-item"
+              onClick={() => {
+                setPaneContextMenu(null);
+                setNodes((prev) => prev.map((n) => ({ ...n, selected: true })));
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                width: "100%",
+                padding: "8px 14px",
+                border: "none",
+                background: "transparent",
+                color: "#cbd5e1",
+                fontSize: "0.82rem",
+                cursor: "pointer",
+                textAlign: "left",
+                transition: "background 0.15s ease",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255, 255, 255, 0.08)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              <CheckSquare size={14} color="#38bdf8" />
+              <span style={{ flex: 1 }}>Selecionar Tudo</span>
+              <kbd style={{ fontSize: "0.65rem", opacity: 0.6, background: "rgba(255,255,255,0.1)", padding: "1px 4px", borderRadius: 3 }}>Ctrl+A</kbd>
             </button>
           </div>
         </>
