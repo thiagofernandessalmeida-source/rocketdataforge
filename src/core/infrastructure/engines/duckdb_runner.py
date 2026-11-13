@@ -185,7 +185,12 @@ class DuckDBRunner:
         format_hint: str = "csv",
         custom_query: Optional[str] = None,
         format: Optional[str] = None,
-        query: Optional[str] = None
+        query: Optional[str] = None,
+        delimiter: Optional[str] = None,
+        delim: Optional[str] = None,
+        encoding: Optional[str] = None,
+        has_header: Optional[bool] = None,
+        header: Optional[bool] = None,
     ) -> pl.DataFrame:
         """Executa consulta analítica diretamente em um arquivo (CSV, Parquet, JSON) via DuckDB."""
         clean_path = file_path.replace("\\", "/")
@@ -203,7 +208,25 @@ class DuckDBRunner:
         elif fmt == "json" or clean_path.endswith(".json") or clean_path.endswith(".jsonl") or clean_path.endswith(".ndjson"):
             read_fn = f"read_json_auto('{clean_path}')"
         else:
-            read_fn = f"read_csv_auto('{clean_path}')"
+            eff_delim = delimiter if delimiter is not None else delim
+            eff_header = has_header if has_header is not None else header
+            eff_encoding = encoding
+
+            csv_args = [f"'{clean_path}'"]
+            if eff_delim is not None:
+                escaped_delim = str(eff_delim).replace("'", "''")
+                csv_args.append(f"delim='{escaped_delim}'")
+            if eff_header is not None:
+                csv_args.append(f"header={'true' if eff_header else 'false'}")
+            if eff_encoding is not None:
+                escaped_enc = str(eff_encoding).replace("'", "''")
+                csv_args.append(f"encoding='{escaped_enc}'")
+
+            args_str = ", ".join(csv_args)
+            if len(csv_args) > 1:
+                read_fn = f"read_csv({args_str})"
+            else:
+                read_fn = f"read_csv_auto('{clean_path}')"
 
         try:
             if effective_query and effective_query.strip():

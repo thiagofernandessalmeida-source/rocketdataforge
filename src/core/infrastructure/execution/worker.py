@@ -788,7 +788,17 @@ class ExecutionWorker:
         # Se a opção DuckDB in-memory estiver ativada
         if enable_duckdb:
             custom_query = cfg.get("duckdb_query")
-            df = self.duckdb_runner.execute_query_on_file(source_path, format_hint=fmt, custom_query=custom_query)
+            delimiter = cfg.get("delimiter") or cfg.get("delim")
+            encoding = cfg.get("encoding")
+            has_header = cfg.get("has_header") if cfg.get("has_header") is not None else cfg.get("header")
+            df = self.duckdb_runner.execute_query_on_file(
+                source_path,
+                format_hint=fmt,
+                custom_query=custom_query,
+                delimiter=delimiter,
+                encoding=encoding,
+                has_header=has_header
+            )
             task.record_progress(rows_in_increment=df.height, rows_out_increment=df.height)
             node_buffers[phys_op.id] = [df]
             return

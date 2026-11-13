@@ -1736,6 +1736,59 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                   </select>
                 </div>
 
+                {/* Opções de CSV / Delimitado (Tarefa 6) */}
+                {(config.format ?? "csv") === "csv" && (
+                  <div
+                    style={{
+                      background: "rgba(15, 23, 42, 0.45)",
+                      border: "1px solid #1e293b",
+                      borderRadius: 6,
+                      padding: "8px 10px",
+                      marginBottom: 10,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 8,
+                    }}
+                  >
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                      <div>
+                        <label className="form-label" style={{ fontSize: "0.7rem", marginBottom: 3 }}>
+                          Delimitador
+                        </label>
+                        <input
+                          type="text"
+                          className="form-input"
+                          style={{ fontSize: "0.75rem", padding: "4px 8px" }}
+                          placeholder="Padrão: vírgula (,)"
+                          value={config.delimiter ?? ""}
+                          onChange={(e) => handleChange("delimiter", e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="form-label" style={{ fontSize: "0.7rem", marginBottom: 3 }}>
+                          Encoding
+                        </label>
+                        <input
+                          type="text"
+                          className="form-input"
+                          style={{ fontSize: "0.75rem", padding: "4px 8px" }}
+                          placeholder="utf-8"
+                          value={config.encoding ?? ""}
+                          onChange={(e) => handleChange("encoding", e.target.value)}
+                        />
+                      </div>
+                    </div>
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: "0.72rem", color: "#cbd5e1" }}>
+                      <input
+                        type="checkbox"
+                        checked={config.has_header ?? true}
+                        onChange={(e) => handleChange("has_header", e.target.checked)}
+                      />
+                      <span>Primeira linha contém cabeçalho (Header)</span>
+                    </label>
+                  </div>
+                )}
+
                 {/* Opção DuckDB in-memory */}
                 <div className="form-group" style={{ background: "var(--bg-card)", padding: 10, borderRadius: 6 }}>
                   <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "0.75rem", fontWeight: 600 }}>
@@ -1760,6 +1813,9 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                         contextVariables={contextVariables}
                         onChange={(v) => handleChange("duckdb_query", v)}
                       />
+                      <div style={{ fontSize: "0.68rem", color: "#94a3b8", marginTop: 4 }}>
+                        Use a tabela source_data. Ex.: SELECT &quot;minha coluna&quot; FROM source_data
+                      </div>
                     </div>
                   )}
                 </div>
