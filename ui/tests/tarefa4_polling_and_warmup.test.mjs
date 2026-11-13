@@ -64,3 +64,4 @@ describe("TAREFA 4: Aquecimento de Backend, Polling Otimizado e Logs com Seq", (
     assert.deepStrictEqual(merged.map((l) => l.seq), [1, 2, 3]);
   });
 });
+

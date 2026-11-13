@@ -69,3 +69,4 @@ def test_health_endpoint_exposes_warm_status():
         data = res.json()
         assert "warm" in data
         assert isinstance(data["warm"], bool)
+
