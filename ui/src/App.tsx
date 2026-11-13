@@ -1337,23 +1337,42 @@ export const App: React.FC = () => {
 
         const layout = { viewport: { x: 0, y: 0, zoom: 1.0 }, nodes: cellLayoutNodes };
 
+        const tStart = performance.now();
         let freshRev = 1;
         try {
           const fresh = await api.getDraft(activePid);
           freshRev = fresh.revision;
         } catch (_) {}
 
+        const tBeforeDraft = performance.now();
         const updated = await api.updateDraft(activePid, freshRev, definition, layout);
+        const tDraft = performance.now() - tBeforeDraft;
         setRevision(updated.revision);
 
         const versionTag = `cell-${cell.id}-${Date.now().toString().slice(-6)}`;
+        const tBeforePublish = performance.now();
         const pubVersion = await api.publishVersion(activePid, versionTag);
+        const tPublish = performance.now() - tBeforePublish;
 
         const ctxVars = jobStore.getContextVariablesMap(activeJobId || undefined);
+        const tBeforeExec = performance.now();
         const execRes = await api.executeVersion(pubVersion.id, ctxVars);
+        const tExec = performance.now() - tBeforeExec;
         activeCellExecutionsRef.current.set(cell.id, execRes.execution_id);
         setConsoleVisible(true);
         setConsoleTab("metrics");
+
+        const perfSummary = `[Perf] Célula "${cell.name}" ciclo de inicialização: updateDraft=${Math.round(tDraft)}ms, publishVersion=${Math.round(tPublish)}ms, executeVersion=${Math.round(tExec)}ms (total preparo=${Math.round(performance.now() - tStart)}ms)`;
+        console.debug(perfSummary);
+
+        const debugLog: LogEntry = {
+          seq: 0,
+          timestamp: new Date().toISOString(),
+          level: "DEBUG",
+          execution_id: execRes.execution_id,
+          cell_id: cell.id,
+          message: perfSummary,
+        };
 
         // Inicializa estado de execução para feedback visual imediato
         const initialExec: ExecutionDetail = {
@@ -1386,43 +1405,75 @@ export const App: React.FC = () => {
           execResult = await new Promise<{ detail: ExecutionDetail; logs: LogEntry[]; cancelled?: boolean }>(
             (resolve, reject) => {
               let consecutivePollErrors = 0;
-              const timer = setInterval(async () => {
+              let accumulatedLogs: LogEntry[] = [debugLog];
+              let lastSeq = 0;
+              let timerId: any = null;
+              let isDone = false;
+              const pollStart = performance.now();
+
+              const doPoll = async () => {
+                if (isDone) return;
                 try {
-                  const detail = await api.getExecution(execRes.execution_id);
-                  const execLogs = await api.getExecutionLogs(execRes.execution_id).catch(() => []);
+                  const [detail, newLogs] = await Promise.all([
+                    api.getExecution(execRes.execution_id),
+                    api.getExecutionLogs(execRes.execution_id, undefined, lastSeq > 0 ? lastSeq : undefined).catch(() => []),
+                  ]);
                   consecutivePollErrors = 0;
-                  
+
+                  // Atualiza maior seq e acumula logs novos incrementalmente
+                  if (newLogs && newLogs.length > 0) {
+                    for (const l of newLogs) {
+                      if (l.seq && l.seq > lastSeq) lastSeq = l.seq;
+                      accumulatedLogs.push(l);
+                    }
+                  }
+
                   // Atualiza telemetria em tempo real no console e nós do canvas
                   setExecution(detail);
                   if (detail.tasks && detail.tasks.length > 0) {
                     telemetryStore.batchUpdate(detail.tasks);
                   }
-                  if (execLogs && execLogs.length > 0) {
-                    setLogs(execLogs);
+                  if (accumulatedLogs.length > 0) {
+                    setLogs([...accumulatedLogs]);
                   }
 
                   if (["succeeded", "failed", "cancelled"].includes(detail.status)) {
-                    clearInterval(timer);
+                    isDone = true;
+                    if (timerId) clearTimeout(timerId);
                     const cellNodeIds = (cell.nodes || []).map((n) => n.id);
                     if (detail.status === "failed") {
                       telemetryStore.finalizeUnfinishedNodes(cellNodeIds, "failed");
                     } else if (detail.status === "cancelled") {
                       telemetryStore.finalizeUnfinishedNodes(cellNodeIds, "cancelled");
                     }
-                    resolve({ detail, logs: execLogs, cancelled: detail.status === "cancelled" });
+                    resolve({ detail, logs: accumulatedLogs, cancelled: detail.status === "cancelled" });
+                    return;
                   }
                 } catch (pollErr) {
                   consecutivePollErrors++;
                   // Tolera falhas transitórias de conexão durante consultas pesadas
                   if (consecutivePollErrors > 20) {
-                    clearInterval(timer);
+                    isDone = true;
+                    if (timerId) clearTimeout(timerId);
                     reject(pollErr);
+                    return;
+                  }
+                } finally {
+                  if (!isDone) {
+                    const elapsed = performance.now() - pollStart;
+                    // Rampa adaptativa: 350ms nos primeiros 3s, depois 600ms, 1000ms até 1500ms
+                    const nextDelay = elapsed < 3000 ? 350 : elapsed < 6000 ? 600 : elapsed < 10000 ? 1000 : 1500;
+                    timerId = setTimeout(doPoll, nextDelay);
                   }
                 }
-              }, 350);
+              };
+
+              // Primeiro poll imediato (0ms) para resposta instantânea
+              timerId = setTimeout(doPoll, 0);
 
               abortFn = () => {
-                clearInterval(timer);
+                isDone = true;
+                if (timerId) clearTimeout(timerId);
                 const cellNodeIds = (cell.nodes || []).map((n) => n.id);
                 telemetryStore.finalizeUnfinishedNodes(cellNodeIds, "cancelled");
                 resolve({
@@ -1435,7 +1486,7 @@ export const App: React.FC = () => {
                     finished_at: new Date().toISOString(),
                     tasks: [],
                   },
-                  logs: [],
+                  logs: accumulatedLogs,
                   cancelled: true,
                 });
               };

@@ -251,10 +251,11 @@ def cancel_execution(
 def get_execution_logs(
     execution_id: str,
     node_id: Optional[str] = Query(None, description="Filtrar logs por nó específico"),
+    after: Optional[int] = Query(None, description="Retornar apenas logs com seq superior ao informado"),
     session: Session = Depends(get_db_session),
     manager: ExecutionManager = Depends(get_execution_manager)
 ):
-    """Recupera logs estruturados da execução com filtro opcional por nó."""
+    """Recupera logs estruturados da execução com filtro opcional por nó e polling incremental."""
     repo = SqlAlchemyExecutionRepository(session)
     execution = repo.get(execution_id)
     if not execution:
@@ -263,13 +264,15 @@ def get_execution_logs(
             detail=f"Execução '{execution_id}' não encontrada."
         )
 
-    raw_logs = manager.get_logs(execution_id, node_id=node_id)
+    raw_logs = manager.get_logs(execution_id, node_id=node_id, after=after)
     return [
         LogEntry(
+            seq=r.seq,
             timestamp=r.timestamp,
             level=r.level,
             execution_id=r.execution_id,
             node_id=r.node_id,
+            cell_id=r.cell_id,
             message=r.message
         )
         for r in raw_logs

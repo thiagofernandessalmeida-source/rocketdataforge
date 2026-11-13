@@ -42,3 +42,4 @@ describe("TAREFA 2: Logs e Métricas Expansíveis por Célula", () => {
     assert.ok(!specCellsSnippet.includes("showMetricsPanel"), "showMetricsPanel não pode estar no specCells");
   });
 });
+

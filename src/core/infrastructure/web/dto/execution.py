@@ -43,10 +43,12 @@ class ExecutionDetail(BaseModel):
 
 
 class LogEntry(BaseModel):
+    seq: int = 0
     timestamp: datetime
     level: str
     execution_id: str
     node_id: Optional[str] = None
+    cell_id: Optional[str] = None
     message: str
 
 

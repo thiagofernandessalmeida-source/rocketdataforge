@@ -125,7 +125,13 @@ def create_app() -> FastAPI:
     @app.get("/health", tags=["Health"])
     @app.get("/api/v1/health", tags=["Health"])
     def health_check():
-        return {"status": "healthy", "service": "RocketDataForge Control Plane"}
+        from src.core.infrastructure.execution.warmup import is_backend_warm, get_warmup_details
+        return {
+            "status": "healthy",
+            "service": "RocketDataForge Control Plane",
+            "warm": is_backend_warm(),
+            "warmup_details": get_warmup_details()
+        }
 
     api_routers = [
         workspaces.router,
@@ -174,6 +180,12 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     def on_startup():
         from src.core.infrastructure.scheduler.scheduler_service import SchedulerService
+        from src.core.infrastructure.execution.warmup import start_background_warmup
+        try:
+            start_background_warmup()
+        except Exception as e:
+            import logging
+            logging.getLogger("uvicorn.error").warning(f"Warmup startup warning: {e}")
         try:
             SchedulerService.get_instance().start()
         except Exception as e:

@@ -193,9 +193,14 @@ export const api = {
   getExecution: (executionId: string) => request<ExecutionDetail>(`/executions/${executionId}`),
   cancelExecution: (executionId: string) =>
     request<ExecutionDetail>(`/executions/${executionId}/cancel`, { method: "POST" }),
-  getExecutionLogs: (executionId: string, nodeId?: string) => {
-    const q = nodeId ? `?node_id=${encodeURIComponent(nodeId)}` : "";
-    return request<LogEntry[]>(`/executions/${executionId}/logs${q}`);
+  health: () =>
+    request<{ status: string; service: string; warm?: boolean; warmup_details?: Record<string, any> }>("/health"),
+  getExecutionLogs: (executionId: string, nodeId?: string, after?: number) => {
+    const params = new URLSearchParams();
+    if (nodeId) params.append("node_id", nodeId);
+    if (after !== undefined && after !== null) params.append("after", String(after));
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    return request<LogEntry[]>(`/executions/${executionId}/logs${qs}`);
   },
 
   // Live Preview, Partial Execution & Lineage (Spec 005)

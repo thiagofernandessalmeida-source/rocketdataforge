@@ -88,3 +88,4 @@ def test_context_variables_combined_with_worker_row_tokens():
     row_data = {"cliente_id": 999}
     final_query = worker._interpolate_tokens(query_after_context, row_data, upstream_id="input_1", is_sql=True)
     assert final_query == "SELECT * FROM vendas.clientes WHERE id = 999 AND status = 'ATIVO'"
+

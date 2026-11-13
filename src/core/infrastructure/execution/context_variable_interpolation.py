@@ -117,3 +117,4 @@ def mask_secrets(text: str, secret_values: List[str]) -> str:
         result = result.replace(secret, "***")
 
     return result
+

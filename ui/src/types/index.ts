@@ -121,10 +121,12 @@ export interface ExecutionDetail {
 }
 
 export interface LogEntry {
+  seq?: number;
   timestamp: string;
   level: "DEBUG" | "INFO" | "WARN" | "ERROR";
   execution_id: string;
   node_id?: string;
+  cell_id?: string;
   message: string;
 }
 

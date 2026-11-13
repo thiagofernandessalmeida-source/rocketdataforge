@@ -38,20 +38,26 @@ class ExecutionLogRecord:
         level: str,
         message: str,
         node_id: Optional[str] = None,
-        timestamp: Optional[datetime] = None
+        timestamp: Optional[datetime] = None,
+        seq: int = 0,
+        cell_id: Optional[str] = None
     ):
+        self.seq = seq
         self.execution_id = execution_id
         self.level = level
         self.message = message
         self.node_id = node_id
+        self.cell_id = cell_id
         self.timestamp = timestamp or datetime.now(timezone.utc)
 
     def to_dict(self) -> Dict:
         return {
+            "seq": self.seq,
             "timestamp": self.timestamp,
             "level": self.level,
             "execution_id": self.execution_id,
             "node_id": self.node_id,
+            "cell_id": self.cell_id,
             "message": self.message
         }
 
@@ -68,6 +74,7 @@ class ExecutionManager:
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="rdf-worker")
         self._tokens: Dict[str, CancellationToken] = {}
         self._logs: Dict[str, List[ExecutionLogRecord]] = {}
+        self._next_seq: Dict[str, int] = {}
         self._lock = threading.RLock()
         self.worker = ExecutionWorker()
 
@@ -77,6 +84,7 @@ class ExecutionManager:
             token = CancellationToken()
             self._tokens[execution_id] = token
             self._logs[execution_id] = []
+            self._next_seq[execution_id] = 1
             return token
 
     def get_token(self, execution_id: str) -> Optional[CancellationToken]:
@@ -100,26 +108,33 @@ class ExecutionManager:
         execution_id: str,
         level: str,
         message: str,
-        node_id: Optional[str] = None
+        node_id: Optional[str] = None,
+        cell_id: Optional[str] = None
     ) -> None:
-        """Registra uma entrada de log estruturada para a execução."""
-        record = ExecutionLogRecord(execution_id, level, message, node_id)
+        """Registra uma entrada de log estruturada para a execução com seq incremental."""
         with self._lock:
             if execution_id not in self._logs:
                 self._logs[execution_id] = []
+                self._next_seq[execution_id] = 1
+            seq = self._next_seq.get(execution_id, len(self._logs[execution_id]) + 1)
+            self._next_seq[execution_id] = seq + 1
+            record = ExecutionLogRecord(execution_id, level, message, node_id, seq=seq, cell_id=cell_id)
             self._logs[execution_id].append(record)
-        logger.info(f"[{level}] [{execution_id}] {f'({node_id}) ' if node_id else ''}{message}")
+        logger.info(f"[{level}] [{execution_id}] #{seq} {f'({node_id}) ' if node_id else ''}{message}")
 
     def get_logs(
         self,
         execution_id: str,
-        node_id: Optional[str] = None
+        node_id: Optional[str] = None,
+        after: Optional[int] = None
     ) -> List[ExecutionLogRecord]:
-        """Retorna os logs registrados para uma dada execução."""
+        """Retorna os logs registrados para uma dada execução com filtro opcional por seq/node."""
         with self._lock:
             logs = list(self._logs.get(execution_id, []))
         if node_id:
             logs = [l for l in logs if l.node_id == node_id]
+        if after is not None:
+            logs = [l for l in logs if l.seq > after]
         return logs
 
     def compile_version(self, version: PipelineVersion) -> PhysicalPlan:
