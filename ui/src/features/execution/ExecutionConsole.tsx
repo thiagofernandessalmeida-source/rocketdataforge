@@ -14,6 +14,7 @@ import {
   Crosshair,
   RefreshCw,
   Info,
+  ExternalLink,
 } from "lucide-react";
 
 export interface ProblemItem {
@@ -35,6 +36,7 @@ interface ExecutionConsoleProps {
   onTabChange?: (tab: "metrics" | "logs" | "plans" | "problems") => void;
   onFocusNode?: (nodeId: string) => void;
   onRevalidate?: () => void;
+  onOpenLogViewerModal?: () => void;
 }
 
 export const ExecutionConsole: React.FC<ExecutionConsoleProps> = ({
@@ -47,6 +49,7 @@ export const ExecutionConsole: React.FC<ExecutionConsoleProps> = ({
   onTabChange,
   onFocusNode,
   onRevalidate,
+  onOpenLogViewerModal,
 }) => {
   const [internalActiveTab, setInternalActiveTab] = useState<"metrics" | "logs" | "plans" | "problems">("metrics");
   const [isExpanded, setIsExpanded] = useState(true);
@@ -176,6 +179,19 @@ export const ExecutionConsole: React.FC<ExecutionConsoleProps> = ({
             >
               <RefreshCw size={12} />
               <span>Revalidar</span>
+            </button>
+          )}
+
+          {onOpenLogViewerModal && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={onOpenLogViewerModal}
+              style={{ padding: "3px 8px", fontSize: "0.72rem", gap: 4 }}
+              title="Abrir Janela Geral de Logs da Sessão (Histórico completo, filtros e exportação)"
+            >
+              <ExternalLink size={12} color="var(--accent-cyan)" />
+              <span>Janela de Logs</span>
             </button>
           )}
 

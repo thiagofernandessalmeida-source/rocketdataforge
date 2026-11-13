@@ -110,7 +110,8 @@ class ExecutionWorker:
         self,
         execution: Execution,
         plan: PhysicalPlan,
-        cancellation_token: Optional[CancellationToken] = None
+        cancellation_token: Optional[CancellationToken] = None,
+        log_fn: Optional[Any] = None
     ) -> Execution:
         """Executa o plano físico até a conclusão, erro ou cancelamento cooperativo."""
         token = cancellation_token or CancellationToken()
@@ -148,6 +149,10 @@ class ExecutionWorker:
 
                 # Suporte a Resiliência (Retries) e Throttling (Sleep) (Tópico 6)
                 raw_cfg = cfg.get("raw_config") or {}
+                cell_id = getattr(phys_op, "cell_id", None) or cfg.get("cell_id") or (raw_cfg.get("cell_id") if isinstance(raw_cfg, dict) else None)
+                if log_fn:
+                    log_fn(execution.id, "INFO", f"Iniciando nó '{node_id}' ({op_type})", node_id=node_id, cell_id=cell_id)
+
                 max_retries = int(raw_cfg.get("max_retries") or cfg.get("max_retries") or 0)
                 retry_interval = float(raw_cfg.get("retry_interval_seconds") or cfg.get("retry_interval_seconds") or 5.0)
                 batch_delay = float(raw_cfg.get("batch_delay_seconds") or cfg.get("batch_delay_seconds") or 0.0)
@@ -218,6 +223,9 @@ class ExecutionWorker:
                                 ]
 
                 task.complete(datetime.now(timezone.utc))
+                dur_ms = int((datetime.now(timezone.utc) - task.started_at).total_seconds() * 1000) if task.started_at else 0
+                if log_fn:
+                    log_fn(execution.id, "INFO", f"Nó '{node_id}' concluído em {dur_ms}ms (linhas: {task.rows_out})", node_id=node_id, cell_id=cell_id)
                 try:
                     self._persist_node_preview(execution.id, node_id, node_buffers)
                 except Exception as prev_err:

@@ -29,6 +29,8 @@ import { AboutModal } from "./components/AboutModal";
 import { WorkspaceModal } from "./features/workspace/WorkspaceModal";
 import { WorkspaceLauncher } from "./features/workspace/WorkspaceLauncher";
 import { api, getBaseApiUrl } from "./api/client";
+import { executionLogStore } from "./store/executionLogStore";
+import { LogViewerModal } from "./features/execution/LogViewerModal";
 import { EXPANDED_CATALOG } from "./catalog/components";
 import { getLayoutedElements, LayoutDirection } from "./features/designer/utils/autoLayout";
 import {
@@ -338,6 +340,37 @@ export const App: React.FC = () => {
   const cancelOrchestrationRef = useRef<boolean>(false);
   const activeCellExecutionsRef = useRef<Map<string, string>>(new Map());
   const activeCellAbortRef = useRef<Map<string, () => void>>(new Map());
+  const [isLogViewerOpen, setIsLogViewerOpen] = useState<boolean>(false);
+
+  const buildNodeSnapshot = useCallback((): Record<string, { cellId?: string; cellName?: string; cellOrder?: number; nodeLabel?: string; nodeType?: string }> => {
+    const snap: Record<string, any> = {};
+    const cells = activeJob?.cells || [];
+    for (const c of cells) {
+      for (const n of (c.nodes || [])) {
+        snap[n.id] = {
+          cellId: c.id,
+          cellName: c.name,
+          cellOrder: c.order,
+          nodeLabel: n.data?.label || n.id,
+          nodeType: n.data?.componentType,
+        };
+      }
+    }
+    return snap;
+  }, [activeJob]);
+
+  const getSecretValues = useCallback((): string[] => {
+    const vars = jobStore.getVarsForJob(activeJobId || "");
+    const secrets: string[] = [];
+    for (const v of vars) {
+      if (v.isSecret && v.values) {
+        for (const val of Object.values(v.values)) {
+          if (val && typeof val === "string") secrets.push(val);
+        }
+      }
+    }
+    return secrets;
+  }, [activeJobId]);
 
   // ─── Real-time graph problem analysis ──────────────────────
   useEffect(() => {
@@ -1221,6 +1254,9 @@ export const App: React.FC = () => {
             );
           }
 
+          const snap = buildNodeSnapshot();
+          const secVals = getSecretValues();
+          executionLogStore.addLogs(logs, snap, { jobId: activeJob?.id, jobName: activeJob?.name }, secVals);
           setLogs(logs);
 
           if (isSuccess) {
@@ -1426,6 +1462,9 @@ export const App: React.FC = () => {
                       if (l.seq && l.seq > lastSeq) lastSeq = l.seq;
                       accumulatedLogs.push(l);
                     }
+                    const snap = buildNodeSnapshot();
+                    const secVals = getSecretValues();
+                    executionLogStore.addLogs(newLogs, snap, { jobId: activeJob?.id, jobName: activeJob?.name }, secVals);
                   }
 
                   // Atualiza telemetria em tempo real no console e nós do canvas
@@ -1578,6 +1617,9 @@ export const App: React.FC = () => {
         };
 
         setExecution(errorDetail);
+        const snap = buildNodeSnapshot();
+        const secVals = getSecretValues();
+        executionLogStore.addLogs([errorLog], snap, { jobId: activeJob?.id, jobName: activeJob?.name }, secVals);
         setLogs((prev) => [errorLog, ...prev]);
         setConsoleVisible(true);
         setConsoleTab("logs");
@@ -1954,6 +1996,11 @@ export const App: React.FC = () => {
           const detail = await api.getExecution(res.execution_id);
           const execLogs = await api.getExecutionLogs(res.execution_id);
           setExecution(detail);
+          if (execLogs && execLogs.length > 0) {
+            const snap = buildNodeSnapshot();
+            const secVals = getSecretValues();
+            executionLogStore.addLogs(execLogs, snap, { jobId: activeJob?.id, jobName: activeJob?.name }, secVals);
+          }
           setLogs(execLogs);
           if (detail.tasks && detail.tasks.length > 0) {
             telemetryStore.batchUpdate(detail.tasks);
@@ -2367,6 +2414,7 @@ export const App: React.FC = () => {
               onTabChange={setConsoleTab}
               onFocusNode={handleFocusNode}
               onRevalidate={handleValidate}
+              onOpenLogViewerModal={() => setIsLogViewerOpen(true)}
             />
           )}
         </div>
@@ -2585,6 +2633,13 @@ export const App: React.FC = () => {
           />
         );
       })()}
+
+      {/* ─── Janela Geral de Logs da Sessão (Tarefa 5) ─── */}
+      <LogViewerModal
+        isOpen={isLogViewerOpen}
+        onClose={() => setIsLogViewerOpen(false)}
+        onFocusNode={handleFocusNode}
+      />
 
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>

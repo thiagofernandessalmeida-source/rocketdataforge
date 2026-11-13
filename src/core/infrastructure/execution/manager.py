@@ -233,8 +233,8 @@ class ExecutionManager:
             attributes={"pipeline_version_id": execution.pipeline_version_id}
         ):
             try:
-                # Executa o worker
-                self.worker.run(execution, plan, token)
+                # Executa o worker com callback de logging estruturado
+                self.worker.run(execution, plan, token, log_fn=self.log)
 
                 # Registra métricas e logs para cada nó processado
                 for node_id, task in execution.tasks.items():
