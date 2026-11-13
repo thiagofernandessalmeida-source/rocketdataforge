@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from "react";
+import React, { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import {
   X, Plus, Trash2, Loader2, Wand2, ChevronUp, ChevronDown,
   Key, AlertCircle, Check, Table2, ArrowRight, ArrowLeft,
@@ -77,6 +77,122 @@ function makeColumn(overrides?: Partial<SchemaColumn>): SchemaColumn {
     ...overrides,
   };
 }
+
+const ColumnTypeSelect: React.FC<{
+  value: SchemaColumnType;
+  onChange: (type: SchemaColumnType) => void;
+}> = ({ value, onChange }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [isOpen]);
+
+  return (
+    <div ref={containerRef} className="type-select-dropdown-container" style={{ position: "relative", width: "100%" }}>
+      <button
+        type="button"
+        className="schema-cell-select type-select-trigger"
+        onClick={() => setIsOpen((prev) => !prev)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          background: "#1e293b",
+          border: "1px solid var(--border-subtle)",
+          borderRadius: 4,
+          padding: "3px 6px",
+          color: "#f8fafc",
+          fontSize: "0.72rem",
+          cursor: "pointer",
+          width: "100%",
+          textAlign: "left",
+        }}
+      >
+        <span
+          className="type-dot"
+          style={{
+            background: TYPE_COLORS[value] || "#64748b",
+            width: 7,
+            height: 7,
+            borderRadius: "50%",
+            flexShrink: 0,
+          }}
+        />
+        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {value}
+        </span>
+        <ChevronDown size={11} style={{ opacity: 0.6 }} />
+      </button>
+
+      {isOpen && (
+        <div
+          className="type-dropdown-menu"
+          style={{
+            position: "absolute",
+            top: "calc(100% + 2px)",
+            left: 0,
+            zIndex: 9999,
+            background: "#0f172a",
+            border: "1px solid #334155",
+            borderRadius: 6,
+            boxShadow: "0 10px 25px rgba(0,0,0,0.85)",
+            padding: 4,
+            maxHeight: 220,
+            overflowY: "auto",
+            minWidth: 130,
+          }}
+        >
+          {COLUMN_TYPES.map((t) => (
+            <div
+              key={t}
+              onClick={() => {
+                onChange(t);
+                setIsOpen(false);
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "4px 8px",
+                borderRadius: 4,
+                cursor: "pointer",
+                fontSize: "0.72rem",
+                color: t === value ? "#38bdf8" : "#f8fafc",
+                background: t === value ? "rgba(56, 189, 248, 0.18)" : "transparent",
+              }}
+              onMouseEnter={(e) => {
+                if (t !== value) e.currentTarget.style.background = "rgba(255, 255, 255, 0.08)";
+              }}
+              onMouseLeave={(e) => {
+                if (t !== value) e.currentTarget.style.background = "transparent";
+              }}
+            >
+              <span
+                style={{
+                  background: TYPE_COLORS[t] || "#64748b",
+                  width: 6,
+                  height: 6,
+                  borderRadius: "50%",
+                  flexShrink: 0,
+                }}
+              />
+              <span>{t}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
 
 // ─── Main SchemaEditor Component ──────────────────────────────
 
@@ -786,24 +902,10 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
 
                             {/* Type */}
                             <td>
-                              <div className="type-select-wrap">
-                                <span
-                                  className="type-dot"
-                                  style={{ background: TYPE_COLORS[col.type] }}
-                                />
-                                <select
-                                  className="schema-cell-select"
-                                  value={col.type}
-                                  style={{ colorScheme: "dark" }}
-                                  onChange={(e) =>
-                                    updateColumn(col.id, "type", e.target.value as SchemaColumnType)
-                                  }
-                                >
-                                  {COLUMN_TYPES.map((t) => (
-                                    <option key={t} value={t} style={{ backgroundColor: "#0f172a", color: "#f8fafc" }}>{t}</option>
-                                  ))}
-                                </select>
-                              </div>
+                              <ColumnTypeSelect
+                                value={col.type}
+                                onChange={(newType) => updateColumn(col.id, "type", newType)}
+                              />
                             </td>
 
                             {/* Nullable */}
@@ -1213,24 +1315,10 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
 
                     {/* Type */}
                     <td>
-                      <div className="type-select-wrap">
-                        <span
-                          className="type-dot"
-                          style={{ background: TYPE_COLORS[col.type] }}
-                        />
-                        <select
-                          className="schema-cell-select"
-                          value={col.type}
-                          style={{ colorScheme: "dark" }}
-                          onChange={(e) =>
-                            updateColumn(col.id, "type", e.target.value as SchemaColumnType)
-                          }
-                        >
-                          {COLUMN_TYPES.map((t) => (
-                            <option key={t} value={t} style={{ backgroundColor: "#0f172a", color: "#f8fafc" }}>{t}</option>
-                          ))}
-                        </select>
-                      </div>
+                      <ColumnTypeSelect
+                        value={col.type}
+                        onChange={(newType) => updateColumn(col.id, "type", newType)}
+                      />
                     </td>
 
                     {/* Nullable */}

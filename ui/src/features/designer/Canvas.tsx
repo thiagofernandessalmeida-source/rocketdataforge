@@ -1256,11 +1256,12 @@ interface TMapOutputChoice {
         </>
       )}
 
-      {/* ─── Menu Suspenso de Ações da Célula (Spec 006 - Fase 1 e 3) ─── */}
+      {/* ─── Menu Suspenso de Ações da Célula (Mantido oculto no Canvas; acionado pela barra da Célula) ─── */}
       <div
         className="cell-actions-dropdown-container"
         ref={actionsMenuRef}
         style={{
+          display: "none",
           position: "absolute",
           top: 12,
           right: 14,

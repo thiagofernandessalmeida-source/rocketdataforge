@@ -34,6 +34,8 @@ import {
   ArrowUpDown,
   Eye,
   EyeOff,
+  MoreVertical,
+  Code,
 } from "lucide-react";
 
 import { Canvas } from "../Canvas";
@@ -42,6 +44,8 @@ import { PythonCellEditor } from "./PythonCellEditor";
 import { CanvasCellData, CellExecutionStatus, CellPrecondition } from "../../../store/jobStore";
 import { CanvasNodeData } from "../../../types";
 import { CellPreconditionsModal } from "./CellPreconditionsModal";
+import { ScheduleModal } from "../scheduler/ScheduleModal";
+import { ExportCodegenModal } from "../codegen/ExportCodegenModal";
 
 interface CanvasCellCardProps {
   cell: CanvasCellData;
@@ -173,6 +177,37 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
     setDescription(cell.description || "");
     if (cell.description) setShowDesc(true);
   }, [cell.description]);
+
+  const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [isCellActionsOpen, setIsCellActionsOpen] = useState(false);
+  const cellActionsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isCellActionsOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (cellActionsRef.current && !cellActionsRef.current.contains(e.target as any)) {
+        setIsCellActionsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [isCellActionsOpen]);
+
+  const cellDraftDef = useMemo(() => ({
+    metadata: { name: cell.name || cell.id, id: cell.id },
+    spec: {
+      nodes: (cell.nodes || []).map((n) => ({
+        id: n.id,
+        component: { type: n.data?.componentType || "generic", version: "1.0.0" },
+        config: n.data?.config || {},
+      })),
+      edges: (cell.edges || []).map((e) => ({
+        from: e.source,
+        to: e.target,
+      })),
+    },
+  }), [cell.nodes, cell.edges, cell.id, cell.name]);
 
   useEffect(() => {
     setOrderInput(String(cell.order));
@@ -843,6 +878,110 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
             </button>
           )}
 
+          {/* Menu Suspenso de Ações da Célula (Exportar Código, Agendamentos) */}
+          <div className="cell-actions-menu-wrap" ref={cellActionsRef} style={{ position: "relative" }}>
+            <button
+              type="button"
+              className={`btn btn-secondary ${isCellActionsOpen ? "active" : ""}`}
+              style={{
+                fontSize: "0.72rem",
+                padding: "3px 8px",
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                color: isCellActionsOpen ? "var(--accent-cyan)" : "var(--text-secondary)",
+              }}
+              title="Ações da Célula (Exportar Código, Agendamentos)"
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsCellActionsOpen((v) => !v);
+              }}
+            >
+              <MoreVertical size={12} />
+              <span>Ações</span>
+            </button>
+
+            {isCellActionsOpen && (
+              <div
+                className="cell-actions-popover"
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 4px)",
+                  right: 0,
+                  background: "#0f172a",
+                  border: "1px solid #334155",
+                  borderRadius: 8,
+                  boxShadow: "0 10px 25px rgba(0, 0, 0, 0.7)",
+                  padding: 4,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 2,
+                  minWidth: 170,
+                  zIndex: 2500,
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsExportModalOpen(true);
+                    setIsCellActionsOpen(false);
+                  }}
+                  title="Exportar como Código Autônomo (Python DuckDB/Polars ou Airflow DAG)"
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    borderRadius: 5,
+                    padding: "6px 10px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    color: "#cbd5e1",
+                    cursor: "pointer",
+                    fontSize: "0.78rem",
+                    fontWeight: 500,
+                    textAlign: "left",
+                    width: "100%",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(99, 102, 241, 0.15)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                >
+                  <Code size={14} color="#818cf8" />
+                  <span>Exportar Código</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsScheduleModalOpen(true);
+                    setIsCellActionsOpen(false);
+                  }}
+                  title="Gerenciador de Agendamentos e Automação Cron"
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    borderRadius: 5,
+                    padding: "6px 10px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    color: "#cbd5e1",
+                    cursor: "pointer",
+                    fontSize: "0.78rem",
+                    fontWeight: 500,
+                    textAlign: "left",
+                    width: "100%",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(99, 102, 241, 0.15)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                >
+                  <Clock size={14} color="#818cf8" />
+                  <span>Agendamentos</span>
+                </button>
+              </div>
+            )}
+          </div>
+
           {/* Move Up */}
           {onMoveUp && !isFocusMode && (
             <button
@@ -1299,6 +1438,23 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
           onClose={() => setShowPreconditionsModal(false)}
         />
       )}
+
+      {/* Modal de Agendamentos da Célula */}
+      <ScheduleModal
+        isOpen={isScheduleModalOpen}
+        onClose={() => setIsScheduleModalOpen(false)}
+        pipelineId={cell.id}
+        pipelineName={cell.name}
+      />
+
+      {/* Modal de Exportação de Código Autônomo da Célula */}
+      <ExportCodegenModal
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        pipelineId={cell.id}
+        pipelineName={cell.name}
+        draftDefinition={cellDraftDef}
+      />
     </div>
   );
 };
