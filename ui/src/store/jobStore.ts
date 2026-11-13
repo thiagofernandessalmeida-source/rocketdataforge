@@ -69,6 +69,8 @@ export interface CanvasCellData {
   metrics?: CellExecutionMetrics;
   logs?: any[];
   showMetricsPanel?: boolean;
+  metricsPanelExpanded?: boolean;
+  metricsPanelHeight?: number;
   layoutDirection?: "LR" | "TB";
   is_active?: boolean;
   is_minimized?: boolean;

@@ -6455,17 +6455,36 @@ select option,
   animation: cellMetricsSlideUp 0.18s ease-out;
   overflow: hidden;
   max-height: 250px;
+  position: relative;
+}
+
+.cell-metrics-panel.expanded {
+  max-height: 75vh;
+  min-height: 320px;
+}
+
+.cell-metrics-resizer {
+  height: 6px;
+  cursor: ns-resize;
+  background: transparent;
+  transition: background 0.15s ease;
+  width: 100%;
+}
+
+.cell-metrics-resizer:hover,
+.cell-metrics-resizer.dragging {
+  background: var(--accent-cyan);
 }
 
 @keyframes cellMetricsSlideUp {
   from {
     opacity: 0;
-    max-height: 0;
+    transform: translateY(6px);
   }
 
   to {
     opacity: 1;
-    max-height: 250px;
+    transform: translateY(0);
   }
 }
 
@@ -6514,6 +6533,23 @@ select option,
   overflow-y: auto;
   max-height: 200px;
   font-size: 0.75rem;
+}
+
+.cell-metrics-panel.expanded .cell-metrics-body {
+  max-height: none;
+  flex: 1;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.cell-log-row.highlight-error {
+  background: rgba(239, 68, 68, 0.12);
+  border-left: 2px solid var(--status-danger);
+}
+
+.cell-log-row.highlight-warn {
+  background: rgba(245, 158, 11, 0.12);
+  border-left: 2px solid var(--status-warning);
 }
 
 .cell-metrics-cards {

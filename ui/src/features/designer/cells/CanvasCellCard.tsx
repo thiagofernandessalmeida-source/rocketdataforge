@@ -98,6 +98,55 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
   const [orderInput, setOrderInput] = useState(String(cell.order));
   const [metricsTab, setMetricsTab] = useState<"metrics" | "logs">("metrics");
   const [logFilter, setLogFilter] = useState("");
+  const [logLevelFilter, setLogLevelFilter] = useState<string>("ALL");
+  const [autoScroll, setAutoScroll] = useState<boolean>(true);
+  const [isDraggingResizer, setIsDraggingResizer] = useState(false);
+  const [copiedLogsFeedback, setCopiedLogsFeedback] = useState(false);
+  const logsContainerRef = useRef<HTMLDivElement>(null);
+  const dragStartYRef = useRef<number>(0);
+  const dragStartHeightRef = useRef<number>(0);
+
+  const isExpanded = Boolean(cell.metricsPanelExpanded);
+  const currentPanelHeight = cell.metricsPanelHeight || (isExpanded ? 480 : 250);
+
+  useEffect(() => {
+    if (autoScroll && logsContainerRef.current && metricsTab === "logs") {
+      logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
+    }
+  }, [cell.logs, autoScroll, metricsTab]);
+
+  const handleStartResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingResizer(true);
+    dragStartYRef.current = e.clientY;
+    dragStartHeightRef.current = currentPanelHeight;
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const deltaY = moveEvent.clientY - dragStartYRef.current;
+      const newHeight = Math.max(160, Math.min(800, dragStartHeightRef.current + deltaY));
+      onUpdateCellMeta(cell.id, { metricsPanelHeight: newHeight });
+    };
+
+    const handleMouseUp = () => {
+      setIsDraggingResizer(false);
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+  };
+
+  const handleCopyAllLogs = () => {
+    if (!cell.logs || cell.logs.length === 0) return;
+    const text = cell.logs
+      .map((l: any) => `[${l.timestamp || ""}] [${l.level || "INFO"}] ${l.node_id ? `(${l.node_id}) ` : ""}${l.message || ""}`)
+      .join("\n");
+    navigator.clipboard?.writeText(text);
+    setCopiedLogsFeedback(true);
+    setTimeout(() => setCopiedLogsFeedback(false), 2000);
+  };
 
   // Sync internal nodes/edges when cell prop changes externally without cyclic updates
   const lastSyncedNodesRef = useRef(cell.nodes);
@@ -959,9 +1008,17 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
       {/* ─── Cell Metrics & Logs Inspector ─── */}
       {cell.showMetricsPanel && (
         <div
-          className="cell-metrics-panel"
+          className={`cell-metrics-panel ${isExpanded ? "expanded" : ""}`}
+          style={{ height: isExpanded || cell.metricsPanelHeight ? `${currentPanelHeight}px` : undefined }}
           onClick={(e) => e.stopPropagation()}
         >
+          {/* Alça de redimensionamento de altura */}
+          <div
+            className={`cell-metrics-resizer ${isDraggingResizer ? "dragging" : ""}`}
+            onMouseDown={handleStartResize}
+            title="Arraste para redimensionar a altura"
+          />
+
           <div className="cell-metrics-header">
             <div className="cell-metrics-tabs">
               <button
@@ -993,6 +1050,39 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
             </div>
 
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              {metricsTab === "logs" && (
+                <>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    title="Copiar todos os logs"
+                    onClick={handleCopyAllLogs}
+                    style={{ color: copiedLogsFeedback ? "var(--status-success)" : undefined, fontSize: "0.7rem", display: "flex", alignItems: "center", gap: 4 }}
+                  >
+                    <Copy size={13} />
+                    {copiedLogsFeedback && <span>Copiado!</span>}
+                  </button>
+                  <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.68rem", color: "var(--text-muted)", cursor: "pointer", userSelect: "none" }}>
+                    <input
+                      type="checkbox"
+                      checked={autoScroll}
+                      onChange={(e) => setAutoScroll(e.target.checked)}
+                      style={{ width: 12, height: 12, cursor: "pointer" }}
+                    />
+                    Auto-rolagem
+                  </label>
+                </>
+              )}
+
+              <button
+                type="button"
+                className="icon-btn"
+                title={isExpanded ? "Recolher painel" : "Expandir painel (estilo Jupyter)"}
+                onClick={() => onUpdateCellMeta(cell.id, { metricsPanelExpanded: !isExpanded })}
+              >
+                {isExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+              </button>
+
               <span
                 style={{
                   fontSize: "0.7rem",
@@ -1017,7 +1107,7 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
             </div>
           </div>
 
-          <div className="cell-metrics-body">
+          <div className="cell-metrics-body" ref={logsContainerRef}>
             {metricsTab === "metrics" ? (
               <div>
                 {cell.metrics ? (
@@ -1131,35 +1221,57 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
                     type="text"
                     placeholder="Filtrar logs..."
                     className="form-input"
-                    style={{ fontSize: "0.72rem", padding: "2px 6px", height: 24, width: "100%", maxWidth: 220 }}
+                    style={{ fontSize: "0.72rem", padding: "2px 6px", height: 24, width: "100%", maxWidth: 180 }}
                     value={logFilter}
                     onChange={(e) => setLogFilter(e.target.value)}
                   />
+                  <select
+                    className="form-input"
+                    style={{ fontSize: "0.72rem", padding: "1px 6px", height: 24, width: "auto" }}
+                    value={logLevelFilter}
+                    onChange={(e) => setLogLevelFilter(e.target.value)}
+                  >
+                    <option value="ALL">Todos os níveis</option>
+                    <option value="ERROR">Apenas ERROR</option>
+                    <option value="WARN">WARN & ERROR</option>
+                    <option value="INFO">Apenas INFO</option>
+                  </select>
                 </div>
                 {cell.logs && cell.logs.length > 0 ? (
                   cell.logs
-                    .filter((l) =>
-                      logFilter
-                        ? l.message?.toLowerCase().includes(logFilter.toLowerCase()) ||
-                          l.level?.toLowerCase().includes(logFilter.toLowerCase())
-                        : true
-                    )
-                    .map((log, idx) => (
-                      <div key={idx} className="cell-log-row">
-                        <span style={{ color: "var(--text-muted)", fontSize: "0.68rem", minWidth: 50 }}>
-                          {log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : "--:--:--"}
-                        </span>
-                        <span className={`log-level-${String(log.level || "info").toLowerCase()}`} style={{ minWidth: 44 }}>
-                          [{log.level || "INFO"}]
-                        </span>
-                        {log.node_id && (
-                          <span style={{ color: "var(--accent-cyan)", opacity: 0.9 }}>
-                            ({log.node_id})
+                    .filter((l) => {
+                      const lvl = (l.level || "INFO").toUpperCase();
+                      if (logLevelFilter === "ERROR" && lvl !== "ERROR") return false;
+                      if (logLevelFilter === "WARN" && lvl !== "WARN" && lvl !== "ERROR") return false;
+                      if (logLevelFilter === "INFO" && lvl !== "INFO") return false;
+                      if (!logFilter) return true;
+                      const term = logFilter.toLowerCase();
+                      return (
+                        (l.message || "").toLowerCase().includes(term) ||
+                        (l.node_id || "").toLowerCase().includes(term) ||
+                        lvl.toLowerCase().includes(term)
+                      );
+                    })
+                    .map((log, idx) => {
+                      const lvlUpper = (log.level || "INFO").toUpperCase();
+                      const highlightClass = lvlUpper === "ERROR" ? "highlight-error" : lvlUpper === "WARN" ? "highlight-warn" : "";
+                      return (
+                        <div key={idx} className={`cell-log-row ${highlightClass}`} style={{ padding: isExpanded ? "4px 8px" : undefined }}>
+                          <span style={{ color: "var(--text-muted)", fontSize: "0.68rem", minWidth: 50 }}>
+                            {log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : "--:--:--"}
                           </span>
-                        )}
-                        <span style={{ color: "var(--text-primary)" }}>{log.message}</span>
-                      </div>
-                    ))
+                          <span className={`log-level-${String(log.level || "info").toLowerCase()}`} style={{ minWidth: 44 }}>
+                            [{log.level || "INFO"}]
+                          </span>
+                          {log.node_id && (
+                            <span style={{ color: "var(--accent-cyan)", opacity: 0.9 }}>
+                              ({log.node_id})
+                            </span>
+                          )}
+                          <span style={{ color: "var(--text-primary)" }}>{log.message}</span>
+                        </div>
+                      );
+                    })
                 ) : (
                   <div style={{ textAlign: "center", padding: "12px", color: "var(--text-muted)" }}>
                     Nenhum log registrado para esta célula.
