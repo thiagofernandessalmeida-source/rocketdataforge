@@ -15,6 +15,7 @@ import { Palette } from "./features/designer/Palette";
 import { Canvas } from "./features/designer/Canvas";
 import { MultiCanvasContainer } from "./features/designer/cells/MultiCanvasContainer";
 import { PropertyPanel } from "./features/designer/PropertyPanel";
+import { RightSidebar } from "./features/designer/RightSidebar";
 import { FloatingNodeConfig } from "./features/designer/FloatingNodeConfig";
 import { TMapModal, TMapConfig } from "./features/designer/TMapModal";
 import { ExecutionConsole, ProblemItem } from "./features/execution/ExecutionConsole";
@@ -429,6 +430,51 @@ export const App: React.FC = () => {
   const [paletteVisible, setPaletteVisible] = useState(true);
   const [propertiesVisible, setPropertiesVisible] = useState(true);
   const [consoleVisible, setConsoleVisible] = useState(true);
+
+  // ─── Aba da Sidebar Direita ("props" | "logs") (Fase 1) ─────
+  const [rightPanelTab, setRightPanelTab] = useState<"props" | "logs">(() => {
+    try {
+      const saved = localStorage.getItem("cellflow_right_panel_tab");
+      if (saved === "props" || saved === "logs") return saved;
+    } catch (_) {}
+    return "props";
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("cellflow_right_panel_tab", rightPanelTab);
+    } catch (_) {}
+  }, [rightPanelTab]);
+
+  const [lastReadLogSeq, setLastReadLogSeq] = useState<number>(() => {
+    return executionLogStore.getLatestSeq();
+  });
+
+  const [logStoreVersion, setLogStoreVersion] = useState<number>(0);
+  useEffect(() => {
+    const unsub = executionLogStore.subscribe(() => {
+      setLogStoreVersion((v) => v + 1);
+    });
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    if (propertiesVisible && rightPanelTab === "logs") {
+      setLastReadLogSeq(executionLogStore.getLatestSeq());
+    }
+  }, [propertiesVisible, rightPanelTab, logStoreVersion]);
+
+  const unreadErrorsCount = useMemo(() => {
+    if (propertiesVisible && rightPanelTab === "logs") return 0;
+    return executionLogStore.getNewErrorsCount(lastReadLogSeq);
+  }, [propertiesVisible, rightPanelTab, lastReadLogSeq, logStoreVersion]);
+
+  const handleRightPanelTabChange = (tab: "props" | "logs") => {
+    setRightPanelTab(tab);
+    if (tab === "logs") {
+      setLastReadLogSeq(executionLogStore.getLatestSeq());
+    }
+  };
 
   const [gitStatus, setGitStatus] = useState<
     { branch: string; clean: boolean; commit_hash: string; commit_message: string } | undefined
@@ -2414,14 +2460,22 @@ export const App: React.FC = () => {
               onTabChange={setConsoleTab}
               onFocusNode={handleFocusNode}
               onRevalidate={handleValidate}
-              onOpenLogViewerModal={() => setIsLogViewerOpen(true)}
+              onOpenLogViewerModal={() => {
+                setPropertiesVisible(true);
+                handleRightPanelTabChange("logs");
+              }}
             />
           )}
         </div>
 
-        {/* Right — Properties Panel */}
+        {/* Right — Sidebar (Propriedades & Logs) */}
         {propertiesVisible && (
-          <PropertyPanel
+          <RightSidebar
+            activeTab={rightPanelTab}
+            onTabChange={handleRightPanelTabChange}
+            onClose={() => setPropertiesVisible(false)}
+            onFocusNode={handleFocusNode}
+            unreadErrorsCount={unreadErrorsCount}
             selectedNode={selectedNode}
             onUpdateConfig={handleUpdateConfig}
             onUpdateLabel={handleUpdateLabel}

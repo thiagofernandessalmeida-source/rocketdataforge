@@ -51,6 +51,7 @@ let broadcastChannel: BroadcastChannel | null = null;
 try {
   if (typeof BroadcastChannel !== "undefined") {
     broadcastChannel = new BroadcastChannel("cellflow-logs");
+    (broadcastChannel as any).unref?.();
   }
 } catch (_) {
   // Ambientes sem suporte a BroadcastChannel ignoram silenciosamente
@@ -210,6 +211,40 @@ export const executionLogStore = {
         return `${time} [${i.level}] ${cell}${node} ${i.message}`;
       })
       .join("\n");
+  },
+
+  /**
+   * Retorna o maior seq registrado até o momento (ou 0 se vazio).
+   */
+  getLatestSeq(): number {
+    if (logItems.length === 0) return 0;
+    let maxSeq = 0;
+    for (const item of logItems) {
+      if (item.seq && item.seq > maxSeq) {
+        maxSeq = item.seq;
+      }
+    }
+    return maxSeq;
+  },
+
+  /**
+   * Retorna a quantidade de entradas com nível ERROR ocorridas estritamente após sinceSeq.
+   */
+  getNewErrorsCount(sinceSeq: number): number {
+    let count = 0;
+    for (const item of logItems) {
+      if (item.level === "ERROR" && item.seq > sinceSeq) {
+        count++;
+      }
+    }
+    return count;
+  },
+
+  /**
+   * Retorna uma cópia rasa de todos os itens do buffer.
+   */
+  getAllItems(): ExecutionLogItem[] {
+    return [...logItems];
   },
 
   /**
