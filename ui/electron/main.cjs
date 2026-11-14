@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, Menu, ipcMain, dialog } = require("electron");
+const { app, BrowserWindow, shell, Menu, ipcMain, dialog, screen } = require("electron");
 const path = require("path");
 const http = require("http");
 const net = require("net");
@@ -6,8 +6,11 @@ const crypto = require("crypto");
 const os = require("os");
 const { spawn, execSync } = require("child_process");
 const fs = require("fs");
+const { validateWindowBounds, batchArray } = require("./windowBoundsHelper.cjs");
 
 let mainWindow = null;
+let logWindow = null;
+let saveBoundsTimeout = null;
 let pythonProcess = null;
 let backendPort = 8000;
 let backendToken = "";
@@ -286,9 +289,169 @@ async function createMainWindow() {
   }
 
   mainWindow.on("closed", () => {
+    if (logWindow && !logWindow.isDestroyed()) {
+      logWindow.close();
+    }
     mainWindow = null;
   });
 }
+
+const getLogBoundsPath = () => path.join(app.getPath("userData"), "log-window-bounds.json");
+
+/**
+ * Cria ou foca a Janela Nativa de Logs independente no Electron (Fase 3).
+ */
+async function detachLogWindow() {
+  if (logWindow && !logWindow.isDestroyed()) {
+    if (logWindow.isMinimized()) logWindow.restore();
+    logWindow.show();
+    logWindow.focus();
+    return true;
+  }
+
+  const boundsFile = getLogBoundsPath();
+  let savedBounds = null;
+  try {
+    if (fs.existsSync(boundsFile)) {
+      savedBounds = JSON.parse(fs.readFileSync(boundsFile, "utf-8"));
+    }
+  } catch (_) {}
+
+  const displays = screen.getAllDisplays();
+  const validBounds = validateWindowBounds(savedBounds, displays);
+
+  logWindow = new BrowserWindow({
+    x: validBounds.x,
+    y: validBounds.y,
+    width: validBounds.width,
+    height: validBounds.height,
+    minWidth: 460,
+    minHeight: 320,
+    title: "CellFlow - Log Geral",
+    backgroundColor: "#070a12",
+    parent: null, // Sem parent para permitir movimentação livre entre múltiplos monitores
+    autoHideMenuBar: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      webSecurity: true,
+      preload: path.join(__dirname, "preload-logs.cjs"),
+    },
+  });
+
+  const debounceSaveBounds = () => {
+    if (saveBoundsTimeout) clearTimeout(saveBoundsTimeout);
+    saveBoundsTimeout = setTimeout(() => {
+      if (logWindow && !logWindow.isDestroyed()) {
+        try {
+          fs.writeFileSync(boundsFile, JSON.stringify(logWindow.getBounds()));
+        } catch (_) {}
+      }
+    }, 400);
+  };
+
+  logWindow.on("resize", debounceSaveBounds);
+  logWindow.on("move", debounceSaveBounds);
+
+  logWindow.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: "deny" };
+  });
+
+  logWindow.on("closed", () => {
+    if (saveBoundsTimeout) clearTimeout(saveBoundsTimeout);
+    logWindow = null;
+    mainWindow?.webContents?.send("logs:window-status", false);
+  });
+
+  const isDevFlag = process.argv.includes("--dev");
+  const isDevRunning = await checkDevServer();
+
+  if (isDevFlag && isDevRunning) {
+    await logWindow.loadURL(`${DEV_URL}/#/log-window`);
+  } else {
+    const indexPath = path.join(__dirname, "..", "dist", "index.html");
+    if (fs.existsSync(indexPath)) {
+      await logWindow.loadFile(indexPath, { hash: "/log-window" });
+    } else if (isDevRunning) {
+      await logWindow.loadURL(`${DEV_URL}/#/log-window`);
+    }
+  }
+
+  mainWindow?.webContents?.send("logs:window-status", true);
+  return true;
+}
+
+// ─── IPC Handlers da Janela de Logs (Fase 3) ─────────────────
+ipcMain.handle("logs:detach", async () => {
+  return await detachLogWindow();
+});
+
+ipcMain.handle("logs:is-detached", () => Boolean(logWindow && !logWindow.isDestroyed()));
+
+ipcMain.on("logs:focus-window", () => {
+  if (logWindow && !logWindow.isDestroyed()) {
+    if (logWindow.isMinimized()) logWindow.restore();
+    logWindow.show();
+    logWindow.focus();
+  }
+});
+
+ipcMain.on("logs:reattach", () => {
+  if (logWindow && !logWindow.isDestroyed()) {
+    logWindow.close();
+  }
+});
+
+ipcMain.handle("logs:set-always-on-top", (_event, flag) => {
+  if (logWindow && !logWindow.isDestroyed()) {
+    logWindow.setAlwaysOnTop(Boolean(flag));
+    return true;
+  }
+  return false;
+});
+
+ipcMain.handle("logs:get-always-on-top", () => {
+  return Boolean(logWindow && !logWindow.isDestroyed() && logWindow.isAlwaysOnTop());
+});
+
+ipcMain.on("logs:request-snapshot", () => {
+  mainWindow?.webContents?.send("logs:main-request-snapshot");
+});
+
+ipcMain.on("logs:send-snapshot-chunk", (_event, chunk) => {
+  if (logWindow && !logWindow.isDestroyed()) {
+    logWindow.webContents.send("logs:snapshot-chunk", chunk);
+  }
+});
+
+ipcMain.on("logs:broadcast-append", (_event, items) => {
+  if (logWindow && !logWindow.isDestroyed()) {
+    logWindow.webContents.send("logs:append", items);
+  }
+});
+
+ipcMain.on("logs:broadcast-clear", () => {
+  if (logWindow && !logWindow.isDestroyed()) {
+    logWindow.webContents.send("logs:clear");
+  }
+});
+
+ipcMain.on("logs:clear-request", () => {
+  mainWindow?.webContents?.send("logs:main-clear");
+  if (logWindow && !logWindow.isDestroyed()) {
+    logWindow.webContents.send("logs:clear");
+  }
+});
+
+ipcMain.on("logs:focus-node", (_event, data) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    mainWindow.webContents.send("logs:main-focus-node", data);
+  }
+});
 
 // Ciclo de vida da aplicação Electron
 app.whenReady().then(async () => {

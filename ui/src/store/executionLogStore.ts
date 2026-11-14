@@ -139,6 +139,13 @@ export const executionLogStore = {
       } catch (_) {}
     }
 
+    // Emite para janela nativa Electron se ativa (Fase 3)
+    try {
+      if (typeof window !== "undefined" && (window as any).cellflowLogs?.broadcastAppend && newItems.length > 0) {
+        (window as any).cellflowLogs.broadcastAppend(newItems);
+      }
+    } catch (_) {}
+
     notify();
   },
 
@@ -192,6 +199,11 @@ export const executionLogStore = {
         broadcastChannel.postMessage({ type: "CLEAR_LOGS" });
       } catch (_) {}
     }
+    try {
+      if (typeof window !== "undefined" && (window as any).cellflowLogs?.broadcastClear) {
+        (window as any).cellflowLogs.broadcastClear();
+      }
+    } catch (_) {}
     notify();
   },
 

@@ -31,7 +31,6 @@ import { WorkspaceModal } from "./features/workspace/WorkspaceModal";
 import { WorkspaceLauncher } from "./features/workspace/WorkspaceLauncher";
 import { api, getBaseApiUrl } from "./api/client";
 import { executionLogStore } from "./store/executionLogStore";
-import { LogViewerModal } from "./features/execution/LogViewerModal";
 import { LogFloatingWindow } from "./features/execution/LogFloatingWindow";
 import { EXPANDED_CATALOG } from "./catalog/components";
 import { getLayoutedElements, LayoutDirection } from "./features/designer/utils/autoLayout";
@@ -342,7 +341,6 @@ export const App: React.FC = () => {
   const cancelOrchestrationRef = useRef<boolean>(false);
   const activeCellExecutionsRef = useRef<Map<string, string>>(new Map());
   const activeCellAbortRef = useRef<Map<string, () => void>>(new Map());
-  const [isLogViewerOpen, setIsLogViewerOpen] = useState<boolean>(false);
 
   const buildNodeSnapshot = useCallback((): Record<string, { cellId?: string; cellName?: string; cellOrder?: number; nodeLabel?: string; nodeType?: string }> => {
     const snap: Record<string, any> = {};
@@ -477,17 +475,16 @@ export const App: React.FC = () => {
     }
   };
 
-  // ─── Janela Flutuante de Logs (Fase 2 - Navegador) ───────────
+  // ─── Janela Flutuante (Web) & Janela Nativa (Electron) de Logs (Fase 2 e 3) ───
   const [isLogFloatingOpen, setIsLogFloatingOpen] = useState<boolean>(false);
+  const [isNativeLogWindowOpen, setIsNativeLogWindowOpen] = useState<boolean>(false);
 
   const handleOpenLogsDetached = useCallback(() => {
-    const isElectron =
-      typeof window !== "undefined" &&
-      Boolean((window as any).cellflowLogs || (window as any).cellflow);
-    if (!isElectron) {
-      setIsLogFloatingOpen(true);
+    const logsApi = (window as any).cellflowLogs;
+    if (logsApi?.detach) {
+      logsApi.detach();
     } else {
-      (window as any).cellflowLogs?.detach?.();
+      setIsLogFloatingOpen(true);
     }
   }, []);
 
@@ -1095,15 +1092,52 @@ export const App: React.FC = () => {
   };
 
   const handleFocusNode = useCallback(
-    (nodeId: string) => {
+    (nodeId: string, cellId?: string) => {
+      if (activeJobId && cellId) {
+        jobStore.setActiveCell(activeJobId, cellId);
+      }
       const target = nodes.find((n) => n.id === nodeId);
       if (target) {
         setSelectedNode(target);
         setPropertiesVisible(true);
       }
     },
-    [nodes]
+    [nodes, activeJobId]
   );
+
+  // ─── Sincronização IPC da Janela Nativa de Logs (Fase 3) ─────
+  useEffect(() => {
+    const logsApi = (window as any).cellflowLogs;
+    if (!logsApi) return;
+
+    logsApi.isWindowOpen?.().then?.((open: boolean) => {
+      setIsNativeLogWindowOpen(Boolean(open));
+    });
+
+    const unsubStatus = logsApi.onWindowStatusChange?.((open: boolean) => {
+      setIsNativeLogWindowOpen(Boolean(open));
+    });
+
+    const unsubSnapshot = logsApi.onRequestSnapshot?.(() => {
+      const allLogs = executionLogStore.getAllItems();
+      for (let i = 0; i < allLogs.length; i += 500) {
+        const chunk = allLogs.slice(i, i + 500);
+        logsApi.sendSnapshotChunk?.(chunk);
+      }
+    });
+
+    const unsubFocus = logsApi.onFocusNode?.((data: { nodeId?: string; cellId?: string }) => {
+      if (data?.nodeId) {
+        handleFocusNode(data.nodeId, data.cellId);
+      }
+    });
+
+    return () => {
+      unsubStatus?.();
+      unsubSnapshot?.();
+      unsubFocus?.();
+    };
+  }, [handleFocusNode]);
 
   const handleOpenDiagnostics = useCallback(() => {
     setConsoleVisible(true);
@@ -2492,8 +2526,18 @@ export const App: React.FC = () => {
             onFocusNode={handleFocusNode}
             unreadErrorsCount={unreadErrorsCount}
             onOpenDetached={handleOpenLogsDetached}
-            isDetached={isLogFloatingOpen}
-            onReattach={() => setIsLogFloatingOpen(false)}
+            isDetached={isNativeLogWindowOpen || isLogFloatingOpen}
+            onReattach={() => {
+              if (isNativeLogWindowOpen) {
+                (window as any).cellflowLogs?.reattach?.();
+              }
+              setIsLogFloatingOpen(false);
+            }}
+            onFocusDetached={() => {
+              if (isNativeLogWindowOpen) {
+                (window as any).cellflowLogs?.focus?.();
+              }
+            }}
             selectedNode={selectedNode}
             onUpdateConfig={handleUpdateConfig}
             onUpdateLabel={handleUpdateLabel}
@@ -2705,13 +2749,6 @@ export const App: React.FC = () => {
           />
         );
       })()}
-
-      {/* ─── Janela Geral de Logs da Sessão (Tarefa 5) ─── */}
-      <LogViewerModal
-        isOpen={isLogViewerOpen}
-        onClose={() => setIsLogViewerOpen(false)}
-        onFocusNode={handleFocusNode}
-      />
 
       {/* ─── Janela Flutuante de Logs (Fase 2 - Navegador) ─── */}
       {isLogFloatingOpen && (

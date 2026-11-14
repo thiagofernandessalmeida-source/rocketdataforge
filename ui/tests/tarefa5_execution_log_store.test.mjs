@@ -20,11 +20,13 @@ describe("TAREFA 5: Janela de Log Geral e executionLogStore", () => {
     assert.ok(content.includes("exportLogs"), "Deve suportar exportação");
   });
 
-  test("5.2: LogViewerModal.tsx deve existir com colunas Hora, Nível, Célula, Componente, Mensagem", () => {
+  test("5.2: LogViewerContent.tsx (ou LogViewerModal.tsx) deve existir com colunas Hora, Nível, Célula, Componente, Mensagem", () => {
+    const contentPath = path.resolve(__dirname, "../src/features/execution/LogViewerContent.tsx");
     const modalPath = path.resolve(__dirname, "../src/features/execution/LogViewerModal.tsx");
-    assert.ok(fs.existsSync(modalPath), "LogViewerModal.tsx deve existir");
+    const targetPath = fs.existsSync(contentPath) ? contentPath : modalPath;
+    assert.ok(fs.existsSync(targetPath), "LogViewerContent.tsx ou LogViewerModal.tsx deve existir");
 
-    const content = fs.readFileSync(modalPath, "utf-8");
+    const content = fs.readFileSync(targetPath, "utf-8");
     assert.ok(content.includes("Hora"), "Deve exibir coluna Hora");
     assert.ok(content.includes("Nível") || content.includes("Nivel"), "Deve exibir coluna Nível");
     assert.ok(content.includes("Célula") || content.includes("Celula"), "Deve exibir coluna Célula");
