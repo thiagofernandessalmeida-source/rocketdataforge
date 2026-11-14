@@ -150,3 +150,4 @@ export const StandaloneLogWindow: React.FC = () => {
     </div>
   );
 };
+

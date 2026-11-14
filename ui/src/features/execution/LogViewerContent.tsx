@@ -740,3 +740,4 @@ export const LogViewerContent: React.FC<LogViewerContentProps> = ({
     </div>
   );
 };
+

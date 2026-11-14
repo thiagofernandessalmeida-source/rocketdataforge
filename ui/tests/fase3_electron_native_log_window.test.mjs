@@ -95,3 +95,4 @@ test("FASE 3.1 e 3.3: StandaloneLogWindow.tsx deve existir e gerenciar janela na
   assert.ok(content.includes("setAlwaysOnTop") || content.includes("alwaysOnTop"), "Deve conter controle de fixar janela por cima");
   assert.ok(content.includes("reattach"), "Deve conter ação de reacoplar");
 });
+

@@ -125,3 +125,4 @@ test("FASE 1.6: Benchmark de performance de virtualização com 10.000 entradas"
   assert.ok(visibleSlice.length <= (Math.ceil(containerHeight / rowHeight) + overscan * 2 + 2));
   assert.ok(timeVirtual < 2.0, `Cálculo de janela virtual deve ser instantâneo (< 2ms). Obtido: ${timeVirtual.toFixed(3)}ms`);
 });
+

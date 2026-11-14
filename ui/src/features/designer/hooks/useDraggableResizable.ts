@@ -265,3 +265,4 @@ export function useDraggableResizable(options: UseDraggableResizableOptions = {}
     containerRef,
   };
 }
+

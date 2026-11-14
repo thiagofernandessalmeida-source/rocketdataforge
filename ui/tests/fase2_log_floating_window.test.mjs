@@ -43,3 +43,4 @@ test("FASE 2.2 e 2.3: LogFloatingWindow.tsx deve existir, conter LogViewerConten
   );
   assert.ok(content.includes("onFocusNode"), "Deve propagar onFocusNode");
 });
+

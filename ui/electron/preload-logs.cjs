@@ -49,3 +49,4 @@ contextBridge.exposeInMainWorld("cellflowLogs", {
   // Notifica que a janela carregou e está pronta para receber dados
   ready: () => ipcRenderer.send("logs:window-ready"),
 });
+
