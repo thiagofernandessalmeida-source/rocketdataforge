@@ -32,6 +32,7 @@ import { WorkspaceLauncher } from "./features/workspace/WorkspaceLauncher";
 import { api, getBaseApiUrl } from "./api/client";
 import { executionLogStore } from "./store/executionLogStore";
 import { LogViewerModal } from "./features/execution/LogViewerModal";
+import { LogFloatingWindow } from "./features/execution/LogFloatingWindow";
 import { EXPANDED_CATALOG } from "./catalog/components";
 import { getLayoutedElements, LayoutDirection } from "./features/designer/utils/autoLayout";
 import {
@@ -475,6 +476,20 @@ export const App: React.FC = () => {
       setLastReadLogSeq(executionLogStore.getLatestSeq());
     }
   };
+
+  // ─── Janela Flutuante de Logs (Fase 2 - Navegador) ───────────
+  const [isLogFloatingOpen, setIsLogFloatingOpen] = useState<boolean>(false);
+
+  const handleOpenLogsDetached = useCallback(() => {
+    const isElectron =
+      typeof window !== "undefined" &&
+      Boolean((window as any).cellflowLogs || (window as any).cellflow);
+    if (!isElectron) {
+      setIsLogFloatingOpen(true);
+    } else {
+      (window as any).cellflowLogs?.detach?.();
+    }
+  }, []);
 
   const [gitStatus, setGitStatus] = useState<
     { branch: string; clean: boolean; commit_hash: string; commit_message: string } | undefined
@@ -2476,6 +2491,9 @@ export const App: React.FC = () => {
             onClose={() => setPropertiesVisible(false)}
             onFocusNode={handleFocusNode}
             unreadErrorsCount={unreadErrorsCount}
+            onOpenDetached={handleOpenLogsDetached}
+            isDetached={isLogFloatingOpen}
+            onReattach={() => setIsLogFloatingOpen(false)}
             selectedNode={selectedNode}
             onUpdateConfig={handleUpdateConfig}
             onUpdateLabel={handleUpdateLabel}
@@ -2694,6 +2712,14 @@ export const App: React.FC = () => {
         onClose={() => setIsLogViewerOpen(false)}
         onFocusNode={handleFocusNode}
       />
+
+      {/* ─── Janela Flutuante de Logs (Fase 2 - Navegador) ─── */}
+      {isLogFloatingOpen && (
+        <LogFloatingWindow
+          onClose={() => setIsLogFloatingOpen(false)}
+          onFocusNode={handleFocusNode}
+        />
+      )}
 
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>

@@ -1,9 +1,10 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React from "react";
 import { Node } from "reactflow";
 import { X, Minimize2, Maximize2, Minus, GripHorizontal } from "lucide-react";
 import { CanvasNodeData } from "../../types";
 import { PropertyPanel } from "./PropertyPanel";
 import { ConnectionEntry, ContextVariable, SchemaColumn, Environment, QueryEntry } from "../../store/jobStore";
+import { useDraggableResizable } from "./hooks/useDraggableResizable";
 
 interface FloatingNodeConfigProps {
   node: Node<CanvasNodeData>;
@@ -41,133 +42,24 @@ export const FloatingNodeConfig: React.FC<FloatingNodeConfigProps> = ({
   allNodes,
   edges,
 }) => {
-  // Initial size and position: generous, comfortable default
-  const defaultW = Math.min(520, window.innerWidth - 60);
-  const defaultH = Math.min(680, window.innerHeight - 100);
-  const [pos, setPos] = useState({
-    x: Math.max(30, Math.round(window.innerWidth / 2 - defaultW / 2)),
-    y: Math.max(40, Math.round(window.innerHeight / 2 - defaultH / 2)),
+  const {
+    pos,
+    size,
+    minimized,
+    setMinimized,
+    maximized,
+    setMaximized,
+    onMouseDownHeader,
+    onStartResize,
+    handleToggleMaximize,
+    containerRef,
+  } = useDraggableResizable({
+    defaultWidth: 520,
+    defaultHeight: 680,
+    minWidth: 360,
+    minHeight: 300,
+    maxWidth: 1080,
   });
-  const [size, setSize] = useState({ w: defaultW, h: defaultH });
-  const [minimized, setMinimized] = useState(false);
-  const [maximized, setMaximized] = useState(false);
-
-  const prevLayout = useRef<{ pos: { x: number; y: number }; size: { w: number; h: number } }>({
-    pos: { x: Math.max(30, Math.round(window.innerWidth / 2 - defaultW / 2)), y: 60 },
-    size: { w: defaultW, h: defaultH },
-  });
-
-  const dragging = useRef(false);
-  const dragOffset = useRef({ x: 0, y: 0 });
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  // ── Drag to move ───────────────────────────────────────────────
-  const onMouseDownHeader = useCallback((e: React.MouseEvent) => {
-    // Only drag on left click and not on action buttons
-    if (e.button !== 0 || (e.target as HTMLElement).closest(".floating-node-actions")) return;
-    dragging.current = true;
-    dragOffset.current = {
-      x: e.clientX - pos.x,
-      y: e.clientY - pos.y,
-    };
-    e.preventDefault();
-  }, [pos]);
-
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      if (!dragging.current) return;
-      setPos({
-        x: Math.max(0, Math.min(window.innerWidth - size.w, e.clientX - dragOffset.current.x)),
-        y: Math.max(0, Math.min(window.innerHeight - 60, e.clientY - dragOffset.current.y)),
-      });
-    };
-    const onUp = () => { dragging.current = false; };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-  }, [size.w]);
-
-  // ── Maximize toggle ───────────────────────────────────────────
-  const handleToggleMaximize = useCallback(() => {
-    if (minimized) setMinimized(false);
-    if (!maximized) {
-      prevLayout.current = { pos, size };
-      const maxW = Math.min(1080, window.innerWidth - 60);
-      const maxH = window.innerHeight - 80;
-      setPos({ x: Math.max(20, Math.round((window.innerWidth - maxW) / 2)), y: 40 });
-      setSize({ w: maxW, h: maxH });
-      setMaximized(true);
-    } else {
-      setPos(prevLayout.current.pos);
-      setSize(prevLayout.current.size);
-      setMaximized(false);
-    }
-  }, [maximized, minimized, pos, size]);
-
-  // ── Multi-directional Resizing ────────────────────────────────
-  const onStartResize = useCallback(
-    (direction: "se" | "sw" | "s" | "e" | "w", e: React.MouseEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (maximized) setMaximized(false);
-      const startX = e.clientX;
-      const startY = e.clientY;
-      const startW = size.w;
-      const startH = size.h;
-      const startPosX = pos.x;
-
-      const onMove = (ev: MouseEvent) => {
-        const deltaX = ev.clientX - startX;
-        const deltaY = ev.clientY - startY;
-
-        let newW = startW;
-        let newH = startH;
-        let newX = startPosX;
-
-        if (direction === "se" || direction === "e") {
-          newW = Math.max(360, Math.min(window.innerWidth - startPosX - 20, startW + deltaX));
-        }
-        if (direction === "sw" || direction === "w") {
-          const potentialW = startW - deltaX;
-          if (potentialW >= 360) {
-            newW = Math.min(startPosX + startW - 20, potentialW);
-            newX = startPosX + (startW - newW);
-          } else {
-            newW = 360;
-            newX = startPosX + startW - 360;
-          }
-        }
-        if (direction === "se" || direction === "sw" || direction === "s") {
-          newH = Math.max(300, Math.min(window.innerHeight - pos.y - 20, startH + deltaY));
-        }
-
-        setSize({ w: Math.round(newW), h: Math.round(newH) });
-        if (direction === "sw" || direction === "w") {
-          setPos((p) => ({ ...p, x: Math.round(newX) }));
-        }
-      };
-
-      const onUp = () => {
-        window.removeEventListener("mousemove", onMove);
-        window.removeEventListener("mouseup", onUp);
-        document.body.style.userSelect = "";
-        document.body.style.cursor = "";
-      };
-
-      document.body.style.userSelect = "none";
-      if (direction === "se") document.body.style.cursor = "nwse-resize";
-      else if (direction === "sw") document.body.style.cursor = "nesw-resize";
-      else if (direction === "s") document.body.style.cursor = "ns-resize";
-      else document.body.style.cursor = "ew-resize";
-
-      window.addEventListener("mousemove", onMove);
-      window.addEventListener("mouseup", onUp);
-    },
-    [maximized, pos.x, pos.y, size.w, size.h]
-  );
 
   const handleDelete = (nodeId: string) => {
     onDeleteNode(nodeId);
