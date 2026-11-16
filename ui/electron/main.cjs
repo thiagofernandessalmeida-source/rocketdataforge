@@ -144,6 +144,7 @@ async function startBackend() {
       CELLFLOW_TOKEN: backendToken,
       CELLFLOW_PORT: String(backendPort),
       PYTHONPATH: ".",
+      PYTHONUNBUFFERED: "1",
     },
     stdio: "pipe",
   });

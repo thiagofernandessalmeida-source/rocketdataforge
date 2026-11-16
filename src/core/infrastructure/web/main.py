@@ -1,7 +1,24 @@
 """Ponto de entrada para o servidor Uvicorn da API REST do Control Plane (Fase 3 - TASK-031)."""
 
 import argparse
+import glob
 import os
+import sys
+
+# Compatibilidade Python 3.14 no Windows: desativa extensões Cython (.pyd) do SQLAlchemy
+# que causam Access Violation (0xc0000005) em execuções concorrentes com threads de warmup/scheduler.
+if sys.platform == "win32" and sys.version_info >= (3, 14):
+    try:
+        import sqlalchemy
+        _base_dir = os.path.dirname(sqlalchemy.__file__)
+        for _pyd in glob.glob(os.path.join(_base_dir, "**", "*.pyd"), recursive=True):
+            try:
+                os.rename(_pyd, _pyd + ".disabled")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
 import uvicorn
 from src.core.infrastructure.web.app import app
 

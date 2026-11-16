@@ -1,8 +1,23 @@
 """Aplicação FastAPI do Control Plane do RocketDataForge (TASK-022, TASK-023, TASK-031)."""
 
+import glob
 import os
 import sys
 from pathlib import Path
+
+# Compatibilidade Python 3.14 no Windows: desativa extensões Cython (.pyd) do SQLAlchemy
+# que causam Access Violation (0xc0000005) em execuções concorrentes com threads de warmup/scheduler.
+if sys.platform == "win32" and sys.version_info >= (3, 14):
+    try:
+        import sqlalchemy
+        _base_dir = os.path.dirname(sqlalchemy.__file__)
+        for _pyd in glob.glob(os.path.join(_base_dir, "**", "*.pyd"), recursive=True):
+            try:
+                os.rename(_pyd, _pyd + ".disabled")
+            except Exception:
+                pass
+    except Exception:
+        pass
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse

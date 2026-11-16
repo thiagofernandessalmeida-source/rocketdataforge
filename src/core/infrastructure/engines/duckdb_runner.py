@@ -170,13 +170,18 @@ class DuckDBRunner:
         """Executa consulta SQL e retorna o resultado como um DataFrame Polars."""
         active_conn = conn or self.get_connection()
         try:
-            return active_conn.execute(query).pl()
-        except Exception as e:
-            # Fallback for older duckdb or specific environments
+            return active_conn.sql(query).pl()
+        except Exception:
             try:
-                arrow_table = active_conn.execute(query).arrow()
-                return pl.from_arrow(arrow_table)
-            except Exception:
+                res = active_conn.execute(query)
+                if hasattr(res, "pl"):
+                    return res.pl()
+                if hasattr(res, "to_arrow_table"):
+                    return pl.from_arrow(res.to_arrow_table())
+                if hasattr(res, "arrow"):
+                    return pl.from_arrow(res.arrow())
+                return pl.from_pandas(res.df())
+            except Exception as e:
                 raise DomainError(f"Erro ao executar consulta no DuckDB: {str(e)}", code="ERR_ENGINE_DUCKDB")
 
     def execute_query_on_file(
