@@ -19,10 +19,10 @@
 - [x] **T-3.3:** [CODE] Implementar `ui/src/features/flow/jobFlowLayout.ts` para cálculo colunar das coordenadas, centralização e portas.
 
 ## Fase 4: Componente JobFlowView
-- [ ] **T-4.1:** [TEST] Criar testes em `ui/tests/fase4_job_flow_view.test.mjs` validando expansão/recolhimento, persistência por job, renderização do corpo e delegação de duplo clique.
-- [ ] **T-4.2:** [CODE] Criar componentes `FlowCellNode.tsx`, `FlowCanvasBody.tsx` e `FlowPythonBody.tsx`.
-- [ ] **T-4.3:** [CODE] Criar `FlowLinksOverlay.tsx` e `FlowLegend.tsx` integrando o `busRouter` e selos E/OU.
-- [ ] **T-4.4:** [CODE] Implementar o componente principal `JobFlowView.tsx` com barra de ferramentas, controle de expansão global e zoom/ajuste.
+- [x] **T-4.1:** [TEST] Criar testes em `ui/tests/fase4_job_flow_view.test.mjs` validando expansão/recolhimento, persistência por job, renderização do corpo e delegação de duplo clique.
+- [x] **T-4.2:** [CODE] Criar componentes `FlowCellNode.tsx`, `FlowCanvasBody.tsx` e `FlowPythonBody.tsx`.
+- [x] **T-4.3:** [CODE] Criar `FlowLinksOverlay.tsx` e `FlowLegend.tsx` integrando o `busRouter` e selos E/OU.
+- [x] **T-4.4:** [CODE] Implementar o componente principal `JobFlowView.tsx` com barra de ferramentas, controle de expansão global e zoom/ajuste.
 
 ## Fase 5: Integração no App
 - [ ] **T-5.1:** [TEST] Criar testes em `ui/tests/fase5_flow_integration.test.mjs` validando alternância de views no App e preservação do jobStore.
