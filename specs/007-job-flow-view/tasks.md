@@ -29,5 +29,5 @@
 - [x] **T-5.2:** [CODE] Conectar seletor "Canvas | Fluxo" em `ui/src/App.tsx` com persistência em localStorage e desativação de atalhos de canvas no fluxo.
 
 ## Fase 6: Documentação e Aceite
-- [ ] **T-6.1:** [DOCS] Atualizar `docs/DOCUMENTACAO_TECNICA_E_FUNCIONAL.md` documentando a view de Fluxo, o roteamento ortogonal e o guia de atalhos.
-- [ ] **T-6.2:** [VERIFY] Executar validação completa com `npm test` e `npm run build` em `ui/`.
+- [x] **T-6.1:** [DOCS] Atualizar `docs/DOCUMENTACAO_TECNICA_E_FUNCIONAL.md` documentando a view de Fluxo, o roteamento ortogonal e o guia de atalhos.
+- [x] **T-6.2:** [VERIFY] Executar validação completa com `npm test` e `npm run build` em `ui/`.

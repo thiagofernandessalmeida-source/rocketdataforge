@@ -203,6 +203,42 @@ graph LR
   - `ctx.log(mensagem)`: Envia logs ao vivo diretamente para o console da célula no frontend.
 - O executor utiliza um subprocesso isolado com tratamento de exceções, garantindo que falhas em scripts de usuário não afetem o Control Plane da aplicação.
 
+### 5.3 View Alternativa "Fluxo" (UC4 Automic / JOBP) e Barramento Ortogonal
+A partir da versão 1.3, o RocketDataForge oferece uma visão alternativa macro do pipeline, alternável pelo seletor **Canvas | Fluxo**:
+
+1. **Visão Holística e Ordem de Execução**:
+   - Organização automática em colunas ordenadas por `order` de execução com margem esquerda de 56 px e espaçamento entre colunas de 64 px.
+   - Células com a mesma ordem executam em paralelo e aparecem empilhadas na mesma coluna, com cabeçalho `ORDEM n (paralelo)`.
+   - Colunas com célula única alinham-se automaticamente no centro vertical da coluna mais alta.
+
+2. **Cards Estilo UC4 Automic / JOBP**:
+   - **Ícone Recolhido (200 x 120 px)**: Apresenta avatar com tipo da célula ("C" azul para Canvas, "P" amarelo para Python), badge de ordem (`#1`, `#2`), status em tempo real (com spinner e ícones específicos), duração e selo lógico de pré-condições ("E" / "OU").
+   - **Acessibilidade WCAG 2.1 AA**: Todo nó recolhido é um `<button>` acessível com `aria-expanded` e `aria-label`. Nenhum estado é informado apenas por cor.
+
+3. **Expansão In-Place (540 px de largura)**:
+   - Permite inspecionar detalhes sem sair da arquitetura macro do Job.
+   - Expandir uma célula desloca somente a própria coluna e as subsequentes para a direita.
+   - **Corpo Canvas**: Lista os componentes internos com ícones de categoria, nome e status. **Duplo clique** navega para a visão Canvas e seleciona o componente em foco (`handleFocusNode`).
+   - **Corpo Python**: Visualizador do script de código formatado em 21 px por linha, com numeração e rolagem interna (máximo de 12 linhas visíveis).
+   - **Ações Rápidas**: Cabeçalho com botão "Abrir no Canvas", "Executar só esta célula" e recolhimento. Rodapé com métricas de execução (duração, linhas lidas, gravadas) e contagem de pré-condições.
+
+4. **Roteador Ortogonal com Barramento (`busRouter`)**:
+   - Utilizado na view de Fluxo e no Canvas de componentes (selecionável entre "Curva" e "Ortogonal com barramento", padrão ortogonal).
+   - **Tronco Compartilhado**: Para múltiplos destinos, as arestas partilham o trecho horizontal inicial e se separam em troncos verticais escalonados (`gx = x_saída + 26 + 8*i`).
+   - **Pontos de Junção**: Círculos visuais desenhados no início do tronco quando a origem possui duas ou mais saídas.
+   - **Bypass de Retorno (Loopback)**: Arestas voltadas para a esquerda contornam a base ou o topo do destino com margem de segurança de 18 px.
+   - **Cantos Suaves**: Arredondamento geométrico com raio de 9 px adaptativo.
+   - **Halo de Fundo**: Traço sob a linha com 6 px na cor do fundo (`var(--bg-app)`) para separação nítida de cruzamentos.
+   - **Semântica de Traço**:
+     - Pré-condição OK: Verde contínuo (`#10b981`).
+     - Pré-condição ERRO: Vermelho tracejado (`#ef4444`, `7 4`).
+     - No Canvas: `main` (contínuo), `lkp` (pontilhado `2 5`), `reject` (tracejado `7 4`), `out` (contínuo), `iterate` (traço-ponto `9 3 2 3`).
+
+5. **Interação, Pan, Zoom e Atalhos**:
+   - **Pan & Zoom**: Arraste do fundo para movimentação suave; scroll do mouse e botões +/- na barra para zoom; botão "Ajustar à tela" para enquadramento ótimo.
+   - **Isolamento de Atalhos**: Os atalhos de edição de nós do Canvas (copiar, colar, duplicar, deletar) são desativados na view de Fluxo para prevenir mutações acidentais.
+   - **Persistência Sem Mutação de Schema**: O modo ativo (`cellflow_view_mode_${jobId}`), células expandidas (`cellflow_flow_expanded_${jobId}`) e estilo de arestas (`cellflow_edge_style`) são persistidos exclusivamente no `localStorage` do navegador com fallback resiliente para modo anônimo (`try/catch`). O formato salvo do Job no backend permanece 100% inalterado.
+
 ---
 
 ## 6. Motores de Execução Híbridos (Execution Engines)
