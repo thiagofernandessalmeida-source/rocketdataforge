@@ -3,9 +3,9 @@
 ---
 
 ## Fase 1: Roteador de Arestas "Ortogonal com Barramento"
-- [ ] **T-1.1:** [TEST] Criar testes unitários em `ui/tests/fase1_bus_router.test.mjs` cobrindo portas, troncos múltiplos, pontos de junção, aresta de retorno, cantos arredondados, posicionamento de rótulos a 44px, segurança contra colisão de nós e orientação TB.
-- [ ] **T-1.2:** [CODE] Implementar `ui/src/features/designer/edges/busRouter.ts` como módulo puramente funcional sem dependência de React.
-- [ ] **T-1.3:** [VERIFY] Executar suite de testes e validar conformidade matemática dos caminhos gerados.
+- [x] **T-1.1:** [TEST] Criar testes unitários em `ui/tests/fase1_bus_router.test.mjs` cobrindo portas, troncos múltiplos, pontos de junção, aresta de retorno, cantos arredondados, posicionamento de rótulos a 44px, segurança contra colisão de nós e orientação TB.
+- [x] **T-1.2:** [CODE] Implementar `ui/src/features/designer/edges/busRouter.ts` como módulo puramente funcional sem dependência de React.
+- [x] **T-1.3:** [VERIFY] Executar suite de testes e validar conformidade matemática dos caminhos gerados.
 
 ## Fase 2: Estilo de Aresta no Canvas
 - [ ] **T-2.1:** [TEST] Criar testes unitários em `ui/tests/fase2_edge_style.test.mjs` validando persistência do estilo no localStorage e ausência de mutação nos dados da aresta.
