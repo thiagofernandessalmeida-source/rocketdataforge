@@ -14,9 +14,9 @@
 - [x] **T-2.4:** [CODE] Integrar roteador ortogonal e controles de estilo em `FlowEdge.tsx`, `TriggerEdge.tsx` e barra da célula em `CanvasCellCard.tsx`.
 
 ## Fase 3: Modelo e Layout da View de Fluxo
-- [ ] **T-3.1:** [TEST] Criar testes unitários em `ui/tests/fase3_job_flow_model_layout.test.mjs` validando mapeamento de nós, resolução de pré-condições (id/nome), detecção de ciclos/inconsistências, posições em colunas e benchmark com 100 células.
-- [ ] **T-3.2:** [CODE] Implementar `ui/src/features/flow/jobFlowModel.ts` para extração resiliente do grafo macro.
-- [ ] **T-3.3:** [CODE] Implementar `ui/src/features/flow/jobFlowLayout.ts` para cálculo colunar das coordenadas, centralização e portas.
+- [x] **T-3.1:** [TEST] Criar testes unitários em `ui/tests/fase3_job_flow_model_layout.test.mjs` validando mapeamento de nós, resolução de pré-condições (id/nome), detecção de ciclos/inconsistências, posições em colunas e benchmark com 100 células.
+- [x] **T-3.2:** [CODE] Implementar `ui/src/features/flow/jobFlowModel.ts` para extração resiliente do grafo macro.
+- [x] **T-3.3:** [CODE] Implementar `ui/src/features/flow/jobFlowLayout.ts` para cálculo colunar das coordenadas, centralização e portas.
 
 ## Fase 4: Componente JobFlowView
 - [ ] **T-4.1:** [TEST] Criar testes em `ui/tests/fase4_job_flow_view.test.mjs` validando expansão/recolhimento, persistência por job, renderização do corpo e delegação de duplo clique.
