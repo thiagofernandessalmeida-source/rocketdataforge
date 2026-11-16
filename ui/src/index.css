@@ -48,6 +48,13 @@
   --cat-target: #f59e0b;
   --cat-control: #9b72f7;
 
+  /* ── Flow Colors (Fase 2) ── */
+  --flow-main: #60a5fa;
+  --flow-lkp: #c4b0fb;
+  --flow-reject: #fb7185;
+  --flow-out: #5eead4;
+  --flow-iterate: #fbbf24;
+
   /* ── Shadows ── */
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.6);

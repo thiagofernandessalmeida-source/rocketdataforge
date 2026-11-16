@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect } from "react";
+import React, { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import {
   EdgeProps,
   getBezierPath,
@@ -22,6 +22,9 @@ import {
   FLOW_CONFIG,
   isFlowNameUnique,
 } from "../utils/flowNaming";
+import { useEdgeStyle } from "../hooks/useEdgeStyle";
+import { computeBusRoutes } from "./busRouter";
+import { getFlowStrokeStyle } from "./edgeStyleUtils";
 
 export interface FlowEdgeData {
   flowName: string;
@@ -47,8 +50,9 @@ export const FlowEdge: React.FC<EdgeProps<FlowEdgeData>> = ({
   selected,
 }) => {
   const { setEdges, getEdges, getNodes } = useReactFlow();
+  const [edgeStyle] = useEdgeStyle();
 
-  const [edgePath, labelX, labelY] = getBezierPath({
+  const [bezierPath, bezierLabelX, bezierLabelY] = getBezierPath({
     sourceX,
     sourceY,
     sourcePosition,
@@ -60,6 +64,42 @@ export const FlowEdge: React.FC<EdgeProps<FlowEdgeData>> = ({
   const flowName = data?.flowName || (typeof label === "string" ? label : "") || "main1";
   const flowType: FlowType = data?.flowType || (flowName.startsWith("iterate") ? "iterate" : flowName.startsWith("lkp") ? "lkp" : flowName.startsWith("out") ? "out" : flowName.startsWith("reject") ? "reject" : "main");
   const meta = FLOW_CONFIG[flowType] || FLOW_CONFIG.main;
+
+  // Cálculo de rota ortogonal com barramento (Fase 1 e 2)
+  const { effectivePath, effectiveLabelX, effectiveLabelY, junctionPoints } = useMemo(() => {
+    if (edgeStyle === "ortogonal") {
+      try {
+        const allNodes = getNodes();
+        const allEdges = getEdges();
+        const orientation = sourcePosition === "bottom" || targetPosition === "top" ? "TB" : "LR";
+        const nodeRects = allNodes.map((n) => ({
+          id: n.id,
+          x: n.position.x,
+          y: n.position.y,
+          w: n.width || (n as any).measured?.width || 180,
+          h: n.height || (n as any).measured?.height || 72,
+        }));
+        const routes = computeBusRoutes(allEdges, nodeRects, orientation);
+        const myRoute = routes.find((r) => r.edgeId === id);
+        if (myRoute && myRoute.svgPath) {
+          return {
+            effectivePath: myRoute.svgPath,
+            effectiveLabelX: myRoute.labelPosition.x,
+            effectiveLabelY: myRoute.labelPosition.y,
+            junctionPoints: myRoute.junctionPoints || [],
+          };
+        }
+      } catch (_) {}
+    }
+    return {
+      effectivePath: bezierPath,
+      effectiveLabelX: bezierLabelX,
+      effectiveLabelY: bezierLabelY,
+      junctionPoints: [],
+    };
+  }, [edgeStyle, getNodes, getEdges, sourcePosition, targetPosition, id, bezierPath, bezierLabelX, bezierLabelY]);
+
+  const strokeStyle = getFlowStrokeStyle(flowType, selected);
 
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(flowName);
@@ -189,26 +229,69 @@ export const FlowEdge: React.FC<EdgeProps<FlowEdgeData>> = ({
 
   return (
     <>
+      {/* Definição de Marcador de Seta com a cor do fluxo (Regra 2.7) */}
+      <defs>
+        <marker
+          id={`flow-marker-${id}`}
+          viewBox="0 0 10 10"
+          refX="8"
+          refY="5"
+          markerWidth="6"
+          markerHeight="6"
+          orient="auto-start-reverse"
+        >
+          <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill={selected ? "var(--accent-cyan)" : strokeStyle.stroke} />
+        </marker>
+      </defs>
+
+      {/* Contorno (Halo) de 6px na cor de fundo para separação visual de linhas próximas (Regra 2.4) */}
+      <path
+        d={effectivePath}
+        fill="none"
+        stroke="var(--bg-app, #07080f)"
+        strokeWidth={6}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+        style={{ pointerEvents: "none" }}
+      />
+
+      {/* Aresta Principal com traço e cor por tipo (Regra 2.6) */}
       <BaseEdge
         id={id}
-        path={edgePath}
-        markerEnd={markerEnd}
+        path={effectivePath}
+        markerEnd={markerEnd || `url(#flow-marker-${id})`}
         interactionWidth={20}
         style={{
           ...style,
-          stroke: selected ? "var(--accent-cyan)" : meta.strokeColor,
+          stroke: strokeStyle.stroke,
           strokeWidth: selected ? 2.5 : 2,
-          strokeDasharray: flowType === "iterate" ? "6, 4" : undefined,
+          strokeDasharray: flowType === "iterate" ? "9 3 2 3" : strokeStyle.strokeDasharray,
+          strokeLinecap: strokeStyle.strokeLinecap,
           animation: flowType === "iterate" ? "flow-iterate-dash 1s linear infinite" : undefined,
           transition: "stroke 0.2s, stroke-width 0.2s",
         }}
       />
 
+      {/* Pontos de Junção no início do tronco quando há múltiplas saídas (Regra 1.3 e 2.7) */}
+      {junctionPoints.map((jp, i) => (
+        <circle
+          key={`jp-${id}-${i}`}
+          cx={jp.x}
+          cy={jp.y}
+          r={3.5}
+          fill={selected ? "var(--accent-cyan)" : strokeStyle.stroke}
+          stroke="var(--bg-app, #07080f)"
+          strokeWidth={1}
+          style={{ pointerEvents: "none" }}
+        />
+      ))}
+
       <EdgeLabelRenderer>
         <div
           style={{
             position: "absolute",
-            transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
+            transform: `translate(-50%, -50%) translate(${effectiveLabelX}px,${effectiveLabelY}px)`,
             pointerEvents: "all",
             zIndex: isEditing ? 1000 : 10,
           }}

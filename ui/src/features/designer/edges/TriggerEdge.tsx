@@ -1,11 +1,14 @@
-import React, { memo } from "react";
+import React, { memo, useMemo } from "react";
 import {
   EdgeProps,
   getBezierPath,
   EdgeLabelRenderer,
   BaseEdge,
+  useReactFlow,
 } from "reactflow";
 import { CheckCircle2 } from "lucide-react";
+import { useEdgeStyle } from "../hooks/useEdgeStyle";
+import { computeBusRoutes } from "./busRouter";
 
 export interface TriggerEdgeData {
   flowName?: string;
@@ -14,6 +17,8 @@ export interface TriggerEdgeData {
 
 export const TriggerEdge: React.FC<EdgeProps<TriggerEdgeData>> = memo(({
   id,
+  source,
+  target,
   sourceX,
   sourceY,
   targetX,
@@ -25,7 +30,10 @@ export const TriggerEdge: React.FC<EdgeProps<TriggerEdgeData>> = memo(({
   data,
   selected,
 }) => {
-  const [edgePath, labelX, labelY] = getBezierPath({
+  const { getEdges, getNodes } = useReactFlow();
+  const [edgeStyle] = useEdgeStyle();
+
+  const [bezierPath, bezierLabelX, bezierLabelY] = getBezierPath({
     sourceX,
     sourceY,
     sourcePosition,
@@ -34,14 +42,59 @@ export const TriggerEdge: React.FC<EdgeProps<TriggerEdgeData>> = memo(({
     targetPosition,
   });
 
+  const { effectivePath, effectiveLabelX, effectiveLabelY, junctionPoints } = useMemo(() => {
+    if (edgeStyle === "ortogonal") {
+      try {
+        const allNodes = getNodes();
+        const allEdges = getEdges();
+        const orientation = sourcePosition === "bottom" || targetPosition === "top" ? "TB" : "LR";
+        const nodeRects = allNodes.map((n) => ({
+          id: n.id,
+          x: n.position.x,
+          y: n.position.y,
+          w: n.width || (n as any).measured?.width || 180,
+          h: n.height || (n as any).measured?.height || 72,
+        }));
+        const routes = computeBusRoutes(allEdges, nodeRects, orientation);
+        const myRoute = routes.find((r) => r.edgeId === id);
+        if (myRoute && myRoute.svgPath) {
+          return {
+            effectivePath: myRoute.svgPath,
+            effectiveLabelX: myRoute.labelPosition.x,
+            effectiveLabelY: myRoute.labelPosition.y,
+            junctionPoints: myRoute.junctionPoints || [],
+          };
+        }
+      } catch (_) {}
+    }
+    return {
+      effectivePath: bezierPath,
+      effectiveLabelX: bezierLabelX,
+      effectiveLabelY: bezierLabelY,
+      junctionPoints: [],
+    };
+  }, [edgeStyle, getNodes, getEdges, sourcePosition, targetPosition, id, bezierPath, bezierLabelX, bezierLabelY]);
+
   const label = data?.flowName || data?.triggerType || "OnComponentOk";
 
   return (
     <>
+      {/* Contorno (Halo) de 6px na cor de fundo para separação visual (2.4) */}
+      <path
+        d={effectivePath}
+        fill="none"
+        stroke="var(--bg-app, #07080f)"
+        strokeWidth={6}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+        style={{ pointerEvents: "none" }}
+      />
+
       {/* Linha tracejada verde esmeralda (semáforo de execução, sem tráfego de dados) */}
       <BaseEdge
         id={id}
-        path={edgePath}
+        path={effectivePath}
         markerEnd={markerEnd}
         style={{
           ...style,
@@ -53,12 +106,26 @@ export const TriggerEdge: React.FC<EdgeProps<TriggerEdgeData>> = memo(({
         }}
       />
 
+      {/* Pontos de Junção no início do tronco */}
+      {junctionPoints.map((jp, i) => (
+        <circle
+          key={`jp-trigger-${id}-${i}`}
+          cx={jp.x}
+          cy={jp.y}
+          r={3.5}
+          fill={selected ? "var(--accent-cyan, #38bdf8)" : "#10b981"}
+          stroke="var(--bg-app, #07080f)"
+          strokeWidth={1}
+          style={{ pointerEvents: "none" }}
+        />
+      ))}
+
       {/* Badge central de Gatilho / Sincronização */}
       <EdgeLabelRenderer>
         <div
           style={{
             position: "absolute",
-            transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
+            transform: `translate(-50%, -50%) translate(${effectiveLabelX}px,${effectiveLabelY}px)`,
             pointerEvents: "all",
             zIndex: 10,
           }}

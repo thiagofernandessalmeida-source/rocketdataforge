@@ -46,6 +46,7 @@ import { CanvasNodeData } from "../../../types";
 import { CellPreconditionsModal } from "./CellPreconditionsModal";
 import { ScheduleModal } from "../scheduler/ScheduleModal";
 import { ExportCodegenModal } from "../codegen/ExportCodegenModal";
+import { useEdgeStyle } from "../hooks/useEdgeStyle";
 
 interface CanvasCellCardProps {
   cell: CanvasCellData;
@@ -109,6 +110,7 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
   const logsContainerRef = useRef<HTMLDivElement>(null);
   const dragStartYRef = useRef<number>(0);
   const dragStartHeightRef = useRef<number>(0);
+  const [edgeStyle, setEdgeStyle] = useEdgeStyle();
 
   const isExpanded = Boolean(cell.metricsPanelExpanded);
   const currentPanelHeight = cell.metricsPanelHeight || (isExpanded ? 480 : 250);
@@ -819,6 +821,71 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
             >
               <ArrowUpDown size={11} />
               <span>Vert</span>
+            </button>
+          </div>
+
+          {/* Edge Style Selector: Ortogonal com barramento vs Curva */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              background: "rgba(255, 255, 255, 0.04)",
+              borderRadius: 4,
+              border: "1px solid var(--border-subtle)",
+              padding: "1px",
+              gap: 2,
+            }}
+            title="Estilo das arestas do canvas"
+            role="group"
+            aria-label="Estilo das arestas"
+          >
+            <button
+              type="button"
+              className="icon-btn"
+              style={{
+                fontSize: "0.68rem",
+                display: "flex",
+                alignItems: "center",
+                gap: 3,
+                padding: "2px 6px",
+                color: edgeStyle === "ortogonal" ? "var(--accent-cyan)" : "var(--text-muted)",
+                fontWeight: edgeStyle === "ortogonal" ? 600 : 400,
+                background: edgeStyle === "ortogonal" ? "rgba(34, 211, 238, 0.1)" : "transparent",
+                borderRadius: 3,
+              }}
+              title="Arestas ortogonais com barramento compartilhado"
+              aria-label="Arestas ortogonais com barramento"
+              aria-pressed={edgeStyle === "ortogonal"}
+              onClick={(e) => {
+                e.stopPropagation();
+                setEdgeStyle("ortogonal");
+              }}
+            >
+              <span>Ortogonal com barramento</span>
+            </button>
+            <button
+              type="button"
+              className="icon-btn"
+              style={{
+                fontSize: "0.68rem",
+                display: "flex",
+                alignItems: "center",
+                gap: 3,
+                padding: "2px 6px",
+                color: edgeStyle === "curva" ? "var(--accent-cyan)" : "var(--text-muted)",
+                fontWeight: edgeStyle === "curva" ? 600 : 400,
+                background: edgeStyle === "curva" ? "rgba(34, 211, 238, 0.1)" : "transparent",
+                borderRadius: 3,
+              }}
+              title="Arestas em curva suave (Bézier)"
+              aria-label="Arestas em curva"
+              aria-pressed={edgeStyle === "curva"}
+              onClick={(e) => {
+                e.stopPropagation();
+                setEdgeStyle("curva");
+              }}
+            >
+              <span>Curva</span>
             </button>
           </div>
 

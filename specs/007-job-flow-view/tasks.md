@@ -8,10 +8,10 @@
 - [x] **T-1.3:** [VERIFY] Executar suite de testes e validar conformidade matemática dos caminhos gerados.
 
 ## Fase 2: Estilo de Aresta no Canvas
-- [ ] **T-2.1:** [TEST] Criar testes unitários em `ui/tests/fase2_edge_style.test.mjs` validando persistência do estilo no localStorage e ausência de mutação nos dados da aresta.
-- [ ] **T-2.2:** [CODE] Criar hook `ui/src/features/designer/hooks/useEdgeStyle.ts` com suporte seguro a localStorage (try/catch).
-- [ ] **T-2.3:** [CODE] Adicionar variáveis CSS para fluxos em `ui/src/index.css` e estilização com halo (6 px) e traços diferenciados.
-- [ ] **T-2.4:** [CODE] Integrar roteador ortogonal e controles de estilo em `FlowEdge.tsx`, `TriggerEdge.tsx` e barra da célula em `CanvasCellCard.tsx`.
+- [x] **T-2.1:** [TEST] Criar testes unitários em `ui/tests/fase2_edge_style.test.mjs` validando persistência do estilo no localStorage e ausência de mutação nos dados da aresta.
+- [x] **T-2.2:** [CODE] Criar hook `ui/src/features/designer/hooks/useEdgeStyle.ts` com suporte seguro a localStorage (try/catch).
+- [x] **T-2.3:** [CODE] Adicionar variáveis CSS para fluxos em `ui/src/index.css` e estilização com halo (6 px) e traços diferenciados.
+- [x] **T-2.4:** [CODE] Integrar roteador ortogonal e controles de estilo em `FlowEdge.tsx`, `TriggerEdge.tsx` e barra da célula em `CanvasCellCard.tsx`.
 
 ## Fase 3: Modelo e Layout da View de Fluxo
 - [ ] **T-3.1:** [TEST] Criar testes unitários em `ui/tests/fase3_job_flow_model_layout.test.mjs` validando mapeamento de nós, resolução de pré-condições (id/nome), detecção de ciclos/inconsistências, posições em colunas e benchmark com 100 células.
