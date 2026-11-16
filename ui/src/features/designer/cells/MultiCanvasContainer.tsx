@@ -18,6 +18,7 @@ import {
   RefreshCw,
   Code,
   Code2,
+  GitBranch,
 } from "lucide-react";
 
 import { CanvasCellCard } from "./CanvasCellCard";
@@ -42,6 +43,7 @@ interface MultiCanvasContainerProps {
   onStopJob?: () => void;
   onExecuteCellIsolated?: (cell: CanvasCellData) => Promise<boolean>;
   onStopCellIsolated?: (cell: CanvasCellData) => void;
+  onSwitchView?: (view: "canvas" | "flow") => void;
   showToast?: (type: "success" | "error" | "info", msg: string) => void;
 }
 
@@ -53,6 +55,7 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
   onStopJob,
   onExecuteCellIsolated,
   onStopCellIsolated,
+  onSwitchView,
   showToast,
 }) => {
   const [focusCellId, setFocusCellId] = useState<string | null>(null);
@@ -427,6 +430,70 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
           >
             {cells.length} Célula{cells.length === 1 ? "" : "s"}
           </span>
+
+          {/* Seletor "Canvas | Fluxo" */}
+          {onSwitchView && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                background: "rgba(255, 255, 255, 0.04)",
+                borderRadius: "4px",
+                border: "1px solid var(--border-subtle, rgba(255, 255, 255, 0.12))",
+                padding: "1px",
+                gap: 2,
+              }}
+              role="group"
+              aria-label="Modo de visualização"
+            >
+              <button
+                type="button"
+                className="icon-btn"
+                style={{
+                  fontSize: "0.7rem",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "2px 7px",
+                  color: "var(--accent-cyan, #38bdf8)",
+                  background: "rgba(34, 211, 238, 0.12)",
+                  fontWeight: 600,
+                  borderRadius: 3,
+                  cursor: "pointer",
+                  border: "none",
+                }}
+                title="Visão Canvas com células empilhadas"
+                aria-label="Visão Canvas"
+                aria-pressed={true}
+              >
+                <Layers size={11} />
+                <span>Canvas</span>
+              </button>
+              <button
+                type="button"
+                className="icon-btn"
+                style={{
+                  fontSize: "0.7rem",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "2px 7px",
+                  color: "var(--text-muted, #94a3b8)",
+                  background: "transparent",
+                  borderRadius: 3,
+                  cursor: "pointer",
+                  border: "none",
+                }}
+                title="Alternar para visão de Fluxo macro com interdependências e ordens"
+                aria-label="Visão Fluxo"
+                aria-pressed={false}
+                onClick={() => onSwitchView("flow")}
+              >
+                <GitBranch size={11} />
+                <span>Fluxo</span>
+              </button>
+            </div>
+          )}
 
           {focusedCell && (
             <button

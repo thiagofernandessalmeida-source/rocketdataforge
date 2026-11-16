@@ -14,6 +14,11 @@ import { ToastContainer, ToastMessage } from "./components/Toast";
 import { Palette } from "./features/designer/Palette";
 import { Canvas } from "./features/designer/Canvas";
 import { MultiCanvasContainer } from "./features/designer/cells/MultiCanvasContainer";
+import { JobFlowView } from "./features/flow/JobFlowView";
+import {
+  getViewModePreference,
+  setViewModePreference,
+} from "./features/flow/flowStorageUtils";
 import { PropertyPanel } from "./features/designer/PropertyPanel";
 import { RightSidebar } from "./features/designer/RightSidebar";
 import { FloatingNodeConfig } from "./features/designer/FloatingNodeConfig";
@@ -284,6 +289,43 @@ export const App: React.FC = () => {
   const [nodes, setNodes, onNodesChange] = useNodesState<CanvasNodeData>(activeCanvas.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(activeCanvas.edges);
   const [selectedNode, setSelectedNode] = useState<Node<CanvasNodeData> | null>(null);
+
+  // ─── View Mode ("canvas" | "flow") per Job (Fase 5) ─────────
+  const [activeViewMode, setActiveViewMode] = useState<"canvas" | "flow">(() =>
+    getViewModePreference(activeJobId || "")
+  );
+
+  useEffect(() => {
+    setActiveViewMode(getViewModePreference(activeJobId || ""));
+  }, [activeJobId]);
+
+  const handleSwitchViewMode = useCallback(
+    (mode: "canvas" | "flow") => {
+      setActiveViewMode(mode);
+      if (activeJobId) {
+        setViewModePreference(activeJobId, mode);
+      }
+    },
+    [activeJobId]
+  );
+
+  const handleOpenCellInCanvas = useCallback(
+    (cellId: string) => {
+      if (activeJobId && cellId) {
+        jobStore.setActiveCell(activeJobId, cellId);
+      }
+      handleSwitchViewMode("canvas");
+      setTimeout(() => {
+        const el =
+          document.getElementById(`canvas-cell-${cellId}`) ||
+          document.querySelector(`[data-cell-id="${cellId}"]`);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      }, 50);
+    },
+    [activeJobId, handleSwitchViewMode]
+  );
 
   // ─── Sync canvas when switching tabs ───────────────────────
   const prevTabRef = useRef<string | null>(null);
@@ -880,6 +922,9 @@ export const App: React.FC = () => {
       // Se o foco estiver dentro de um campo de texto / input, não intercepta atalhos de edição
       if (isInput) return;
 
+      // Desativa atalhos de canvas (copiar, colar, duplicar nós) na view de Fluxo (Regra 5.5)
+      if (activeViewMode === "flow") return;
+
       // Desfazer (Ctrl+Z)
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
         e.preventDefault();
@@ -960,7 +1005,7 @@ export const App: React.FC = () => {
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [handleSaveLocal, activeJobId, activeJob, selectedNode, showToast]);
+  }, [handleSaveLocal, activeJobId, activeJob, selectedNode, showToast, activeViewMode]);
 
   // ─── Serialize Canvas ──────────────────────────────────────
   const serializeCanvas = (customPipelineId?: string) => {
@@ -1096,13 +1141,14 @@ export const App: React.FC = () => {
       if (activeJobId && cellId) {
         jobStore.setActiveCell(activeJobId, cellId);
       }
+      handleSwitchViewMode("canvas");
       const target = nodes.find((n) => n.id === nodeId);
       if (target) {
         setSelectedNode(target);
         setPropertiesVisible(true);
       }
     },
-    [nodes, activeJobId]
+    [nodes, activeJobId, handleSwitchViewMode]
   );
 
   // ─── Sincronização IPC da Janela Nativa de Logs (Fase 3) ─────
@@ -2439,30 +2485,53 @@ export const App: React.FC = () => {
 
           {activeJobId ? (
             <div className="canvas-with-palette">
-              {paletteVisible && <Palette components={components} />}
+              {paletteVisible && activeViewMode !== "flow" && <Palette components={components} />}
 
               {activeJob ? (
-                <MultiCanvasContainer
-                  job={activeJob}
-                  onSelectNode={(node) => {
-                    setSelectedNode(node);
-                  }}
-                  onDoubleClickNode={(node) => {
-                    if (isTMapNode(node)) {
-                      setTmapModalNode(node);
-                      setSelectedNode(null);
-                      setFloatingNode(null);
-                    } else {
-                      setFloatingNode(node);
-                      setSelectedNode(null);
-                    }
-                  }}
-                  onRunEntireJob={handleRun}
-                  onStopJob={handleStopJob}
-                  onExecuteCellIsolated={handleExecuteCellIsolated}
-                  onStopCellIsolated={handleStopCellIsolated}
-                  showToast={showToast}
-                />
+                activeViewMode === "flow" ? (
+                  <JobFlowView
+                    jobId={activeJob.id}
+                    jobName={activeJob.name || activeJob.id}
+                    cells={activeJob.cells || []}
+                    onSwitchView={handleSwitchViewMode}
+                    onFocusNode={handleFocusNode}
+                    onOpenCellInCanvas={handleOpenCellInCanvas}
+                    onExecuteJob={handleRun}
+                    onCancelJob={handleStopJob}
+                    onRunSingleCell={(cellId) => {
+                      const cell = (activeJob.cells || []).find((c) => c.id === cellId);
+                      if (cell) handleExecuteCellIsolated(cell);
+                    }}
+                    onStopSingleCell={(cellId) => {
+                      const cell = (activeJob.cells || []).find((c) => c.id === cellId);
+                      if (cell) handleStopCellIsolated(cell);
+                    }}
+                    isJobRunning={loadingAction === "run"}
+                  />
+                ) : (
+                  <MultiCanvasContainer
+                    job={activeJob}
+                    onSelectNode={(node) => {
+                      setSelectedNode(node);
+                    }}
+                    onDoubleClickNode={(node) => {
+                      if (isTMapNode(node)) {
+                        setTmapModalNode(node);
+                        setSelectedNode(null);
+                        setFloatingNode(null);
+                      } else {
+                        setFloatingNode(node);
+                        setSelectedNode(null);
+                      }
+                    }}
+                    onRunEntireJob={handleRun}
+                    onStopJob={handleStopJob}
+                    onExecuteCellIsolated={handleExecuteCellIsolated}
+                    onStopCellIsolated={handleStopCellIsolated}
+                    onSwitchView={handleSwitchViewMode}
+                    showToast={showToast}
+                  />
+                )
               ) : (
                 <ReactFlowProvider>
                   <Canvas

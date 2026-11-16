@@ -25,8 +25,8 @@
 - [x] **T-4.4:** [CODE] Implementar o componente principal `JobFlowView.tsx` com barra de ferramentas, controle de expansão global e zoom/ajuste.
 
 ## Fase 5: Integração no App
-- [ ] **T-5.1:** [TEST] Criar testes em `ui/tests/fase5_flow_integration.test.mjs` validando alternância de views no App e preservação do jobStore.
-- [ ] **T-5.2:** [CODE] Conectar seletor "Canvas | Fluxo" em `ui/src/App.tsx` com persistência em localStorage e desativação de atalhos de canvas no fluxo.
+- [x] **T-5.1:** [TEST] Criar testes em `ui/tests/fase5_flow_integration.test.mjs` validando alternância de views no App e preservação do jobStore.
+- [x] **T-5.2:** [CODE] Conectar seletor "Canvas | Fluxo" em `ui/src/App.tsx` com persistência em localStorage e desativação de atalhos de canvas no fluxo.
 
 ## Fase 6: Documentação e Aceite
 - [ ] **T-6.1:** [DOCS] Atualizar `docs/DOCUMENTACAO_TECNICA_E_FUNCIONAL.md` documentando a view de Fluxo, o roteamento ortogonal e o guia de atalhos.

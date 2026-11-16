@@ -30,3 +30,27 @@ export function setExpandedCellsPreference(jobId: string, expandedIds: Set<strin
     }
   } catch (_) {}
 }
+
+const VIEW_MODE_PREFIX = "cellflow_view_mode_";
+
+export function getViewModePreference(jobId: string): "canvas" | "flow" {
+  if (!jobId) return "canvas";
+  try {
+    if (typeof window !== "undefined" && window.localStorage) {
+      const saved = window.localStorage.getItem(`${VIEW_MODE_PREFIX}${jobId}`);
+      if (saved === "flow" || saved === "canvas") {
+        return saved;
+      }
+    }
+  } catch (_) {}
+  return "canvas";
+}
+
+export function setViewModePreference(jobId: string, mode: "canvas" | "flow"): void {
+  if (!jobId) return;
+  try {
+    if (typeof window !== "undefined" && window.localStorage) {
+      window.localStorage.setItem(`${VIEW_MODE_PREFIX}${jobId}`, mode);
+    }
+  } catch (_) {}
+}
