@@ -621,6 +621,26 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
     return list;
   }, [allNodes, incomingEdges, upstreamNodes, selectedNodeId]);
 
+  const upstreamSchema: SchemaColumn[] = React.useMemo(() => {
+    const un = upstreamNodes[0];
+    if (!un) return [];
+    const incomingEdge = incomingEdges.find((e) => e.source === un.id) || incomingEdges[0];
+    return extractNodeSchema(un, incomingEdge, selectedNodeId);
+  }, [upstreamNodes, incomingEdges, selectedNodeId]);
+
+  const upstreamNodeLabel = React.useMemo(() => {
+    const un = upstreamNodes[0];
+    if (!un) return "";
+    const baseLabel = un.data?.label || un.id;
+    const unCt = un.data?.componentType || "";
+    if (unCt === "core.tmap" || unCt === "transform.tmap") {
+      const incomingEdge = incomingEdges.find((e) => e.source === un.id) || incomingEdges[0];
+      const flow = incomingEdge?.data?.flowName || (typeof incomingEdge?.label === "string" ? incomingEdge.label : "") || incomingEdge?.sourceHandle;
+      return flow ? `${baseLabel} (${flow})` : baseLabel;
+    }
+    return baseLabel;
+  }, [upstreamNodes, incomingEdges]);
+
   if (!selectedNode) {
     return (
       <div className="sidebar-properties" id="property-panel">
@@ -837,26 +857,6 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
       };
     })
     .filter((d) => Boolean(d.targetId));
-
-  const upstreamSchema: SchemaColumn[] = React.useMemo(() => {
-    const un = upstreamNodes[0];
-    if (!un) return [];
-    const incomingEdge = incomingEdges.find((e) => e.source === un.id) || incomingEdges[0];
-    return extractNodeSchema(un, incomingEdge, selectedNodeId);
-  }, [upstreamNodes, incomingEdges, selectedNodeId]);
-
-  const upstreamNodeLabel = React.useMemo(() => {
-    const un = upstreamNodes[0];
-    if (!un) return "";
-    const baseLabel = un.data?.label || un.id;
-    const unCt = un.data?.componentType || "";
-    if (unCt === "core.tmap" || unCt === "transform.tmap") {
-      const incomingEdge = incomingEdges.find((e) => e.source === un.id) || incomingEdges[0];
-      const flow = incomingEdge?.data?.flowName || (typeof incomingEdge?.label === "string" ? incomingEdge.label : "") || incomingEdge?.sourceHandle;
-      return flow ? `${baseLabel} (${flow})` : baseLabel;
-    }
-    return baseLabel;
-  }, [upstreamNodes, incomingEdges]);
 
   // Detect connector family
   const isFileSource = ct.includes("file.source");

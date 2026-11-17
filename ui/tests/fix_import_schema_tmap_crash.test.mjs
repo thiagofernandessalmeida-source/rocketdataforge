@@ -114,4 +114,22 @@ describe("CORREÇÃO: Importação de Schema do Data Mapper (tMap) e Prevenção
       "upstreamSchema deve ser memoizado resolvendo o nó montante conectado"
     );
   });
+
+  test("6: PropertyPanel.tsx NÃO deve ter hooks após 'if (!selectedNode)' (Prevenção de erro #310)", () => {
+    const content = fs.readFileSync(propPanelPath, "utf-8");
+    const earlyReturnMarker = "if (!selectedNode) {";
+    assert.ok(content.includes(earlyReturnMarker), "Deve conter early return para !selectedNode");
+
+    const split = content.split(earlyReturnMarker);
+    const afterEarlyReturn = split[1];
+
+    // NENHUM hook (useMemo, useState, useEffect, useCallback) pode ser chamado após o early return
+    assert.ok(
+      !afterEarlyReturn.includes("useMemo(") &&
+      !afterEarlyReturn.includes("useState(") &&
+      !afterEarlyReturn.includes("useEffect(") &&
+      !afterEarlyReturn.includes("useCallback("),
+      "NÃO deve haver nenhum React Hook chamado após 'if (!selectedNode) {', pois causa erro React #310"
+    );
+  });
 });
