@@ -158,7 +158,8 @@ class ConnectionPoolManager:
     def _build_postgres_dsn(self, connection: Connection) -> str:
         """Constrói DSN libpq resolvendo credenciais exclusivamente pelo SecretResolver."""
         raw_password = self.secret_resolver.resolve(connection.secret_ref)
-        safe_password = quote_plus(raw_password)
+        # No formato libpq (keyword='value'), @, #, :, /, ? são literais; apenas \ e ' precisam de escape.
+        safe_password = raw_password.replace('\\', '\\\\').replace("'", "\\'")
 
         endpoint = connection.endpoint.strip()
         port = int(connection.options.get("port") or 5432)
@@ -188,8 +189,32 @@ class ConnectionPoolManager:
     def _create_raw_postgres_connection(self, connection: Connection) -> Any:
         """Cria conexão física direta com o PostgreSQL (usando psycopg2)."""
         import psycopg2
-        dsn = self._build_postgres_dsn(connection)
-        return psycopg2.connect(dsn, connect_timeout=int(self._default_timeout))
+        raw_password = self.secret_resolver.resolve(connection.secret_ref)
+        endpoint = connection.endpoint.strip()
+        port = int(connection.options.get("port") or 5432)
+        if "/" in endpoint:
+            host_port, dbname = endpoint.split("/", 1)
+        else:
+            host_port, dbname = endpoint, connection.options.get("database") or connection.options.get("dbname") or "postgres"
+
+        if ":" in host_port:
+            host, port_str = host_port.split(":", 1)
+            port = int(port_str)
+        else:
+            host = host_port
+
+        user = connection.options.get("user") or connection.options.get("username") or "postgres"
+        sslmode = connection.options.get("ssl_mode") or connection.options.get("sslMode") or connection.options.get("sslmode") or "prefer"
+
+        return psycopg2.connect(
+            dbname=dbname,
+            user=user,
+            password=raw_password,
+            host=host,
+            port=port,
+            sslmode=sslmode,
+            connect_timeout=int(self._default_timeout)
+        )
 
     def _get_or_create_postgres_pool(self, connection: Connection) -> PostgresConnectionPool:
         """Obtém ou instancia o pool dedicado para a conexão especificada."""

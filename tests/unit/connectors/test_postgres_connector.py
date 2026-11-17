@@ -30,6 +30,29 @@ def test_postgres_dsn_builder_resolves_secret():
     assert "sslmode='disable'" in dsn
 
 
+def test_postgres_dsn_preserves_special_characters_in_password():
+    """Garante que senhas com @, #, !, %, /, etc. NÃO são corrompidas por quote_plus no DSN libpq."""
+    raw_pass = "qweQWE123!@#asd"
+    secret_resolver = SecretResolver(custom_env={"DW_PASS": raw_pass})
+    connector = PostgresConnector(secret_resolver=secret_resolver)
+
+    conn = Connection(
+        id="conn-special",
+        project_id="p1",
+        name="Postgres Special",
+        connector_type="postgres",
+        endpoint="commercial-reports-db.prd.naturacloud.com:5432/odsdw",
+        secret_ref=SecretReference("secret://env/DW_PASS"),
+        options={"user": "odsdw_user", "ssl_mode": "prefer"}
+    )
+
+    dsn = connector.build_dsn(conn)
+    # Senha deve ser mantida literal no formato libpq keyword='value'
+    assert f"password='{raw_pass}'" in dsn
+    assert "%40" not in dsn
+    assert "%23" not in dsn
+
+
 def test_postgres_test_connection_redacts_on_failure():
     # Testa comportamento diante de falha de conexão (porta inexistente)
     secret_resolver = SecretResolver(custom_env={"DW_PASS": "plain_secret_that_must_not_leak"})

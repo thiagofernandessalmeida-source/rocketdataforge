@@ -27,11 +27,10 @@ class PostgresConnector:
             self.pool_manager = pool_manager
 
     def build_dsn(self, connection: Connection) -> str:
-        """Constrói a string de conexão (DSN) em tempo de execução sem persistir a senha.
+        r"""Constrói a string de conexão (DSN) em tempo de execução sem persistir a senha.
 
-        A senha é encodada com quote_plus para suportar caracteres especiais como @, /, #, :
-        que são separadores em strings de conexão URI-style do psycopg2 / SQLAlchemy.
-        Solução para o problema: senha com '@' gerava conflito no parsing da connection string.
+        No formato libpq (keyword='value'), caracteres especiais como @, /, #, :, ? são literais
+        dentro das aspas. Apenas barras invertidas (\) e aspas simples (') precisam de escape.
         """
         if connection.connector_type != "postgres":
             raise DomainValidationError(
@@ -39,10 +38,7 @@ class PostgresConnector:
             )
 
         raw_password = self.secret_resolver.resolve(connection.secret_ref)
-
-        # quote_plus: encapsula a senha para escapar caracteres especiais
-        # '@', '/', ':', '#', '?' etc. que quebram o parsing da connection string.
-        safe_password = quote_plus(raw_password)
+        safe_password = raw_password.replace('\\', '\\\\').replace("'", "\\'")
 
         endpoint = connection.endpoint.strip()
 
@@ -62,7 +58,7 @@ class PostgresConnector:
         user = connection.options.get("user") or connection.options.get("username") or "postgres"
         sslmode = connection.options.get("ssl_mode") or connection.options.get("sslMode") or connection.options.get("sslmode") or "prefer"
 
-        # Usa formato libpq keyword=value — mais robusto que URI-style para senhas com chars especiais.
+        # Usa formato libpq keyword=value — caracteres especiais como @ e # são mantidos literais.
         return (
             f"dbname='{dbname}' "
             f"user='{user}' "
