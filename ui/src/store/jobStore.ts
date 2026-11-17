@@ -2,7 +2,7 @@
 // RocketDataForge — Job Store v2 (LocalStorage Persistence)
 // ============================================================
 
-import { Node, Edge } from "reactflow";
+import { Node, Edge, Position } from "reactflow";
 import { CanvasNodeData, ComponentCategory } from "../types/index";
 import { telemetryStore } from "./telemetryStore";
 import { getBaseApiUrl } from "../api/client";
@@ -396,14 +396,21 @@ export function inferAndNormalizeNode(rawNode: any): Node<CanvasNodeData> {
     }
   }
 
+  const rawDirection = rawNode.data?.layoutDirection || rawNode.layoutDirection;
+  const layoutDirection: "LR" | "TB" = rawDirection === "TB" ? "TB" : "LR";
+  const targetPosition =
+    rawNode.targetPosition || (layoutDirection === "TB" ? Position.Top : Position.Left);
+  const sourcePosition =
+    rawNode.sourcePosition || (layoutDirection === "TB" ? Position.Bottom : Position.Right);
+
   return {
     id,
     type: "genericNode",
     position: rawNode.position || { x: 0, y: 0 },
     width: rawNode.width,
     height: rawNode.height,
-    targetPosition: rawNode.targetPosition,
-    sourcePosition: rawNode.sourcePosition,
+    targetPosition,
+    sourcePosition,
     data: {
       label: label || id,
       componentType,
@@ -413,7 +420,7 @@ export function inferAndNormalizeNode(rawNode: any): Node<CanvasNodeData> {
       config,
       schema,
       cellId: rawNode.data?.cellId || rawNode.cellId,
-      layoutDirection: rawNode.data?.layoutDirection || rawNode.layoutDirection,
+      layoutDirection,
       status: rawNode.data?.status,
       metrics: rawNode.data?.metrics,
     },
@@ -519,6 +526,7 @@ export function remapNodeReferences<T = any>(obj: T, idMap: Record<string, strin
 
 export interface CloneNodesOptions {
   targetCellId: string;
+  targetLayoutDirection?: "LR" | "TB";
   existingNodes: Node<CanvasNodeData>[];
   sourceNodeSchemas?: Record<string, SchemaColumn[]>;
   offset?: { x: number; y: number };
@@ -594,6 +602,9 @@ export function cloneNodes(
       deepData.label = `${deepData.label || newId} (Cópia)`;
     }
 
+    const targetDir = options.targetLayoutDirection || deepData.layoutDirection || "LR";
+    deepData.layoutDirection = targetDir;
+
     const offsetX = (options.offset?.x ?? 35) * (idx + 1);
     const offsetY = (options.offset?.y ?? 35) * (idx + 1);
 
@@ -604,6 +615,8 @@ export function cloneNodes(
         x: n.position.x + offsetX,
         y: n.position.y + offsetY,
       },
+      targetPosition: targetDir === "TB" ? Position.Top : Position.Left,
+      sourcePosition: targetDir === "TB" ? Position.Bottom : Position.Right,
       selected: false,
       data: deepData,
     };
@@ -1328,6 +1341,7 @@ export const jobStore = {
       nodeClipboard.edges || [],
       {
         targetCellId: targetCell.id,
+        targetLayoutDirection: targetCell.layoutDirection || "LR",
         existingNodes: allJobNodes,
         sourceNodeSchemas: nodeClipboard.nodeSchemas,
         offset: { x: 40, y: 40 },
@@ -1385,6 +1399,7 @@ export const jobStore = {
       [],
       {
         targetCellId: cell.id,
+        targetLayoutDirection: cell.layoutDirection || "LR",
         existingNodes: allJobNodes,
         sourceNodeSchemas: cell.nodeSchemas,
         offset: { x: 45, y: 45 },

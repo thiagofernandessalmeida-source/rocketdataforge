@@ -2541,6 +2541,7 @@ export const App: React.FC = () => {
                     onEdgesChange={onEdgesChange}
                     setNodes={setNodes}
                     setEdges={setEdges}
+                    layoutDirection="LR"
                     onSelectNode={(node) => {
                       setSelectedNode(node);
                     }}

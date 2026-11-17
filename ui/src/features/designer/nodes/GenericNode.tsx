@@ -164,7 +164,7 @@ export const GenericNode: React.FC<NodeProps<CanvasNodeData>> = memo(({ id, data
   // Determina orientação dos handles (LR padrão, ou TB no layout vertical)
   const isVertical = (data as any)?.layoutDirection
     ? (data as any).layoutDirection === "TB"
-    : targetPosition === Position.Top || sourcePosition === Position.Bottom;
+    : false; // Fallback padrão horizontal ("LR")
   const inPosition = isVertical ? Position.Top : Position.Left;
   const outPosition = isVertical ? Position.Bottom : Position.Right;
 

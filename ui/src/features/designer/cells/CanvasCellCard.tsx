@@ -358,12 +358,12 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
   const handleApplyAutoLayout = useCallback(
     (direction: LayoutDirection) => {
       onSelectCell(cell.id);
+      onUpdateCellMeta(cell.id, { layoutDirection: direction });
       if (!nodes || nodes.length === 0) return;
       const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(nodes, edges, direction);
       setNodes(layoutedNodes);
       setEdges(layoutedEdges);
       onUpdateGraph(cell.id, layoutedNodes, layoutedEdges);
-      onUpdateCellMeta(cell.id, { layoutDirection: direction });
     },
     [nodes, edges, cell.id, setNodes, setEdges, onUpdateGraph, onUpdateCellMeta, onSelectCell]
   );
@@ -1206,6 +1206,7 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
               onNodeDragStop={handleNodeDragStop}
               allNodes={allJobNodes}
               cellId={cell.id}
+              layoutDirection={cell.layoutDirection}
             />
           </ReactFlowProvider>
         )}

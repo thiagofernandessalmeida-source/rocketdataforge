@@ -31,6 +31,7 @@ import { api } from "../../api/client";
 import { DataPreviewDrawer } from "./preview/DataPreviewDrawer";
 import { ScheduleModal } from "./scheduler/ScheduleModal";
 import { ExportCodegenModal } from "./codegen/ExportCodegenModal";
+import { resolveCellDirection, getHandlePositions } from "./utils/resolveCellDirection";
 
 
 const nodeTypes: NodeTypes = {
@@ -55,6 +56,7 @@ export interface CanvasProps {
   onNodeDragStop?: (event: React.MouseEvent, node: Node) => void;
   allNodes?: Node<CanvasNodeData>[];
   cellId?: string;
+  layoutDirection?: "LR" | "TB";
 }
 
 export { generateRocketNodeId };
@@ -71,6 +73,7 @@ export const Canvas: React.FC<CanvasProps> = ({
   onNodeDragStop,
   allNodes,
   cellId,
+  layoutDirection,
 }) => {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition } = useReactFlow();
@@ -553,10 +556,15 @@ interface TMapOutputChoice {
 
       const newNodeId = generateRocketNodeId(comp.type_id, combinedNodes);
 
+      const resolvedDir = resolveCellDirection(layoutDirection, nodes);
+      const { targetPosition, sourcePosition } = getHandlePositions(resolvedDir);
+
       const newNode: Node<CanvasNodeData> = {
         id: newNodeId,
         type: "genericNode",
         position,
+        targetPosition,
+        sourcePosition,
         data: {
           label: comp.name,
           componentType: comp.type_id,
@@ -565,13 +573,14 @@ interface TMapOutputChoice {
           config: {},
           ports: comp.ports,
           cellId,
+          layoutDirection: resolvedDir,
         },
       };
 
       setNodes((nds) => nds.concat(newNode));
       onSelectNode(newNode);
     },
-    [setNodes, onSelectNode, screenToFlowPosition, nodes, allNodes, cellId]
+    [setNodes, onSelectNode, screenToFlowPosition, nodes, allNodes, cellId, layoutDirection]
   );
 
   const onNodeClick = useCallback(
