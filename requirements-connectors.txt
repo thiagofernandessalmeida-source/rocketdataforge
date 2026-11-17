@@ -1,0 +1,4 @@
+# Optional external drivers; install only the integrations you use.
+kafka-python>=2.0.2
+oracledb>=2.0.0
+cassandra-driver>=3.29.0
