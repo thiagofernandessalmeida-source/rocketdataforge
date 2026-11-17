@@ -11,7 +11,7 @@ def test_path_traversal_prevention(tmp_path):
     base_dir = tmp_path / "workspace"
     base_dir.mkdir()
 
-    connector = LocalFileConnector(base_directory=str(base_dir))
+    connector = LocalFileConnector(base_directory=str(base_dir), allowed_roots=[str(base_dir)])
 
     # Tentativa de escapar do diretório usando ../../
     with pytest.raises(SecurityViolationError):
@@ -37,6 +37,50 @@ def test_read_and_write_csv_chunks(tmp_path):
     assert chunks[0].height == 10
     assert chunks[1].height == 10
     assert chunks[2].height == 5
+
+
+def test_read_csv_semicolon_autodetect(tmp_path):
+    connector = LocalFileConnector(base_directory=str(tmp_path))
+    file_path = tmp_path / "semicolon.csv"
+    file_path.write_text("cd_pessoa;cpf\n188559825;12345678910\n261290045;12345678911\n", encoding="utf-8")
+
+    chunks = list(connector.read_chunks(str(file_path), file_format="csv"))
+    assert len(chunks) == 1
+    assert chunks[0].columns == ["cd_pessoa", "cpf"]
+    assert chunks[0].height == 2
+
+
+def test_read_csv_pipe_autodetect(tmp_path):
+    connector = LocalFileConnector(base_directory=str(tmp_path))
+    file_path = tmp_path / "pipe.csv"
+    file_path.write_text("col_a|col_b|col_c\n1|foo|true\n2|bar|false\n", encoding="utf-8")
+
+    chunks = list(connector.read_chunks(str(file_path), file_format="csv"))
+    assert len(chunks) == 1
+    assert chunks[0].columns == ["col_a", "col_b", "col_c"]
+    assert chunks[0].height == 2
+
+
+def test_read_csv_tab_autodetect(tmp_path):
+    connector = LocalFileConnector(base_directory=str(tmp_path))
+    file_path = tmp_path / "tab.csv"
+    file_path.write_text("x\ty\tz\n10\t20\t30\n", encoding="utf-8")
+
+    chunks = list(connector.read_chunks(str(file_path), file_format="csv"))
+    assert len(chunks) == 1
+    assert chunks[0].columns == ["x", "y", "z"]
+    assert chunks[0].height == 1
+
+
+def test_read_csv_explicit_delimiter(tmp_path):
+    connector = LocalFileConnector(base_directory=str(tmp_path))
+    file_path = tmp_path / "custom.csv"
+    file_path.write_text("alpha;beta\n10;20\n", encoding="utf-8")
+
+    chunks = list(connector.read_chunks(str(file_path), file_format="csv", delimiter=";"))
+    assert len(chunks) == 1
+    assert chunks[0].columns == ["alpha", "beta"]
+    assert chunks[0].height == 1
 
 
 def test_read_and_write_parquet_chunks(tmp_path):

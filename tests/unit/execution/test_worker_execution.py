@@ -327,3 +327,53 @@ def test_worker_tmap_execution_with_target_id_buffers():
     assert node_buffers["tmap_1:sink_table_4"][0].height == 2
 
 
+def test_worker_csv_semicolon_to_tmap(tmp_path):
+    """Testa se CSV com delimitador ';' tem colunas auto-detectadas e alimenta tMap com sucesso."""
+    input_csv = tmp_path / "atendentes.csv"
+    input_csv.write_text("cd_pessoa;cpf\n188559825;12345678910\n261290045;12345678911\n", encoding="utf-8")
+
+    plan = PhysicalPlan(
+        pipeline_id="pipe-semicolon-test",
+        default_chunk_size=100,
+        execution_order=["csv_source", "tmap_node"],
+        operators={
+            "csv_source": PhysicalOperator(
+                id="csv_source",
+                operator_type="scan",
+                engine="polars",
+                input_ids=[],
+                config={"source": str(input_csv), "format": "csv"}
+            ),
+            "tmap_node": PhysicalOperator(
+                id="tmap_node",
+                operator_type="tmap",
+                engine="duckdb",
+                input_ids=["csv_source"],
+                config={
+                    "main_input_id": "csv_source",
+                    "main_alias": "main1",
+                    "outputs": [
+                        {
+                            "name": "out1",
+                            "columns": [
+                                {"target": "cd_pessoa", "expression": "main1.cd_pessoa"},
+                                {"target": "cpf", "expression": "main1.cpf"}
+                            ]
+                        }
+                    ]
+                }
+            )
+        }
+    )
+
+    execution = Execution(id="exec-semicolon", pipeline_version_id="ver-1.0.0", correlation_id="corr-semi")
+    file_connector = LocalFileConnector(base_directory=str(tmp_path))
+    worker = ExecutionWorker(file_connector=file_connector)
+    result = worker.run(execution, plan)
+
+    assert result.status == ExecutionStatus.SUCCEEDED
+    assert result.tasks["csv_source"].rows_out == 2
+    assert result.tasks["tmap_node"].rows_out == 2
+
+
+

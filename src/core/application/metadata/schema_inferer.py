@@ -332,7 +332,9 @@ class SchemaInferer:
         # Fallback Polars
         try:
             if fmt == "csv":
-                df = pl.read_csv(resolved_path, n_rows=sample_size, ignore_errors=True, try_parse_dates=True)
+                from src.core.infrastructure.connectors.file_connector import LocalFileConnector
+                sep = LocalFileConnector.detect_csv_delimiter(resolved_path)
+                df = pl.read_csv(resolved_path, separator=sep, n_rows=sample_size, ignore_errors=True, try_parse_dates=True)
             elif fmt == "parquet":
                 df = pl.read_parquet(resolved_path, n_rows=sample_size)
             elif fmt == "json":

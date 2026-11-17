@@ -89,13 +89,55 @@ class LocalFileConnector:
 
         return resolved_path
 
+    @staticmethod
+    def detect_csv_delimiter(file_path: str, encoding: Optional[str] = None) -> str:
+        """Detecta automaticamente o delimitador de um arquivo CSV (;, \t, |, ,)."""
+        encodings = [encoding] if encoding else []
+        encodings.extend(["utf-8", "utf-8-sig", "latin1", "cp1252"])
+        sample = ""
+        for enc in encodings:
+            if not enc:
+                continue
+            try:
+                with open(file_path, "r", encoding=enc, errors="replace") as f:
+                    sample = f.read(8192)
+                if sample:
+                    break
+            except Exception:
+                continue
+
+        if not sample:
+            return ","
+
+        # 1. Tentar csv.Sniffer padrão do Python
+        import csv
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=";,\t|")
+            if dialect and dialect.delimiter:
+                return dialect.delimiter
+        except Exception:
+            pass
+
+        # 2. Heurística da primeira linha não vazia
+        lines = [line.strip() for line in sample.splitlines() if line.strip()]
+        if lines:
+            header = lines[0]
+            counts = {sep: header.count(sep) for sep in (";", "\t", "|", ",")}
+            best = max(counts, key=counts.get)
+            if counts[best] > 0:
+                return best
+
+        return ","
+
     def read_chunks(
         self,
         file_path: str,
         file_format: str = "csv",
         chunk_size: int = 10000,
         columns: Optional[List[str]] = None,
-        schema_overrides: Optional[dict] = None
+        schema_overrides: Optional[dict] = None,
+        delimiter: Optional[str] = None,
+        encoding: Optional[str] = None
     ) -> Iterator[pl.DataFrame]:
         """Lê o arquivo em lotes sucessivos de DataFrames Polars com robustez contra erros de parsing e suporte a schema_overrides."""
         safe_path = self.validate_safe_path(file_path)
@@ -106,15 +148,39 @@ class LocalFileConnector:
         fmt = file_format.lower()
 
         if fmt == "csv":
+            sep = delimiter or self.detect_csv_delimiter(safe_path, encoding=encoding)
+            csv_enc = "utf8-lossy"
             try:
                 # Inferência completa do schema + tolerância a linhas malformadas + sobreposição de tipos configurados
                 lazy_df = pl.scan_csv(
                     safe_path,
+                    separator=sep,
+                    encoding=csv_enc,
                     schema_overrides=schema_overrides,
                     infer_schema_length=None if not schema_overrides else 10000,
                     ignore_errors=True,
                     truncate_ragged_lines=True,
                 )
+                # Auto-recuperação: se só detectou 1 coluna e o delimitador não foi forçado pelo usuário,
+                # verifica se a única coluna contém outros delimitadores comuns
+                if not delimiter:
+                    col_names = lazy_df.collect_schema().names()
+                    if len(col_names) == 1:
+                        single_col = col_names[0]
+                        for candidate_sep in (";", "\t", "|", ","):
+                            if candidate_sep != sep and candidate_sep in single_col:
+                                sep = candidate_sep
+                                lazy_df = pl.scan_csv(
+                                    safe_path,
+                                    separator=sep,
+                                    encoding=csv_enc,
+                                    schema_overrides=schema_overrides,
+                                    infer_schema_length=None if not schema_overrides else 10000,
+                                    ignore_errors=True,
+                                    truncate_ragged_lines=True,
+                                )
+                                break
+
                 if columns:
                     available_cols = set(lazy_df.collect_schema().names())
                     selected_cols = [c for c in columns if c in available_cols]
@@ -127,11 +193,12 @@ class LocalFileConnector:
                 import duckdb
                 conn = duckdb.connect()
                 clean_p = safe_path.replace("\\", "/")
+                delim_clause = f", delim='{sep}'" if sep else ""
                 total_rows = conn.execute(
-                    f"SELECT count(*) FROM read_csv_auto('{clean_p}', ignore_errors=true)"
+                    f"SELECT count(*) FROM read_csv_auto('{clean_p}', ignore_errors=true{delim_clause})"
                 ).fetchone()[0]
                 for offset in range(0, total_rows, chunk_size):
-                    q = f"SELECT * FROM read_csv_auto('{clean_p}', ignore_errors=true) LIMIT {chunk_size} OFFSET {offset}"
+                    q = f"SELECT * FROM read_csv_auto('{clean_p}', ignore_errors=true{delim_clause}) LIMIT {chunk_size} OFFSET {offset}"
                     chunk_df = conn.execute(q).pl()
                     if schema_overrides:
                         for c_name, target_type in schema_overrides.items():

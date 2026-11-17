@@ -326,6 +326,8 @@ class LogicalPlanner:
             source_path = cfg.get("path", "")
             tokens = extract_parameter_tokens(source_path) + extract_parameter_tokens(cfg.get("duckdb_query", ""))
             schema_defs = cfg.get("schema_definitions") or []
+            delimiter = cfg.get("delimiter") or cfg.get("delim") or cfg.get("separator")
+            encoding = cfg.get("encoding")
             return LogicalScan(
                 id=node_id,
                 connection_ref=cfg.get("connection_ref", ""),
@@ -338,7 +340,9 @@ class LogicalPlanner:
                 enable_duckdb_view=bool(cfg.get("enable_duckdb_view", False)),
                 duckdb_query=cfg.get("duckdb_query"),
                 connection_details=cfg.get("connection_details"),
-                raw_config=cfg
+                raw_config=cfg,
+                delimiter=delimiter,
+                encoding=encoding
             )
 
         # tMap Transform

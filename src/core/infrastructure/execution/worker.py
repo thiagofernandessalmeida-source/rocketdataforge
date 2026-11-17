@@ -584,13 +584,17 @@ class ExecutionWorker:
         # Para Fontes de Arquivo Parametrizadas (CSV, Parquet, JSON)
         elif fmt in ("csv", "parquet", "json", "excel") and cfg.get("path"):
             base_path = cfg.get("path", "")
+            raw_cfg = cfg.get("raw_config") or {}
+            delimiter = cfg.get("delimiter") or cfg.get("delim") or raw_cfg.get("delimiter") or raw_cfg.get("delim")
+            encoding = cfg.get("encoding") or raw_cfg.get("encoding")
             for row in upstream_df.iter_rows(named=True):
                 token.check_cancelled()
                 # Interpola o caminho do arquivo por linha
                 interpolated_path = self._interpolate_tokens(base_path, row, upstream_id, is_sql=False).strip("'")
                 try:
                     if fmt == "csv":
-                        res_df = pl.read_csv(interpolated_path)
+                        sep = delimiter or self.file_connector.detect_csv_delimiter(interpolated_path, encoding=encoding)
+                        res_df = pl.read_csv(interpolated_path, separator=sep, ignore_errors=True)
                     elif fmt == "parquet":
                         res_df = pl.read_parquet(interpolated_path)
                     elif fmt == "json":
@@ -798,12 +802,13 @@ class ExecutionWorker:
         projected = cfg.get("projected_columns")
         pushed_filter = cfg.get("pushed_filter")
         enable_duckdb = cfg.get("enable_duckdb_view", False)
+        raw_cfg = cfg.get("raw_config") or {}
+        delimiter = cfg.get("delimiter") or cfg.get("delim") or raw_cfg.get("delimiter") or raw_cfg.get("delim")
+        encoding = cfg.get("encoding") or raw_cfg.get("encoding")
 
         # Se a opção DuckDB in-memory estiver ativada
         if enable_duckdb:
             custom_query = cfg.get("duckdb_query")
-            delimiter = cfg.get("delimiter") or cfg.get("delim")
-            encoding = cfg.get("encoding")
             has_header = cfg.get("has_header") if cfg.get("has_header") is not None else cfg.get("header")
             df = self.duckdb_runner.execute_query_on_file(
                 source_path,
@@ -817,7 +822,7 @@ class ExecutionWorker:
             node_buffers[phys_op.id] = [df]
             return
 
-        schema_defs = cfg.get("schema_definitions") or (cfg.get("raw_config") or {}).get("schema_definitions") or []
+        schema_defs = cfg.get("schema_definitions") or raw_cfg.get("schema_definitions") or []
         schema_overrides = None
         if schema_defs and isinstance(schema_defs, list):
             from src.core.application.metadata.schema_inferer import map_type_name_to_polars
@@ -832,7 +837,9 @@ class ExecutionWorker:
             file_format=fmt,
             chunk_size=plan.default_chunk_size,
             columns=projected,
-            schema_overrides=schema_overrides
+            schema_overrides=schema_overrides,
+            delimiter=delimiter,
+            encoding=encoding
         ):
             token.check_cancelled()
 

@@ -50,6 +50,8 @@ class LogicalScan(LogicalOperator):
     schema_definitions: Optional[List[Dict[str, Any]]] = None
     enable_duckdb_view: bool = False
     duckdb_query: Optional[str] = None
+    delimiter: Optional[str] = None
+    encoding: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         res = super().to_dict()
@@ -65,7 +67,9 @@ class LogicalScan(LogicalOperator):
             "is_iterative": self.is_iterative,
             "parameter_tokens": self.parameter_tokens,
             "enable_duckdb_view": self.enable_duckdb_view,
-            "duckdb_query": self.duckdb_query
+            "duckdb_query": self.duckdb_query,
+            "delimiter": self.delimiter,
+            "encoding": self.encoding
         })
         if self.raw_config and "masking_rules" in self.raw_config:
             res["masking_rules"] = self.raw_config["masking_rules"]
