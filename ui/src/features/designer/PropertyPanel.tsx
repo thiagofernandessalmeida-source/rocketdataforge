@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import { ConnectionEntry, ContextVariable, SchemaColumn, Environment, QueryEntry, QueryDialect, ConnectionType } from "../../store/jobStore";
 import { SqlAutocompleteTextarea, AutocompleteSource } from "../../components/common/SqlAutocompleteTextarea";
+import { extractNodeSchema } from "./utils/nodeSchemaUtils";
 
 export interface PropertyPanelProps {
   selectedNode: Node<CanvasNodeData> | null;
@@ -578,12 +579,13 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
     // 1. Nós upstream diretos (conectados por edge de entrada)
     upstreamNodes.forEach((un) => {
       addedIds.add(un.id);
+      const incomingEdge = incomingEdges.find((e) => e.source === un.id);
       const flows = incomingEdges
         .filter((e) => e.source === un.id)
         .map((e) => e.data?.flowName || (typeof e.label === "string" ? e.label : "") || e.id)
         .filter(Boolean);
 
-      const unSchema = ((un.data as any).schema || []) as SchemaColumn[];
+      const unSchema = extractNodeSchema(un, incomingEdge, selectedNodeId);
       list.push({
         id: un.id,
         label: un.data.label || un.id,
@@ -836,8 +838,25 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
     })
     .filter((d) => Boolean(d.targetId));
 
-  const upstreamSchema: SchemaColumn[] = (upstreamNodes[0]?.data as any)?.schema || [];
-  const upstreamNodeLabel = upstreamNodes[0]?.data?.label || upstreamNodes[0]?.id || "";
+  const upstreamSchema: SchemaColumn[] = React.useMemo(() => {
+    const un = upstreamNodes[0];
+    if (!un) return [];
+    const incomingEdge = incomingEdges.find((e) => e.source === un.id) || incomingEdges[0];
+    return extractNodeSchema(un, incomingEdge, selectedNodeId);
+  }, [upstreamNodes, incomingEdges, selectedNodeId]);
+
+  const upstreamNodeLabel = React.useMemo(() => {
+    const un = upstreamNodes[0];
+    if (!un) return "";
+    const baseLabel = un.data?.label || un.id;
+    const unCt = un.data?.componentType || "";
+    if (unCt === "core.tmap" || unCt === "transform.tmap") {
+      const incomingEdge = incomingEdges.find((e) => e.source === un.id) || incomingEdges[0];
+      const flow = incomingEdge?.data?.flowName || (typeof incomingEdge?.label === "string" ? incomingEdge.label : "") || incomingEdge?.sourceHandle;
+      return flow ? `${baseLabel} (${flow})` : baseLabel;
+    }
+    return baseLabel;
+  }, [upstreamNodes, incomingEdges]);
 
   // Detect connector family
   const isFileSource = ct.includes("file.source");

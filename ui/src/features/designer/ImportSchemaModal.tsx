@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { SchemaColumn, jobStore } from "../../store/jobStore";
 import { resolveSchemaCollisions, CollisionStrategy, generateColumnId } from "../../utils/schemaClipboard";
+import { getTMapOutputSchemas } from "./utils/nodeSchemaUtils";
 
 export interface ImportSchemaModalProps {
   isOpen: boolean;
@@ -68,22 +69,37 @@ export const ImportSchemaModal: React.FC<ImportSchemaModalProps> = ({
       for (const node of cell.nodes || []) {
         if (node.id === excludeNodeId) continue;
 
-        let nodeSchema: SchemaColumn[] = [];
-        if (Array.isArray((node.data as any)?.schema) && (node.data as any).schema.length > 0) {
-          nodeSchema = (node.data as any).schema;
-        } else if (cellSchemas[node.id] && cellSchemas[node.id].length > 0) {
-          nodeSchema = cellSchemas[node.id];
-        }
+        // Suporte especial a componentes com múltiplos fluxos de saída (ex: Data Mapper / tMap)
+        const tmapOutputs = getTMapOutputSchemas(node as any);
+        if (tmapOutputs.length > 0) {
+          for (const out of tmapOutputs) {
+            cellComponents.push({
+              cellId: cell.id,
+              cellName: cell.name || `Célula ${cell.order}`,
+              nodeId: `${node.id}::${out.outputId}`,
+              nodeLabel: `${(node.data as any)?.label || node.id} (${out.outputName})`,
+              componentType: "Data Mapper (Saída)",
+              schema: out.schema,
+            });
+          }
+        } else {
+          let nodeSchema: SchemaColumn[] = [];
+          if (Array.isArray((node.data as any)?.schema) && (node.data as any).schema.length > 0) {
+            nodeSchema = (node.data as any).schema;
+          } else if (cellSchemas[node.id] && cellSchemas[node.id].length > 0) {
+            nodeSchema = cellSchemas[node.id];
+          }
 
-        if (nodeSchema.length > 0) {
-          cellComponents.push({
-            cellId: cell.id,
-            cellName: cell.name || `Célula ${cell.order}`,
-            nodeId: node.id,
-            nodeLabel: (node.data as any)?.label || node.id,
-            componentType: (node.data as any)?.componentType || (node.data as any)?.type || "Component",
-            schema: nodeSchema
-          });
+          if (nodeSchema.length > 0) {
+            cellComponents.push({
+              cellId: cell.id,
+              cellName: cell.name || `Célula ${cell.order}`,
+              nodeId: node.id,
+              nodeLabel: (node.data as any)?.label || node.id,
+              componentType: (node.data as any)?.componentType || (node.data as any)?.type || "Component",
+              schema: nodeSchema
+            });
+          }
         }
       }
 
@@ -98,6 +114,16 @@ export const ImportSchemaModal: React.FC<ImportSchemaModalProps> = ({
 
     return grouped;
   }, [excludeNodeId]);
+
+  // Filtragem de colunas no Passo 2 (declarado incondicionalmente no topo conforme as Regras de Hooks)
+  const filteredColumns = useMemo(() => {
+    if (!selectedComponent) return [];
+    if (!colSearchQuery.trim()) return selectedComponent.schema;
+    const q = colSearchQuery.toLowerCase();
+    return selectedComponent.schema.filter(
+      c => c.name.toLowerCase().includes(q) || c.type.toLowerCase().includes(q)
+    );
+  }, [selectedComponent, colSearchQuery]);
 
   if (!isOpen) return null;
 
@@ -142,16 +168,6 @@ export const ImportSchemaModal: React.FC<ImportSchemaModalProps> = ({
     onImport(merged);
     onClose();
   };
-
-  // Filtragem de colunas no Passo 2
-  const filteredColumns = useMemo(() => {
-    if (!selectedComponent) return [];
-    if (!colSearchQuery.trim()) return selectedComponent.schema;
-    const q = colSearchQuery.toLowerCase();
-    return selectedComponent.schema.filter(
-      c => c.name.toLowerCase().includes(q) || c.type.toLowerCase().includes(q)
-    );
-  }, [selectedComponent, colSearchQuery]);
 
   const modalContent = (
     <div
