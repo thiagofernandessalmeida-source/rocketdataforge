@@ -816,7 +816,19 @@ export const SqlAutocompleteTextarea: React.FC<SqlAutocompleteTextareaProps> = (
           position: "relative",
           flex: 1,
           overflow: "hidden",
-          minHeight: isModal ? 480 : Math.max(160, (Number(baseHeight) || 240) - 75),
+          minHeight: isModal
+            ? 480
+            : style?.minHeight
+            ? typeof style.minHeight === "number"
+              ? style.minHeight
+              : parseInt(String(style.minHeight), 10) || 240
+            : Math.max(160, (Number(baseHeight) || 240) - 75),
+          cursor: "text",
+        }}
+        onClick={(e) => {
+          if (e.target !== textareaRef.current) {
+            textareaRef.current?.focus();
+          }
         }}
       >
         {/* Régua de Números de Linha */}
@@ -835,7 +847,9 @@ export const SqlAutocompleteTextarea: React.FC<SqlAutocompleteTextareaProps> = (
             color: "#475569",
             userSelect: "none",
             overflow: "hidden",
+            cursor: "text",
           }}
+          onClick={() => textareaRef.current?.focus()}
         >
           {lines.map((_, i) => (
             <div key={i}>{i + 1}</div>
@@ -843,7 +857,21 @@ export const SqlAutocompleteTextarea: React.FC<SqlAutocompleteTextareaProps> = (
         </div>
 
         {/* Canvas de Código com Destaque de Sintaxe e Textarea Transparente */}
-        <div style={{ position: "relative", flex: 1, height: "100%", overflow: "hidden" }}>
+        <div
+          style={{
+            position: "relative",
+            flex: 1,
+            alignSelf: "stretch",
+            minHeight: 0,
+            overflow: "hidden",
+            cursor: "text",
+          }}
+          onClick={(e) => {
+            if (e.target !== textareaRef.current) {
+              textareaRef.current?.focus();
+            }
+          }}
+        >
           {/* Camada Colorida (Visual de Sintaxe) */}
           <div
             ref={highlightRef}
