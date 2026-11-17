@@ -438,6 +438,7 @@ class LogicalPlanner:
                 data_action=cfg.get("data_action", "insert"),
                 keys=cfg.get("keys", []),
                 input_ids=input_ids,
+                connection_ref=cfg.get("connection_ref", ""),
                 connection_details=cfg.get("connection_details"),
                 raw_config=cfg
             )
@@ -447,7 +448,12 @@ class LogicalPlanner:
             component_type in ("core.database.target", "connector.db.postgresql.output")
             or (component_type.startswith("connector.db.") and component_type.endswith(".output"))
         ):
-            fmt = "postgres" if "postgres" in component_type else "db"
+            if "postgres" in component_type:
+                fmt = "postgres"
+            elif "oracle" in component_type:
+                fmt = "oracle"
+            else:
+                fmt = "db"
             tbl_name = str(cfg.get("table") or cfg.get("target") or "").strip()
             return LogicalSink(
                 id=node_id,
@@ -458,6 +464,7 @@ class LogicalPlanner:
                 data_action=cfg.get("data_action", "insert"),
                 keys=cfg.get("keys", []),
                 input_ids=input_ids,
+                connection_ref=cfg.get("connection_ref", ""),
                 connection_details=cfg.get("connection_details"),
                 raw_config=cfg
             )
@@ -472,6 +479,7 @@ class LogicalPlanner:
                 format=fmt,
                 write_mode=cfg.get("write_mode", "append"),
                 input_ids=input_ids,
+                connection_ref=cfg.get("connection_ref", ""),
                 connection_details=cfg.get("connection_details"),
                 raw_config=cfg
             )

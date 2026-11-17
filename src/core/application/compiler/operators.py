@@ -327,12 +327,14 @@ class LogicalSink(LogicalOperator):
     table_action: str = "none"  # "none", "drop_create", "create_if_not_exists", "drop_if_exists_create", "truncate", "delete_all"
     data_action: str = "insert"  # "insert", "update", "upsert", "update_or_insert", "delete"
     keys: List[str] = field(default_factory=list)
+    connection_ref: str = ""
     connection_details: Optional[Dict[str, Any]] = None
     raw_config: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         res = super().to_dict()
         tbl_ref = self.target_ref or (self.raw_config or {}).get("table") or (self.raw_config or {}).get("target") or ""
+        conn_ref = self.connection_ref or (self.raw_config or {}).get("connection_ref") or ""
         res.update({
             "target": tbl_ref,
             "format": self.format,
@@ -340,6 +342,7 @@ class LogicalSink(LogicalOperator):
             "table_action": self.table_action,
             "data_action": self.data_action,
             "keys": self.keys,
+            "connection_ref": conn_ref,
             "connection_details": self.connection_details,
             "raw_config": self.raw_config,
             "database_path": (self.raw_config or {}).get("database_path") or (self.raw_config or {}).get("database")

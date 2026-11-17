@@ -161,11 +161,11 @@ class ConnectionPoolManager:
         safe_password = quote_plus(raw_password)
 
         endpoint = connection.endpoint.strip()
-        port = 5432
+        port = int(connection.options.get("port") or 5432)
         if "/" in endpoint:
             host_port, dbname = endpoint.split("/", 1)
         else:
-            host_port, dbname = endpoint, "postgres"
+            host_port, dbname = endpoint, connection.options.get("database") or connection.options.get("dbname") or "postgres"
 
         if ":" in host_port:
             host, port_str = host_port.split(":", 1)
@@ -173,8 +173,8 @@ class ConnectionPoolManager:
         else:
             host = host_port
 
-        user = connection.options.get("user", "postgres")
-        sslmode = connection.options.get("ssl_mode", "prefer")
+        user = connection.options.get("user") or connection.options.get("username") or "postgres"
+        sslmode = connection.options.get("ssl_mode") or connection.options.get("sslMode") or connection.options.get("sslmode") or "prefer"
 
         return (
             f"dbname='{dbname}' "
@@ -193,7 +193,9 @@ class ConnectionPoolManager:
 
     def _get_or_create_postgres_pool(self, connection: Connection) -> PostgresConnectionPool:
         """Obtém ou instancia o pool dedicado para a conexão especificada."""
-        pool_key = f"{connection.id}:{connection.endpoint}:{connection.options.get('user', '')}"
+        user = connection.options.get("user") or connection.options.get("username") or ""
+        dbname = connection.options.get("database") or connection.options.get("dbname") or ""
+        pool_key = f"{connection.id}:{connection.endpoint}:{user}:{dbname}"
         with self._lock:
             if pool_key not in self._postgres_pools:
                 def factory():

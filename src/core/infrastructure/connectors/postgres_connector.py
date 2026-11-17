@@ -47,11 +47,11 @@ class PostgresConnector:
         endpoint = connection.endpoint.strip()
 
         # Parse simplificado do endpoint: host:port/database ou host/database
-        port = 5432
+        port = int(connection.options.get("port") or 5432)
         if "/" in endpoint:
             host_port, dbname = endpoint.split("/", 1)
         else:
-            host_port, dbname = endpoint, "postgres"
+            host_port, dbname = endpoint, connection.options.get("database") or connection.options.get("dbname") or "postgres"
 
         if ":" in host_port:
             host, port_str = host_port.split(":", 1)
@@ -59,8 +59,8 @@ class PostgresConnector:
         else:
             host = host_port
 
-        user = connection.options.get("user", "postgres")
-        sslmode = connection.options.get("ssl_mode", "prefer")
+        user = connection.options.get("user") or connection.options.get("username") or "postgres"
+        sslmode = connection.options.get("ssl_mode") or connection.options.get("sslMode") or connection.options.get("sslmode") or "prefer"
 
         # Usa formato libpq keyword=value — mais robusto que URI-style para senhas com chars especiais.
         return (
@@ -82,11 +82,11 @@ class PostgresConnector:
         safe_password = quote_plus(raw_password)
         endpoint = connection.endpoint.strip()
 
-        port = 5432
+        port = int(connection.options.get("port") or 5432)
         if "/" in endpoint:
             host_port, dbname = endpoint.split("/", 1)
         else:
-            host_port, dbname = endpoint, "postgres"
+            host_port, dbname = endpoint, connection.options.get("database") or connection.options.get("dbname") or "postgres"
 
         if ":" in host_port:
             host, port_str = host_port.split(":", 1)
@@ -94,8 +94,9 @@ class PostgresConnector:
         else:
             host = host_port
 
-        user = quote_plus(connection.options.get("user", "postgres"))
-        sslmode = connection.options.get("ssl_mode", "prefer")
+        raw_user = connection.options.get("user") or connection.options.get("username") or "postgres"
+        user = quote_plus(raw_user)
+        sslmode = connection.options.get("ssl_mode") or connection.options.get("sslMode") or connection.options.get("sslmode") or "prefer"
 
         return f"postgresql+psycopg2://{user}:{safe_password}@{host}:{port}/{dbname}?sslmode={sslmode}"
 

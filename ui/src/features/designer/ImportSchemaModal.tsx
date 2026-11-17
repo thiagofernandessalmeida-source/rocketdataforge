@@ -277,13 +277,12 @@ export const ImportSchemaModal: React.FC<ImportSchemaModalProps> = ({
         >
           {/* Passo 1 */}
           <div
-            className={`py-3 transition-colors ${
-              step === 1
+            className={`py-3 transition-colors ${step === 1
                 ? "text-cyan-400 bg-cyan-500/10 border-b-2 border-cyan-400 font-semibold"
                 : step > 1
-                ? "text-slate-300 border-b-2 border-slate-700"
-                : "text-slate-500 border-b-2 border-transparent"
-            }`}
+                  ? "text-slate-300 border-b-2 border-slate-700"
+                  : "text-slate-500 border-b-2 border-transparent"
+              }`}
             style={{
               padding: "10px 12px",
               display: "flex",
@@ -316,13 +315,12 @@ export const ImportSchemaModal: React.FC<ImportSchemaModalProps> = ({
 
           {/* Passo 2 */}
           <div
-            className={`py-3 transition-colors ${
-              step === 2
+            className={`py-3 transition-colors ${step === 2
                 ? "text-cyan-400 bg-cyan-500/10 border-b-2 border-cyan-400 font-semibold"
                 : step > 2
-                ? "text-slate-300 border-b-2 border-slate-700"
-                : "text-slate-500 border-b-2 border-transparent"
-            }`}
+                  ? "text-slate-300 border-b-2 border-slate-700"
+                  : "text-slate-500 border-b-2 border-transparent"
+              }`}
             style={{
               padding: "10px 12px",
               display: "flex",
@@ -355,11 +353,10 @@ export const ImportSchemaModal: React.FC<ImportSchemaModalProps> = ({
 
           {/* Passo 3 */}
           <div
-            className={`py-3 transition-colors ${
-              step === 3
+            className={`py-3 transition-colors ${step === 3
                 ? "text-cyan-400 bg-cyan-500/10 border-b-2 border-cyan-400 font-semibold"
                 : "text-slate-500 border-b-2 border-transparent"
-            }`}
+              }`}
             style={{
               padding: "10px 12px",
               display: "flex",

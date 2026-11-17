@@ -319,6 +319,20 @@ class ExecutionWorker:
             if k.lower() not in FORBIDDEN_PLAINTEXT_KEYS and k.lower() not in ("secretkey", "accesskey", "secret_key")
         }
 
+        # Normaliza opções específicas para PostgreSQL para compatibilidade com libpq DSN e pool
+        if connector_type in ("postgres", "postgresql"):
+            host = conn_details.get("host") or raw_cfg.get("host")
+            port = conn_details.get("port") or raw_cfg.get("port") or 5432
+            database = conn_details.get("database") or conn_details.get("dbname") or raw_cfg.get("database")
+            if host and database and "/" not in str(endpoint):
+                endpoint = f"{host}:{port}/{database}"
+            if "username" in conn_details and "user" not in safe_options:
+                safe_options["user"] = conn_details["username"]
+            if "sslMode" in conn_details and "ssl_mode" not in safe_options:
+                safe_options["ssl_mode"] = conn_details["sslMode"]
+            if "database" in conn_details and "database" not in safe_options:
+                safe_options["database"] = conn_details["database"]
+
         return Connection(
             id=f"conn_{connector_type}",
             project_id="proj_default",
@@ -1231,6 +1245,9 @@ class ExecutionWorker:
         node_buffers[f"{phys_op.id}:main"] = input_chunks
         node_buffers[f"{phys_op.id}.main"] = input_chunks
 
+        # Configurações brutas do nó (raw_config)
+        raw_cfg = cfg.get("raw_config") or {}
+
         # Filtra e projeta as colunas definidas no schema do componente (projeção e tipagem explícitas)
         schema_cols = cfg.get("schema_columns") or []
         schema_defs = cfg.get("schema_definitions") or []
@@ -1267,9 +1284,9 @@ class ExecutionWorker:
 
         # Destino DuckDB
         if fmt == "duckdb":
-            raw_cfg = cfg.get("raw_config") or {}
             conn_details = cfg.get("connection_details") or {}
-            ref_path = cfg.get("connection_ref") if (cfg.get("connection_ref") and (cfg.get("connection_ref") == ":memory:" or str(cfg.get("connection_ref")).endswith(".duckdb") or str(cfg.get("connection_ref")).endswith(".db"))) else None
+            ref_path = cfg.get("connection_ref") or raw_cfg.get("connection_ref")
+            ref_path = ref_path if (ref_path and (ref_path == ":memory:" or str(ref_path).endswith(".duckdb") or str(ref_path).endswith(".db"))) else None
             
             # Prioridade explícita para o caminho/nome de arquivo digitado pelo usuário no componente:
             raw_db_path = (
@@ -1323,7 +1340,8 @@ class ExecutionWorker:
         # Destino PostgreSQL com Ação de Tabela e Dados
         if fmt in ("postgres", "postgresql", "db"):
             conn_details = cfg.get("connection_details") or {}
-            if conn_details or cfg.get("connection_ref"):
+            conn_ref = cfg.get("connection_ref") or raw_cfg.get("connection_ref")
+            if conn_details or conn_ref:
                 table = (
                     (raw_cfg.get("table") or "").strip()
                     or (raw_cfg.get("target") or "").strip()
@@ -1331,11 +1349,11 @@ class ExecutionWorker:
                     or (cfg.get("target") or "").strip()
                     or "output_table"
                 )
-                table_act = cfg.get("table_action", "none")
-                data_act = cfg.get("data_action", "insert")
-                keys = cfg.get("keys", [])
-                use_batch = bool(cfg.get("use_batch_mode", True))
-                batch_sz = int(cfg.get("batch_size") or 10000)
+                table_act = raw_cfg.get("table_action") or cfg.get("table_action", "none")
+                data_act = raw_cfg.get("data_action") or cfg.get("data_action", "insert")
+                keys = raw_cfg.get("keys") or cfg.get("keys", [])
+                use_batch = bool(raw_cfg.get("use_batch_mode", cfg.get("use_batch_mode", True)))
+                batch_sz = int(raw_cfg.get("batch_size") or cfg.get("batch_size") or 10000)
 
                 conn = self._build_connection_from_cfg(cfg, "postgres")
                 from src.core.infrastructure.connectors.postgres_connector import PostgresConnector
@@ -1359,11 +1377,16 @@ class ExecutionWorker:
                     task.record_progress(rows_in_increment=chunk.height, rows_out_increment=written)
                 logger.info(f"Nó PostgreSQL sink '{phys_op.id}': {total} linhas gravadas na tabela '{table}' (Batch Mode: {use_batch}, Lote: {batch_sz}).")
                 return
+            else:
+                raise DomainValidationError(
+                    f"Nó '{phys_op.id}': Conexão PostgreSQL não configurada. Defina 'connection_ref' ou informe 'connection_details'."
+                )
 
         # Destino Oracle Database
         if fmt == "oracle":
             conn_details = cfg.get("connection_details") or {}
-            if conn_details or cfg.get("connection_ref"):
+            conn_ref = cfg.get("connection_ref") or raw_cfg.get("connection_ref")
+            if conn_details or conn_ref:
                 table = (
                     (raw_cfg.get("table") or "").strip()
                     or (raw_cfg.get("target") or "").strip()
@@ -1371,11 +1394,11 @@ class ExecutionWorker:
                     or (cfg.get("target") or "").strip()
                     or "output_table"
                 )
-                table_act = cfg.get("table_action", "none")
-                data_act = cfg.get("data_action", "insert")
-                keys = cfg.get("keys", [])
-                use_batch = bool(cfg.get("use_batch_mode", True))
-                batch_sz = int(cfg.get("batch_size") or 10000)
+                table_act = raw_cfg.get("table_action") or cfg.get("table_action", "none")
+                data_act = raw_cfg.get("data_action") or cfg.get("data_action", "insert")
+                keys = raw_cfg.get("keys") or cfg.get("keys", [])
+                use_batch = bool(raw_cfg.get("use_batch_mode", cfg.get("use_batch_mode", True)))
+                batch_sz = int(raw_cfg.get("batch_size") or cfg.get("batch_size") or 10000)
 
                 total = 0
                 for idx, chunk in enumerate(input_chunks):
@@ -1395,6 +1418,10 @@ class ExecutionWorker:
                     task.record_progress(rows_in_increment=chunk.height, rows_out_increment=written)
                 logger.info(f"Nó Oracle sink '{phys_op.id}': {total} linhas gravadas na tabela '{table}' (Batch Mode: {use_batch}, Lote: {batch_sz}).")
                 return
+            else:
+                raise DomainValidationError(
+                    f"Nó '{phys_op.id}': Conexão Oracle não configurada. Defina 'connection_ref' ou informe 'connection_details'."
+                )
 
         if fmt == "scylla":
             conn = self._build_connection_from_cfg(cfg, "scylla")
