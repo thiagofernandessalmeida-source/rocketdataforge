@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { Terminal, Pin, ArrowDownLeft } from "lucide-react";
 import { executionLogStore } from "../../store/executionLogStore";
 import { LogViewerContent } from "./LogViewerContent";
+import { zoomIn, zoomOut, resetZoom } from "../../utils/uiZoom";
 
 export const StandaloneLogWindow: React.FC = () => {
   const [alwaysOnTop, setAlwaysOnTopState] = useState<boolean>(false);
@@ -36,7 +37,27 @@ export const StandaloneLogWindow: React.FC = () => {
     logsApi.ready?.();
     logsApi.requestSnapshot?.();
 
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isInput =
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement;
+      if (isInput) return;
+
+      if ((e.ctrlKey || e.metaKey) && (e.key === "=" || e.key === "+" || e.code === "NumpadAdd" || e.code === "Equal")) {
+        e.preventDefault();
+        zoomIn();
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === "-" || e.code === "NumpadSubtract" || e.code === "Minus")) {
+        e.preventDefault();
+        zoomOut();
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === "0" || e.code === "Numpad0" || e.code === "Digit0")) {
+        e.preventDefault();
+        resetZoom();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+
     return () => {
+      window.removeEventListener("keydown", handleKeyDown);
       unsubChunk?.();
       unsubAppend?.();
       unsubClear?.();

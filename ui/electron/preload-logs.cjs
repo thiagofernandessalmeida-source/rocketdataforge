@@ -50,3 +50,13 @@ contextBridge.exposeInMainWorld("cellflowLogs", {
   ready: () => ipcRenderer.send("logs:window-ready"),
 });
 
+contextBridge.exposeInMainWorld("cellflowZoom", {
+  get: () => ipcRenderer.invoke("zoom:get"),
+  set: (factor) => ipcRenderer.invoke("zoom:set", factor),
+  onChange: (callback) => {
+    const handler = (_event, factor) => callback(factor);
+    ipcRenderer.on("zoom:changed", handler);
+    return () => ipcRenderer.removeListener("zoom:changed", handler);
+  },
+});
+

@@ -35,6 +35,8 @@ import {
   Undo2,
   Redo2,
   ClipboardPaste,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import { jobStore } from "../store/jobStore";
 
@@ -92,6 +94,10 @@ export interface MenuBarProps {
   onPasteNode?: () => void;
   canPaste?: boolean;
   hasSelectedNode?: boolean;
+  onZoomIn?: () => void;
+  onZoomOut?: () => void;
+  onZoomReset?: () => void;
+  uiZoomPercent?: number;
 }
 
 type MenuKey = "arquivo" | "editar" | "execucao" | "celulas" | "ferramentas" | "exibir" | "ajuda" | null;
@@ -148,6 +154,10 @@ export const MenuBar: React.FC<MenuBarProps> = ({
   onPasteNode,
   canPaste,
   hasSelectedNode,
+  onZoomIn,
+  onZoomOut,
+  onZoomReset,
+  uiZoomPercent,
 }) => {
   const [openMenu, setOpenMenu] = useState<MenuKey>(null);
   const barRef = useRef<HTMLDivElement>(null);
@@ -659,6 +669,37 @@ export const MenuBar: React.FC<MenuBarProps> = ({
                 <ArrowUpDown size={14} color="#3b82f6" />
                 <span className="entry-label">Auto-Layout: Vertical (Todas as Células)</span>
               </button>
+              <div className="dropdown-divider" />
+              <button
+                type="button"
+                className="dropdown-entry"
+                onClick={() => onZoomIn && closeAndRun(onZoomIn)}
+                title="Aumentar zoom da interface (Ctrl+= ou Ctrl++)"
+              >
+                <ZoomIn size={14} color="#38bdf8" />
+                <span className="entry-label">Aumentar zoom da interface</span>
+                <span className="shortcut-hint">Ctrl+=</span>
+              </button>
+              <button
+                type="button"
+                className="dropdown-entry"
+                onClick={() => onZoomOut && closeAndRun(onZoomOut)}
+                title="Diminuir zoom da interface (Ctrl+-)"
+              >
+                <ZoomOut size={14} color="#38bdf8" />
+                <span className="entry-label">Diminuir zoom da interface</span>
+                <span className="shortcut-hint">Ctrl+-</span>
+              </button>
+              <button
+                type="button"
+                className="dropdown-entry"
+                onClick={() => onZoomReset && closeAndRun(onZoomReset)}
+                title="Redefinir zoom da interface para 100% (Ctrl+0)"
+              >
+                <RotateCcw size={14} color="#94a3b8" />
+                <span className="entry-label">Zoom padrão (100%)</span>
+                <span className="shortcut-hint">{uiZoomPercent ? `${uiZoomPercent}% (Ctrl+0)` : "Ctrl+0"}</span>
+              </button>
             </div>
           )}
         </div>
@@ -686,6 +727,33 @@ export const MenuBar: React.FC<MenuBarProps> = ({
             </div>
           )}
         </div>
+
+        {uiZoomPercent !== undefined && (
+          <button
+            type="button"
+            className="menubar-zoom-pill"
+            onClick={onZoomReset}
+            title={`Zoom da interface: ${uiZoomPercent}%. Clique para redefinir para 100% (Ctrl+0)`}
+            style={{
+              background: uiZoomPercent === 100 ? "rgba(255, 255, 255, 0.04)" : "rgba(56, 189, 248, 0.15)",
+              border: uiZoomPercent === 100 ? "1px solid rgba(255, 255, 255, 0.08)" : "1px solid rgba(56, 189, 248, 0.4)",
+              color: uiZoomPercent === 100 ? "var(--text-muted, #94a3b8)" : "#38bdf8",
+              borderRadius: 12,
+              padding: "2px 8px",
+              fontSize: "0.72rem",
+              fontWeight: 600,
+              cursor: "pointer",
+              marginLeft: 8,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              transition: "all 0.15s ease",
+            }}
+          >
+            <ZoomIn size={11} />
+            <span>{uiZoomPercent}%</span>
+          </button>
+        )}
       </div>
 
       {/* Right side — Quick Context & Reset Status Quick Access */}

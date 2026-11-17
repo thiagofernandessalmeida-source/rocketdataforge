@@ -40,6 +40,13 @@ import { LogFloatingWindow } from "./features/execution/LogFloatingWindow";
 import { EXPANDED_CATALOG } from "./catalog/components";
 import { getLayoutedElements, LayoutDirection } from "./features/designer/utils/autoLayout";
 import {
+  zoomIn,
+  zoomOut,
+  resetZoom,
+  getCurrentPercent,
+  subscribeZoom,
+} from "./utils/uiZoom";
+import {
   jobStore,
   JobData,
   SchemaColumn,
@@ -449,6 +456,13 @@ export const App: React.FC = () => {
   const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceInfo | null>(null);
   const [floatingNode, setFloatingNode] = useState<Node<CanvasNodeData> | null>(null);
   const [tmapModalNode, setTmapModalNode] = useState<Node<CanvasNodeData> | null>(null);
+  const [uiZoomPercent, setUiZoomPercent] = useState<number>(() => getCurrentPercent());
+
+  useEffect(() => {
+    return subscribeZoom((factor) => {
+      setUiZoomPercent(Math.round(factor * 100));
+    });
+  }, []);
 
   const isTMapNode = useCallback((node: Node<CanvasNodeData> | null) => {
     if (!node) return false;
@@ -1000,6 +1014,33 @@ export const App: React.FC = () => {
           }
         }
         return;
+      }
+
+      // Zoom In (Ctrl+= ou Ctrl++)
+      if ((e.ctrlKey || e.metaKey) && (e.key === "=" || e.key === "+" || e.code === "NumpadAdd" || e.code === "Equal")) {
+        if (!isInput) {
+          e.preventDefault();
+          zoomIn();
+          return;
+        }
+      }
+
+      // Zoom Out (Ctrl+-)
+      if ((e.ctrlKey || e.metaKey) && (e.key === "-" || e.code === "NumpadSubtract" || e.code === "Minus")) {
+        if (!isInput) {
+          e.preventDefault();
+          zoomOut();
+          return;
+        }
+      }
+
+      // Zoom Padrão (Ctrl+0)
+      if ((e.ctrlKey || e.metaKey) && (e.key === "0" || e.code === "Numpad0" || e.code === "Digit0")) {
+        if (!isInput) {
+          e.preventDefault();
+          resetZoom();
+          return;
+        }
       }
     };
 
@@ -2468,6 +2509,10 @@ export const App: React.FC = () => {
         onPasteNode={handlePasteNode}
         canPaste={jobStore.hasClipboardNodes()}
         hasSelectedNode={Boolean(selectedNode)}
+        onZoomIn={zoomIn}
+        onZoomOut={zoomOut}
+        onZoomReset={resetZoom}
+        uiZoomPercent={uiZoomPercent}
       />
 
       <div className="studio-body">

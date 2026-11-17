@@ -270,6 +270,12 @@ async function createMainWindow() {
     return { action: "deny" };
   });
 
+  mainWindow.webContents.on("did-finish-load", () => {
+    try {
+      mainWindow.webContents.setZoomFactor(currentZoomFactor);
+    } catch (_) {}
+  });
+
   const isDevFlag = process.argv.includes("--dev");
   const isDevRunning = await checkDevServer();
 
@@ -298,6 +304,36 @@ async function createMainWindow() {
 }
 
 const getLogBoundsPath = () => path.join(app.getPath("userData"), "log-window-bounds.json");
+const getSettingsPath = () => path.join(app.getPath("userData"), "settings.json");
+
+function getSavedZoom() {
+  try {
+    const p = getSettingsPath();
+    if (fs.existsSync(p)) {
+      const data = JSON.parse(fs.readFileSync(p, "utf-8"));
+      if (typeof data.zoomFactor === "number" && !isNaN(data.zoomFactor)) {
+        return Math.min(2.0, Math.max(0.5, Math.round(data.zoomFactor * 100) / 100));
+      }
+    }
+  } catch (_) {}
+  return 1.0;
+}
+
+function saveZoom(factor) {
+  try {
+    const p = getSettingsPath();
+    let settings = {};
+    if (fs.existsSync(p)) {
+      try {
+        settings = JSON.parse(fs.readFileSync(p, "utf-8")) || {};
+      } catch (_) {}
+    }
+    settings.zoomFactor = factor;
+    fs.writeFileSync(p, JSON.stringify(settings, null, 2));
+  } catch (_) {}
+}
+
+let currentZoomFactor = 1.0;
 
 /**
  * Cria ou foca a Janela Nativa de Logs independente no Electron (Fase 3).
@@ -357,6 +393,12 @@ async function detachLogWindow() {
   logWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: "deny" };
+  });
+
+  logWindow.webContents.on("did-finish-load", () => {
+    try {
+      logWindow.webContents.setZoomFactor(currentZoomFactor);
+    } catch (_) {}
   });
 
   logWindow.on("closed", () => {
@@ -454,8 +496,37 @@ ipcMain.on("logs:focus-node", (_event, data) => {
   }
 });
 
+// ─── IPC Handlers de Zoom Geral da Interface (Tarefa 3) ────
+ipcMain.handle("zoom:get", () => {
+  return currentZoomFactor;
+});
+
+ipcMain.handle("zoom:set", (_event, rawFactor) => {
+  if (typeof rawFactor !== "number" || isNaN(rawFactor)) {
+    return currentZoomFactor;
+  }
+  const factor = Math.min(2.0, Math.max(0.5, Math.round(rawFactor * 100) / 100));
+  currentZoomFactor = factor;
+  saveZoom(factor);
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.webContents.setZoomFactor(factor);
+      mainWindow.webContents.send("zoom:changed", factor);
+    } catch (_) {}
+  }
+  if (logWindow && !logWindow.isDestroyed()) {
+    try {
+      logWindow.webContents.setZoomFactor(factor);
+      logWindow.webContents.send("zoom:changed", factor);
+    } catch (_) {}
+  }
+  return currentZoomFactor;
+});
+
 // Ciclo de vida da aplicação Electron
 app.whenReady().then(async () => {
+  currentZoomFactor = getSavedZoom();
   try {
     await startBackend();
   } catch (err) {
