@@ -16,6 +16,7 @@ import {
   SCHEMA_MIME_TYPE,
 } from "../../utils/schemaClipboard";
 import { ImportSchemaModal } from "./ImportSchemaModal";
+import { FloatingMenu } from "../../components/common/FloatingMenu";
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -83,25 +84,77 @@ const ColumnTypeSelect: React.FC<{
   onChange: (type: SchemaColumnType) => void;
 }> = ({ value, onChange }) => {
   const [isOpen, setIsOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const [highlightedIndex, setHighlightedIndex] = useState<number>(() =>
+    Math.max(0, COLUMN_TYPES.indexOf(value))
+  );
 
+  // Sincroniza o índice destacado quando o menu abre ou o valor muda
   useEffect(() => {
-    if (!isOpen) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setIsOpen(false);
+    if (isOpen) {
+      const idx = COLUMN_TYPES.indexOf(value);
+      setHighlightedIndex(idx >= 0 ? idx : 0);
+    }
+  }, [isOpen, value]);
+
+  const handleSelect = (t: SchemaColumnType, e?: React.SyntheticEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    onChange(t);
+    setIsOpen(false);
+  };
+
+  const handleButtonKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsOpen(true);
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsOpen((prev) => !prev);
+    }
+  };
+
+  const handleMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      e.stopPropagation();
+      setHighlightedIndex((prev) => (prev + 1) % COLUMN_TYPES.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      e.stopPropagation();
+      setHighlightedIndex((prev) => (prev - 1 + COLUMN_TYPES.length) % COLUMN_TYPES.length);
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      e.stopPropagation();
+      const selectedType = COLUMN_TYPES[highlightedIndex];
+      if (selectedType) {
+        handleSelect(selectedType);
       }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [isOpen]);
+    } else if (e.key === "Escape" || e.key === "Tab") {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsOpen(false);
+      buttonRef.current?.focus();
+    }
+  };
 
   return (
-    <div ref={containerRef} className="type-select-dropdown-container" style={{ position: "relative", width: "100%" }}>
+    <div className="type-select-dropdown-container" style={{ position: "relative", width: "100%" }}>
       <button
+        ref={buttonRef}
         type="button"
         className="schema-cell-select type-select-trigger"
-        onClick={() => setIsOpen((prev) => !prev)}
+        onClick={(e) => {
+          e.stopPropagation();
+          setIsOpen((prev) => !prev);
+        }}
+        onKeyDown={handleButtonKeyDown}
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
         style={{
           display: "flex",
           alignItems: "center",
@@ -133,31 +186,36 @@ const ColumnTypeSelect: React.FC<{
         <ChevronDown size={11} style={{ opacity: 0.6 }} />
       </button>
 
-      {isOpen && (
-        <div
-          className="type-dropdown-menu"
-          style={{
-            position: "absolute",
-            top: "calc(100% + 2px)",
-            left: 0,
-            zIndex: 9999,
-            background: "#0f172a",
-            border: "1px solid #334155",
-            borderRadius: 6,
-            boxShadow: "0 10px 25px rgba(0,0,0,0.85)",
-            padding: 4,
-            maxHeight: 220,
-            overflowY: "auto",
-            minWidth: 130,
-          }}
-        >
-          {COLUMN_TYPES.map((t) => (
+      <FloatingMenu
+        open={isOpen}
+        anchorRef={buttonRef}
+        onRequestClose={() => setIsOpen(false)}
+        matchAnchorWidth={true}
+        role="listbox"
+        ariaLabel="Tipos de coluna"
+        tabIndex={-1}
+        autoFocus={true}
+        onKeyDown={handleMenuKeyDown}
+        className="type-dropdown-menu"
+        style={{
+          background: "#0f172a",
+          border: "1px solid #334155",
+          borderRadius: 6,
+          boxShadow: "0 10px 25px rgba(0,0,0,0.85)",
+          padding: 4,
+          minWidth: 130,
+        }}
+      >
+        {COLUMN_TYPES.map((t, idx) => {
+          const isSelected = t === value;
+          const isHighlighted = idx === highlightedIndex;
+          return (
             <div
               key={t}
-              onClick={() => {
-                onChange(t);
-                setIsOpen(false);
-              }}
+              role="option"
+              aria-selected={isSelected}
+              onClick={(e) => handleSelect(t, e)}
+              onMouseEnter={() => setHighlightedIndex(idx)}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -166,14 +224,12 @@ const ColumnTypeSelect: React.FC<{
                 borderRadius: 4,
                 cursor: "pointer",
                 fontSize: "0.72rem",
-                color: t === value ? "#38bdf8" : "#f8fafc",
-                background: t === value ? "rgba(56, 189, 248, 0.18)" : "transparent",
-              }}
-              onMouseEnter={(e) => {
-                if (t !== value) e.currentTarget.style.background = "rgba(255, 255, 255, 0.08)";
-              }}
-              onMouseLeave={(e) => {
-                if (t !== value) e.currentTarget.style.background = "transparent";
+                color: isSelected ? "#38bdf8" : "#f8fafc",
+                background: isSelected
+                  ? "rgba(56, 189, 248, 0.18)"
+                  : isHighlighted
+                  ? "rgba(255, 255, 255, 0.08)"
+                  : "transparent",
               }}
             >
               <span
@@ -187,9 +243,9 @@ const ColumnTypeSelect: React.FC<{
               />
               <span>{t}</span>
             </div>
-          ))}
-        </div>
-      )}
+          );
+        })}
+      </FloatingMenu>
     </div>
   );
 };
