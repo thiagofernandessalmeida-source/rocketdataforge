@@ -123,3 +123,120 @@ def test_postgres_execute_query_chunks_named_cursor_not_reused(monkeypatch):
     assert chunks[0].height == 2
     assert named_execute_count == 1
     mock_setup_cur.execute.assert_called_once_with("SET statement_timeout = 0;")
+
+
+def test_postgres_execute_write_creates_table_with_schema_data_types(monkeypatch):
+    """Garante que execute_write utiliza os tipos definidos no schema_definitions em vez de TEXT genérico."""
+    from unittest.mock import MagicMock
+    import polars as pl
+
+    mock_conn = MagicMock()
+    mock_cur = MagicMock()
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+
+    mock_pool = MagicMock()
+    mock_pool.get_postgres_connection.return_value.__enter__.return_value = mock_conn
+
+    secret_resolver = SecretResolver(custom_env={"DW_PASS": "pass"})
+    connector = PostgresConnector(secret_resolver=secret_resolver, pool_manager=mock_pool)
+
+    conn = Connection(
+        id="conn-dw",
+        project_id="p1",
+        name="Postgres DW",
+        connector_type="postgres",
+        endpoint="localhost:5432/odsdw",
+        secret_ref=SecretReference("secret://env/DW_PASS")
+    )
+
+    df = pl.DataFrame({
+        "cd_pessoa": [188559825],
+        "cpf": ["12345678910"],
+        "validacao_01": [0],
+        "salario": [1500.50],
+        "ativo": [True],
+        "data_cadastro": ["2026-01-01"]
+    })
+
+    schema_definitions = [
+        {"name": "cd_pessoa", "type": "Integer"},
+        {"name": "cpf", "type": "String", "length": 11},
+        {"name": "validacao_01", "type": "Integer"},
+        {"name": "salario", "type": "Decimal", "precision": 10, "scale": 2},
+        {"name": "ativo", "type": "Boolean"},
+        {"name": "data_cadastro", "type": "Date"}
+    ]
+
+    connector.execute_write(
+        connection=conn,
+        table_name="public.migra_1_atendentes",
+        df=df,
+        table_action="create_if_not_exists",
+        schema_definitions=schema_definitions
+    )
+
+    # Verifica chamadas cur.execute
+    create_table_calls = [
+        call_args[0][0] for call_args in mock_cur.execute.call_args_list
+        if "CREATE TABLE" in call_args[0][0]
+    ]
+    assert len(create_table_calls) == 1
+    create_sql = create_table_calls[0]
+
+    assert 'CREATE TABLE IF NOT EXISTS public.migra_1_atendentes' in create_sql
+    assert '"cd_pessoa" INTEGER' in create_sql
+    assert '"cpf" VARCHAR(11)' in create_sql
+    assert '"validacao_01" INTEGER' in create_sql
+    assert '"salario" NUMERIC(10, 2)' in create_sql
+    assert '"ativo" BOOLEAN' in create_sql
+    assert '"data_cadastro" DATE' in create_sql
+    assert '"cd_pessoa" TEXT' not in create_sql
+
+
+def test_postgres_execute_write_create_if_not_exists_with_primary_key():
+    """Garante inclusão de PRIMARY KEY quando keys é informado."""
+    from unittest.mock import MagicMock
+    import polars as pl
+
+    mock_conn = MagicMock()
+    mock_cur = MagicMock()
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+
+    mock_pool = MagicMock()
+    mock_pool.get_postgres_connection.return_value.__enter__.return_value = mock_conn
+
+    secret_resolver = SecretResolver(custom_env={"DW_PASS": "pass"})
+    connector = PostgresConnector(secret_resolver=secret_resolver, pool_manager=mock_pool)
+
+    conn = Connection(
+        id="conn-dw",
+        project_id="p1",
+        name="Postgres DW",
+        connector_type="postgres",
+        endpoint="localhost:5432/odsdw",
+        secret_ref=SecretReference("secret://env/DW_PASS")
+    )
+
+    df = pl.DataFrame({"id": [1], "name": ["Teste"]})
+    schema_definitions = [
+        {"name": "id", "type": "Integer", "isPrimaryKey": True},
+        {"name": "name", "type": "String"}
+    ]
+
+    connector.execute_write(
+        connection=conn,
+        table_name="public.users",
+        df=df,
+        table_action="drop_create",
+        keys=["id"],
+        schema_definitions=schema_definitions
+    )
+
+    create_table_calls = [
+        call_args[0][0] for call_args in mock_cur.execute.call_args_list
+        if "CREATE TABLE" in call_args[0][0]
+    ]
+    assert len(create_table_calls) == 1
+    create_sql = create_table_calls[0]
+    assert '"id" INTEGER' in create_sql
+    assert 'PRIMARY KEY ("id")' in create_sql

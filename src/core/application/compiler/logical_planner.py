@@ -433,6 +433,8 @@ class LogicalPlanner:
         # DuckDB Target Dedicado
         if component_type in ("connector.db.duckdb.output", "core.duckdb.target"):
             tbl_name = str(cfg.get("table") or cfg.get("target") or "").strip()
+            schema_defs = cfg.get("schema_definitions") or cfg.get("schema") or []
+            schema_cols = cfg.get("schema_columns") or [c.get("name") for c in schema_defs if isinstance(c, dict) and c.get("name")] or []
             return LogicalSink(
                 id=node_id,
                 target_ref=tbl_name,
@@ -444,7 +446,9 @@ class LogicalPlanner:
                 input_ids=input_ids,
                 connection_ref=cfg.get("connection_ref", ""),
                 connection_details=cfg.get("connection_details"),
-                raw_config=cfg
+                raw_config=cfg,
+                schema_definitions=schema_defs,
+                schema_columns=schema_cols
             )
 
         # Destinos de Banco de Dados (PostgreSQL, MySQL, Oracle, etc.)
@@ -459,6 +463,8 @@ class LogicalPlanner:
             else:
                 fmt = "db"
             tbl_name = str(cfg.get("table") or cfg.get("target") or "").strip()
+            schema_defs = cfg.get("schema_definitions") or cfg.get("schema") or []
+            schema_cols = cfg.get("schema_columns") or [c.get("name") for c in schema_defs if isinstance(c, dict) and c.get("name")] or []
             return LogicalSink(
                 id=node_id,
                 target_ref=tbl_name,
@@ -470,13 +476,17 @@ class LogicalPlanner:
                 input_ids=input_ids,
                 connection_ref=cfg.get("connection_ref", ""),
                 connection_details=cfg.get("connection_details"),
-                raw_config=cfg
+                raw_config=cfg,
+                schema_definitions=schema_defs,
+                schema_columns=schema_cols
             )
 
         # Destinos de Arquivo
         if component_type.startswith("core.file.target") or component_type == "core.file.target":
             fmt = cfg.get("format", "csv").lower()
             target_path = (cfg.get("path", "") or cfg.get("target", "") or "").strip().strip('"').strip("'")
+            schema_defs = cfg.get("schema_definitions") or cfg.get("schema") or []
+            schema_cols = cfg.get("schema_columns") or [c.get("name") for c in schema_defs if isinstance(c, dict) and c.get("name")] or []
             return LogicalSink(
                 id=node_id,
                 target_ref=target_path,
@@ -485,7 +495,9 @@ class LogicalPlanner:
                 input_ids=input_ids,
                 connection_ref=cfg.get("connection_ref", ""),
                 connection_details=cfg.get("connection_details"),
-                raw_config=cfg
+                raw_config=cfg,
+                schema_definitions=schema_defs,
+                schema_columns=schema_cols
             )
 
         # Fontes NoSQL & Streaming / Mensageria (ScyllaDB, Kafka, AWS SQS)
@@ -537,6 +549,8 @@ class LogicalPlanner:
             tbl = cfg.get("table", "")
             ks = cfg.get("keyspace", "")
             target_ref = f"{ks}.{tbl}" if (ks and tbl and "." not in tbl) else (tbl or cfg.get("target", ""))
+            schema_defs = cfg.get("schema_definitions") or cfg.get("schema") or []
+            schema_cols = cfg.get("schema_columns") or [c.get("name") for c in schema_defs if isinstance(c, dict) and c.get("name")] or []
             return LogicalSink(
                 id=node_id,
                 target_ref=target_ref,
@@ -544,7 +558,9 @@ class LogicalPlanner:
                 write_mode=cfg.get("write_mode", "append"),
                 input_ids=input_ids,
                 connection_details=cfg.get("connection_details"),
-                raw_config=cfg
+                raw_config=cfg,
+                schema_definitions=schema_defs,
+                schema_columns=schema_cols
             )
 
         if "kafka" in component_type and component_type.endswith(".output"):

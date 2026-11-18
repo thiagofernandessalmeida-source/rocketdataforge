@@ -334,11 +334,25 @@ class LogicalSink(LogicalOperator):
     connection_ref: str = ""
     connection_details: Optional[Dict[str, Any]] = None
     raw_config: Optional[Dict[str, Any]] = None
+    schema_definitions: Optional[List[Dict[str, Any]]] = None
+    schema_columns: Optional[List[str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         res = super().to_dict()
         tbl_ref = self.target_ref or (self.raw_config or {}).get("table") or (self.raw_config or {}).get("target") or ""
         conn_ref = self.connection_ref or (self.raw_config or {}).get("connection_ref") or ""
+        schema_defs = (
+            self.schema_definitions
+            or (self.raw_config or {}).get("schema_definitions")
+            or (self.raw_config or {}).get("schema")
+        )
+        schema_cols = (
+            self.schema_columns
+            or (self.raw_config or {}).get("schema_columns")
+        )
+        if not schema_cols and schema_defs and isinstance(schema_defs, list):
+            schema_cols = [c.get("name") for c in schema_defs if isinstance(c, dict) and c.get("name")]
+
         res.update({
             "target": tbl_ref,
             "format": self.format,
@@ -349,6 +363,8 @@ class LogicalSink(LogicalOperator):
             "connection_ref": conn_ref,
             "connection_details": self.connection_details,
             "raw_config": self.raw_config,
+            "schema_definitions": schema_defs,
+            "schema_columns": schema_cols,
             "database_path": (self.raw_config or {}).get("database_path") or (self.raw_config or {}).get("database")
         })
         if self.raw_config and "masking_rules" in self.raw_config:

@@ -17,6 +17,77 @@ from src.core.infrastructure.security.redaction import sanitize_message
 from src.core.infrastructure.security.secret_resolver import SecretResolver
 
 
+def map_col_to_oracle_ddl(
+    col_name: str,
+    col_def: Optional[Dict[str, Any]] = None,
+    polars_dtype: Optional[Any] = None
+) -> str:
+    """Mapeia o nome e a definição de uma coluna (ou dtype Polars) para a cláusula DDL do Oracle."""
+    import polars as pl
+    ora_type = None
+
+    if col_def and isinstance(col_def, dict):
+        col_type_str = str(col_def.get("type") or "").strip().lower()
+        physical_type_str = str(col_def.get("physicalType") or col_def.get("physical_type") or "").strip()
+        length = col_def.get("length")
+        precision = col_def.get("precision")
+        scale = col_def.get("scale")
+
+        if physical_type_str and physical_type_str.lower() not in ("string", "unknown", "object", ""):
+            valid_ora_prefixes = ("number", "varchar2", "char", "clob", "blob", "date", "timestamp", "raw")
+            if any(physical_type_str.lower().startswith(p) for p in valid_ora_prefixes):
+                ora_type = physical_type_str.upper()
+
+        if not ora_type and col_type_str:
+            if col_type_str in ("integer", "int", "int32", "long", "int64", "bigint", "short", "smallint", "int16", "int8", "byte", "tinyint"):
+                ora_type = "NUMBER"
+            elif col_type_str in ("double", "float64", "float", "float32", "real", "decimal", "numeric", "number"):
+                if precision is not None and scale is not None:
+                    ora_type = f"NUMBER({precision}, {scale})"
+                elif precision is not None:
+                    ora_type = f"NUMBER({precision})"
+                else:
+                    ora_type = "NUMBER"
+            elif col_type_str in ("boolean", "bool"):
+                ora_type = "NUMBER(1)"
+            elif col_type_str in ("date",):
+                ora_type = "DATE"
+            elif col_type_str in ("datetime", "timestamp"):
+                ora_type = "TIMESTAMP"
+            elif col_type_str in ("timestamp_tz", "timestamptz"):
+                ora_type = "TIMESTAMP WITH TIME ZONE"
+            elif col_type_str in ("bytes", "binary", "blob"):
+                ora_type = "BLOB"
+            elif col_type_str in ("json", "object", "array"):
+                ora_type = "CLOB"
+            elif col_type_str in ("string", "str", "varchar", "text", "char"):
+                if length and isinstance(length, int) and length > 0:
+                    ora_type = f"VARCHAR2({length})"
+                else:
+                    ora_type = "VARCHAR2(4000)"
+
+    if not ora_type and polars_dtype is not None:
+        if polars_dtype in (pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt32, pl.UInt64):
+            ora_type = "NUMBER"
+        elif polars_dtype in (pl.Float32, pl.Float64):
+            ora_type = "NUMBER"
+        elif polars_dtype == pl.Boolean:
+            ora_type = "NUMBER(1)"
+        elif polars_dtype == pl.Date:
+            ora_type = "DATE"
+        elif isinstance(polars_dtype, pl.Datetime):
+            ora_type = "TIMESTAMP"
+        elif polars_dtype == pl.Binary:
+            ora_type = "BLOB"
+        else:
+            ora_type = "VARCHAR2(4000)"
+
+    if not ora_type:
+        ora_type = "VARCHAR2(4000)"
+
+    return f'"{col_name}" {ora_type}'
+
+
 class OracleConnector:
     """Conector para Oracle Database com suporte a Thin e Thick Mode."""
 
@@ -368,7 +439,8 @@ class OracleConnector:
         keys: Optional[List[str]] = None,
         is_first_chunk: bool = True,
         use_batch_mode: bool = True,
-        batch_size: int = 10000
+        batch_size: int = 10000,
+        schema_definitions: Optional[List[Dict[str, Any]]] = None
     ) -> int:
         """Grava dados no Oracle Database (INSERT, UPDATE, UPSERT / MERGE)."""
         if df.height == 0:
@@ -382,32 +454,64 @@ class OracleConnector:
             with conn.cursor() as cur:
                 # ─── Ação de Tabela (no primeiro lote) ───
                 if is_first_chunk:
-                    if table_action == "truncate":
-                        try:
-                            cur.execute(f"TRUNCATE TABLE {table_name}")
-                        except Exception:
-                            pass
-                    elif table_action == "drop_create":
+                    schema_map = {}
+                    if schema_definitions and isinstance(schema_definitions, list):
+                        schema_map = {
+                            c.get("name"): c
+                            for c in schema_definitions
+                            if isinstance(c, dict) and c.get("name")
+                        }
+
+                    col_clauses = [
+                        map_col_to_oracle_ddl(c, schema_map.get(c), df.schema.get(c) if hasattr(df, "schema") else None)
+                        for c in df.columns
+                    ]
+
+                    effective_pks = [k for k in (keys or []) if k in df.columns]
+                    if not effective_pks:
+                        effective_pks = [
+                            c.get("name")
+                            for c in (schema_definitions or [])
+                            if isinstance(c, dict) and (c.get("isPrimaryKey") or c.get("is_primary_key")) and c.get("name") in df.columns
+                        ]
+                    if effective_pks:
+                        pk_cols = ", ".join([f'"{k}"' for k in effective_pks])
+                        col_clauses.append(f"PRIMARY KEY ({pk_cols})")
+
+                    create_sql = f'CREATE TABLE {table_name} ({", ".join(col_clauses)})'
+
+                    if table_action in ("drop_create", "drop_if_exists_create"):
                         try:
                             cur.execute(f"DROP TABLE {table_name} PURGE")
                         except Exception:
                             pass
-                        # Cria tabela com tipos derivados
-                        col_defs = []
-                        for col, dtype in zip(df.columns, df.dtypes):
-                            ora_type = "VARCHAR2(4000)"
-                            if dtype in (pl.Int8, pl.Int16, pl.Int32, pl.Int64):
-                                ora_type = "NUMBER"
-                            elif dtype in (pl.Float32, pl.Float64):
-                                ora_type = "NUMBER"
-                            elif dtype == pl.Boolean:
-                                ora_type = "NUMBER(1)"
-                            elif dtype in (pl.Date, pl.Datetime):
-                                ora_type = "TIMESTAMP"
-                            col_defs.append(f'"{col}" {ora_type}')
-
-                        create_sql = f'CREATE TABLE {table_name} ({", ".join(col_defs)})'
                         cur.execute(create_sql)
+                    elif table_action == "create_if_not_exists":
+                        table_exists = False
+                        clean_tbl = table_name.replace('"', '').upper()
+                        owner = None
+                        if "." in clean_tbl:
+                            owner, clean_tbl = clean_tbl.split(".", 1)
+                        try:
+                            if owner:
+                                cur.execute("SELECT 1 FROM all_tables WHERE owner = :1 AND table_name = :2", (owner, clean_tbl))
+                            else:
+                                cur.execute("SELECT 1 FROM user_tables WHERE table_name = :1", (clean_tbl,))
+                            table_exists = bool(cur.fetchone())
+                        except Exception:
+                            table_exists = False
+
+                        if not table_exists:
+                            try:
+                                cur.execute(create_sql)
+                            except Exception as ora_err:
+                                if "ORA-00955" not in str(ora_err):
+                                    raise
+                    elif table_action in ("truncate", "delete_all"):
+                        try:
+                            cur.execute(f"TRUNCATE TABLE {table_name}")
+                        except Exception:
+                            pass
 
                 # ─── Ação de Dados ───
                 # Converte dataframe para lista de tuplas com None para valores nulos

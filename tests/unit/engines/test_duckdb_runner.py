@@ -114,3 +114,33 @@ def test_duckdb_write_with_table_and_data_actions(tmp_path):
     
     runner.close()
 
+
+def test_duckdb_write_creates_table_with_schema_definitions_types(tmp_path):
+    """Valida se write_to_duckdb cria tabela com os tipos explicitados em schema_definitions."""
+    db_file = tmp_path / "test_typed.duckdb"
+    runner = DuckDBRunner(database_path=str(db_file))
+    df = pl.DataFrame({
+        "cd_pessoa": [101],
+        "cpf": ["12345678900"],
+        "validacao_01": [0]
+    })
+    schema_definitions = [
+        {"name": "cd_pessoa", "type": "Integer"},
+        {"name": "cpf", "type": "String"},
+        {"name": "validacao_01", "type": "Integer"}
+    ]
+    runner.write_to_duckdb(
+        df=df,
+        table_name="typed_table",
+        table_action="drop_create",
+        data_action="insert",
+        schema_definitions=schema_definitions
+    )
+    col_info = runner.execute_query_to_polars("PRAGMA table_info('typed_table');")
+    type_map = {row["name"]: row["type"] for row in col_info.iter_rows(named=True)}
+    assert type_map["cd_pessoa"] == "INTEGER"
+    assert type_map["cpf"] == "VARCHAR"
+    assert type_map["validacao_01"] == "INTEGER"
+    runner.close()
+
+

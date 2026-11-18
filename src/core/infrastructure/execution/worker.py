@@ -38,7 +38,11 @@ def map_schema_type_to_polars(col_type: str) -> pl.DataType:
         return pl.Int32
     elif t in ("long", "int64", "bigint"):
         return pl.Int64
-    elif t in ("float", "float32"):
+    elif t in ("short", "int16", "smallint"):
+        return pl.Int16
+    elif t in ("byte", "tinyint", "int8"):
+        return pl.Int8
+    elif t in ("float", "float32", "real"):
         return pl.Float32
     elif t in ("double", "float64", "decimal", "numeric", "number"):
         return pl.Float64
@@ -46,8 +50,10 @@ def map_schema_type_to_polars(col_type: str) -> pl.DataType:
         return pl.Boolean
     elif t in ("date",):
         return pl.Date
-    elif t in ("timestamp", "datetime"):
+    elif t in ("timestamp", "datetime", "time"):
         return pl.Datetime
+    elif t in ("bytes", "binary"):
+        return pl.Binary
     else:
         return pl.Utf8
 
@@ -60,7 +66,7 @@ def cast_df_to_schema(df: pl.DataFrame, schema_defs: List[Dict[str, Any]]) -> pl
         if not isinstance(col_def, dict):
             continue
         c_name = col_def.get("name")
-        c_type = col_def.get("type")
+        c_type = col_def.get("type") or col_def.get("physicalType") or col_def.get("physical_type")
         if c_name and c_name in df.columns:
             target_type = map_schema_type_to_polars(c_type)
             try:
@@ -1256,10 +1262,19 @@ class ExecutionWorker:
         raw_cfg = cfg.get("raw_config") or {}
 
         # Filtra e projeta as colunas definidas no schema do componente (projeção e tipagem explícitas)
-        schema_cols = cfg.get("schema_columns") or []
-        schema_defs = cfg.get("schema_definitions") or []
-        if not schema_cols and schema_defs:
-            schema_cols = [c.get("name") for c in schema_defs if isinstance(c, dict) and c.get("name")]
+        schema_defs = (
+            cfg.get("schema_definitions")
+            or raw_cfg.get("schema_definitions")
+            or cfg.get("schema")
+            or raw_cfg.get("schema")
+            or []
+        )
+        schema_cols = (
+            cfg.get("schema_columns")
+            or raw_cfg.get("schema_columns")
+            or [c.get("name") for c in schema_defs if isinstance(c, dict) and c.get("name")]
+            or []
+        )
 
         if schema_cols or schema_defs:
             if not input_chunks:
@@ -1378,7 +1393,8 @@ class ExecutionWorker:
                         keys=keys,
                         is_first_chunk=(idx == 0),
                         use_batch_mode=use_batch,
-                        batch_size=batch_sz
+                        batch_size=batch_sz,
+                        schema_definitions=schema_defs
                     )
                     total += written
                     task.record_progress(rows_in_increment=chunk.height, rows_out_increment=written)
@@ -1419,7 +1435,8 @@ class ExecutionWorker:
                         keys=keys,
                         is_first_chunk=(idx == 0),
                         use_batch_mode=use_batch,
-                        batch_size=batch_sz
+                        batch_size=batch_sz,
+                        schema_definitions=schema_defs
                     )
                     total += written
                     task.record_progress(rows_in_increment=chunk.height, rows_out_increment=written)

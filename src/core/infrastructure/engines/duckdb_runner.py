@@ -519,18 +519,63 @@ class DuckDBRunner:
 
             # 1. Executa Ação na Tabela apenas no primeiro chunk
             if is_first_chunk:
+                schema_map = {}
+                if schema_definitions and isinstance(schema_definitions, list):
+                    schema_map = {
+                        c.get("name"): c
+                        for c in schema_definitions
+                        if isinstance(c, dict) and c.get("name")
+                    }
+
+                def _duckdb_col_def(c: str) -> str:
+                    c_def = schema_map.get(c)
+                    target_type = None
+                    if c_def:
+                        p_type = c_def.get("physicalType") or c_def.get("physical_type")
+                        if p_type:
+                            target_type = self.map_schema_type_to_duckdb(p_type)
+                        if not target_type:
+                            target_type = self.map_schema_type_to_duckdb(c_def.get("type"))
+                    if not target_type and hasattr(df, "schema"):
+                        pl_t = df.schema.get(c)
+                        if pl_t in (pl.Int8, pl.Int16):
+                            target_type = "SMALLINT"
+                        elif pl_t == pl.Int32:
+                            target_type = "INTEGER"
+                        elif pl_t in (pl.Int64, pl.UInt32, pl.UInt64):
+                            target_type = "BIGINT"
+                        elif pl_t == pl.Float32:
+                            target_type = "FLOAT"
+                        elif pl_t == pl.Float64:
+                            target_type = "DOUBLE"
+                        elif pl_t == pl.Boolean:
+                            target_type = "BOOLEAN"
+                        elif pl_t == pl.Date:
+                            target_type = "DATE"
+                        elif isinstance(pl_t, pl.Datetime):
+                            target_type = "TIMESTAMP"
+                    return f'"{c}" {target_type or "VARCHAR"}'
+
+                if schema_map:
+                    col_defs_str = ", ".join([_duckdb_col_def(c) for c in df.columns])
+                    create_table_sql = f"CREATE TABLE {table_name} ({col_defs_str});"
+                    create_if_not_exists_sql = f"CREATE TABLE IF NOT EXISTS {table_name} ({col_defs_str});"
+                else:
+                    create_table_sql = f"CREATE TABLE {table_name} AS SELECT * FROM _chunk_batch WHERE 1=0;"
+                    create_if_not_exists_sql = f"CREATE TABLE IF NOT EXISTS {table_name} AS SELECT * FROM _chunk_batch WHERE 1=0;"
+
                 if table_action in ("drop_create", "drop_if_exists_create"):
                     conn.execute(f"DROP TABLE IF EXISTS {table_name};")
-                    conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM _chunk_batch WHERE 1=0;")
+                    conn.execute(create_table_sql)
                     existing_col_info = {c: True for c in df.columns}
                 elif table_action == "create_if_not_exists" and not existing_col_info:
-                    conn.execute(f"CREATE TABLE IF NOT EXISTS {table_name} AS SELECT * FROM _chunk_batch WHERE 1=0;")
+                    conn.execute(create_if_not_exists_sql)
                     existing_col_info = {c: True for c in df.columns}
                 elif table_action in ("truncate", "delete_all"):
                     try:
                         conn.execute(f"DELETE FROM {table_name};")
                     except Exception:
-                        conn.execute(f"CREATE TABLE IF NOT EXISTS {table_name} AS SELECT * FROM _chunk_batch WHERE 1=0;")
+                        conn.execute(create_if_not_exists_sql)
                         existing_col_info = {c: True for c in df.columns}
 
             # Garante que a tabela existe antes de inserir

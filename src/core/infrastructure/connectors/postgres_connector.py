@@ -15,6 +15,102 @@ from src.core.infrastructure.security.redaction import sanitize_message
 from src.core.infrastructure.security.secret_resolver import SecretResolver
 
 
+def map_col_to_postgres_ddl(
+    col_name: str,
+    col_def: Optional[Dict[str, Any]] = None,
+    polars_dtype: Optional[Any] = None
+) -> str:
+    """Mapeia o nome e a definição de uma coluna (ou dtype Polars) para a cláusula DDL do PostgreSQL."""
+    import polars as pl
+    pg_type = None
+
+    if col_def and isinstance(col_def, dict):
+        col_type_str = str(col_def.get("type") or "").strip().lower()
+        physical_type_str = str(col_def.get("physicalType") or col_def.get("physical_type") or "").strip()
+        length = col_def.get("length")
+        precision = col_def.get("precision")
+        scale = col_def.get("scale")
+
+        # 1. Se physicalType for fornecido e representar um tipo SQL PostgreSQL válido
+        if physical_type_str and physical_type_str.lower() not in ("string", "unknown", "object", ""):
+            valid_pg_prefixes = (
+                "int", "bigint", "smallint", "serial", "bigserial",
+                "varchar", "char", "text", "numeric", "decimal", "float", "real", "double",
+                "bool", "date", "time", "timestamp", "json", "bytea", "uuid"
+            )
+            if any(physical_type_str.lower().startswith(p) for p in valid_pg_prefixes):
+                pg_type = physical_type_str.upper()
+
+        # 2. Mapeamento a partir do tipo lógico (Logical Type)
+        if not pg_type and col_type_str:
+            if col_type_str in ("integer", "int", "int32"):
+                pg_type = "INTEGER"
+            elif col_type_str in ("long", "int64", "bigint"):
+                pg_type = "BIGINT"
+            elif col_type_str in ("short", "smallint", "int16", "int8", "byte", "tinyint"):
+                pg_type = "SMALLINT"
+            elif col_type_str in ("double", "float64", "float8"):
+                pg_type = "DOUBLE PRECISION"
+            elif col_type_str in ("float", "float32", "float4", "real"):
+                pg_type = "REAL"
+            elif col_type_str in ("decimal", "numeric", "number"):
+                if precision is not None and scale is not None:
+                    pg_type = f"NUMERIC({precision}, {scale})"
+                elif precision is not None:
+                    pg_type = f"NUMERIC({precision})"
+                else:
+                    pg_type = "NUMERIC"
+            elif col_type_str in ("boolean", "bool"):
+                pg_type = "BOOLEAN"
+            elif col_type_str in ("date",):
+                pg_type = "DATE"
+            elif col_type_str in ("datetime", "timestamp"):
+                pg_type = "TIMESTAMP"
+            elif col_type_str in ("timestamp_tz", "timestamptz"):
+                pg_type = "TIMESTAMPTZ"
+            elif col_type_str in ("time",):
+                pg_type = "TIME"
+            elif col_type_str in ("json", "object", "array"):
+                pg_type = "JSONB"
+            elif col_type_str in ("bytes", "binary", "blob"):
+                pg_type = "BYTEA"
+            elif col_type_str in ("string", "str", "varchar", "text", "char"):
+                if length and isinstance(length, int) and length > 0:
+                    pg_type = f"VARCHAR({length})"
+                else:
+                    pg_type = "TEXT"
+
+    # 3. Fallback: dtype Polars no DataFrame
+    if not pg_type and polars_dtype is not None:
+        if polars_dtype in (pl.Int8, pl.Int16):
+            pg_type = "SMALLINT"
+        elif polars_dtype == pl.Int32:
+            pg_type = "INTEGER"
+        elif polars_dtype in (pl.Int64, pl.UInt32, pl.UInt64):
+            pg_type = "BIGINT"
+        elif polars_dtype == pl.Float32:
+            pg_type = "REAL"
+        elif polars_dtype == pl.Float64:
+            pg_type = "DOUBLE PRECISION"
+        elif polars_dtype == pl.Boolean:
+            pg_type = "BOOLEAN"
+        elif polars_dtype == pl.Date:
+            pg_type = "DATE"
+        elif polars_dtype in (pl.Time,):
+            pg_type = "TIME"
+        elif isinstance(polars_dtype, pl.Datetime):
+            pg_type = "TIMESTAMPTZ" if polars_dtype.time_zone else "TIMESTAMP"
+        elif polars_dtype == pl.Binary:
+            pg_type = "BYTEA"
+        else:
+            pg_type = "TEXT"
+
+    if not pg_type:
+        pg_type = "TEXT"
+
+    return f'"{col_name}" {pg_type}'
+
+
 class PostgresConnector:
     """Conector para banco de dados PostgreSQL com integração ao SecretResolver."""
 
@@ -175,7 +271,8 @@ class PostgresConnector:
         keys: Optional[List[str]] = None,
         is_first_chunk: bool = True,
         use_batch_mode: bool = True,
-        batch_size: int = 10000
+        batch_size: int = 10000,
+        schema_definitions: Optional[List[Dict[str, Any]]] = None
     ) -> int:
         """Executa gravação com suporte a ações DDL na tabela, DML nos dados e escrita em lotes (Batch Mode / Batch Size)."""
         import polars as pl
@@ -183,12 +280,37 @@ class PostgresConnector:
             with conn.cursor() as cur:
                 # 1. Pre-Table Action
                 if is_first_chunk:
+                    schema_map = {}
+                    if schema_definitions and isinstance(schema_definitions, list):
+                        schema_map = {
+                            c.get("name"): c
+                            for c in schema_definitions
+                            if isinstance(c, dict) and c.get("name")
+                        }
+
+                    col_clauses = [
+                        map_col_to_postgres_ddl(c, schema_map.get(c), df.schema.get(c) if hasattr(df, "schema") else None)
+                        for c in df.columns
+                    ]
+
+                    # Chaves primárias
+                    effective_pks = [k for k in (keys or []) if k in df.columns]
+                    if not effective_pks:
+                        effective_pks = [
+                            c.get("name")
+                            for c in (schema_definitions or [])
+                            if isinstance(c, dict) and (c.get("isPrimaryKey") or c.get("is_primary_key")) and c.get("name") in df.columns
+                        ]
+                    if effective_pks:
+                        pk_cols = ", ".join([f'"{k}"' for k in effective_pks])
+                        col_clauses.append(f"PRIMARY KEY ({pk_cols})")
+
+                    cols_sql = ", ".join(col_clauses)
+
                     if table_action in ("drop_create", "drop_if_exists_create"):
                         cur.execute(f"DROP TABLE IF EXISTS {table_name};")
-                        cols_sql = ", ".join([f'"{c}" TEXT' for c in df.columns])
                         cur.execute(f"CREATE TABLE {table_name} ({cols_sql});")
                     elif table_action == "create_if_not_exists":
-                        cols_sql = ", ".join([f'"{c}" TEXT' for c in df.columns])
                         cur.execute(f"CREATE TABLE IF NOT EXISTS {table_name} ({cols_sql});")
                     elif table_action in ("truncate", "delete_all"):
                         try:
