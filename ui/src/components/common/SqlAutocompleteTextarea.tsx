@@ -21,6 +21,8 @@ import {
 } from "lucide-react";
 import { ContextVariable } from "../../store/jobStore";
 import { tokenizeSql, lintSql, formatSql, SqlToken, SqlLintIssue } from "./sqlParser";
+import { FloatingMenu } from "./FloatingMenu";
+import { VirtualRect } from "./floatingPosition";
 
 export interface AutocompleteColumn {
   name: string;
@@ -165,7 +167,6 @@ export const SqlAutocompleteTextarea: React.FC<SqlAutocompleteTextareaProps> = (
   const [isOpen, setIsOpen] = useState(false);
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [popupPos, setPopupPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   const [isMaximized, setIsMaximized] = useState(false);
   const [copied, setCopied] = useState(false);
   const [cursorPosInfo, setCursorPosInfo] = useState<{ line: number; col: number }>({ line: 1, col: 1 });
@@ -173,10 +174,10 @@ export const SqlAutocompleteTextarea: React.FC<SqlAutocompleteTextareaProps> = (
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const highlightRef = useRef<HTMLDivElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
+  const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevValueRef = useRef(value);
-  const popupRef = useRef<HTMLDivElement>(null);
 
   // Altura padrão ampliada: 240px (conforme solicitado pelo usuário para facilitar a visualização)
   const baseHeight = height || style?.minHeight || (rows ? rows * 22 : 240);
@@ -368,14 +369,6 @@ export const SqlAutocompleteTextarea: React.FC<SqlAutocompleteTextareaProps> = (
       if (items.length > 0) {
         setSuggestions(items);
         setSelectedIndex(0);
-
-        if (textareaRef.current) {
-          const coords = getCaretCoordinates(textareaRef.current, cursorPos);
-          const rect = textareaRef.current.getBoundingClientRect();
-          const top = Math.min(coords.top + coords.height + 4, rect.height - 40);
-          const left = Math.min(Math.max(coords.left, 8), rect.width - 240);
-          setPopupPos({ top, left });
-        }
         setIsOpen(true);
       } else {
         setIsOpen(false);
@@ -383,6 +376,32 @@ export const SqlAutocompleteTextarea: React.FC<SqlAutocompleteTextareaProps> = (
     },
     [computeSuggestions]
   );
+
+  const getCaretAnchor = useCallback((): VirtualRect | null => {
+    if (!textareaRef.current) return null;
+    const textarea = textareaRef.current;
+    const cursorPos = textarea.selectionEnd;
+    const coords = getCaretCoordinates(textarea, cursorPos);
+    const rect = textarea.getBoundingClientRect();
+    const lineHeight = coords.height || 18;
+    const left = rect.left + coords.left - textarea.scrollLeft;
+    const top = rect.top + coords.top - textarea.scrollTop;
+    return {
+      left,
+      top,
+      right: left + 2,
+      bottom: top + lineHeight,
+      width: 2,
+      height: lineHeight,
+    };
+  }, [local, cursorPosInfo.line, cursorPosInfo.col]);
+
+  // Mantém a rolagem do item selecionado para dentro da área visível do menu
+  useEffect(() => {
+    if (isOpen && itemRefs.current[selectedIndex]) {
+      itemRefs.current[selectedIndex]?.scrollIntoView({ block: "nearest" });
+    }
+  }, [isOpen, selectedIndex]);
 
   const handleApplySuggestion = useCallback(
     (item: SuggestionItem) => {
@@ -559,21 +578,7 @@ export const SqlAutocompleteTextarea: React.FC<SqlAutocompleteTextareaProps> = (
     setTimeout(() => textareaRef.current?.focus(), 10);
   };
 
-  // Fecha popup ao clicar fora
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (
-        popupRef.current &&
-        !popupRef.current.contains(e.target as HTMLElement) &&
-        textareaRef.current &&
-        !textareaRef.current.contains(e.target as HTMLElement)
-      ) {
-        setIsOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
+
 
   // Renderizador de tokens com realce de sintaxe
   const renderTokens = () => {
@@ -938,150 +943,146 @@ export const SqlAutocompleteTextarea: React.FC<SqlAutocompleteTextareaProps> = (
             autoCorrect="off"
           />
 
-          {/* Menu Flutuante de Autocomplete (Smart Studio) */}
-          {isOpen && suggestions.length > 0 && (
+          {/* Menu Flutuante de Autocomplete (Smart Studio) via FloatingMenu */}
+          <FloatingMenu
+            open={isOpen && suggestions.length > 0}
+            anchorRef={getCaretAnchor}
+            onRequestClose={() => setIsOpen(false)}
+            preferred="below"
+            className="rdf-autocomplete-dropdown"
+            style={{
+              minWidth: 260,
+              maxWidth: 360,
+              background: "rgba(15, 17, 32, 0.98)",
+              backdropFilter: "blur(12px)",
+              border: "1px solid #38bdf8",
+              boxShadow: "0 8px 24px rgba(0, 0, 0, 0.7), 0 0 12px rgba(0, 229, 255, 0.2)",
+              borderRadius: 6,
+              padding: "4px 0",
+            }}
+          >
             <div
-              ref={popupRef}
-              className="rdf-autocomplete-dropdown"
               style={{
-                position: "absolute",
-                top: popupPos.top,
-                left: popupPos.left,
-                zIndex: 9999,
-                minWidth: 260,
-                maxWidth: 360,
-                maxHeight: 220,
-                overflowY: "auto",
-                background: "rgba(15, 17, 32, 0.98)",
-                backdropFilter: "blur(12px)",
-                border: "1px solid #38bdf8",
-                boxShadow: "0 8px 24px rgba(0, 0, 0, 0.7), 0 0 12px rgba(0, 229, 255, 0.2)",
-                borderRadius: 6,
-                padding: "4px 0",
+                padding: "4px 10px 6px",
+                fontSize: "0.64rem",
+                fontWeight: 600,
+                textTransform: "uppercase",
+                letterSpacing: "0.5px",
+                color: "#38bdf8",
+                borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
               }}
             >
-              <div
-                style={{
-                  padding: "4px 10px 6px",
-                  fontSize: "0.64rem",
-                  fontWeight: 600,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.5px",
-                  color: "#38bdf8",
-                  borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                }}
-              >
-                <span>
-                  {suggestions[0]?.kind === "column"
-                    ? "Colunas Disponíveis (Iteração)"
-                    : "Componentes / Fluxos Iteradores"}
-                </span>
-                <span style={{ fontSize: "0.6rem", color: "#64748b" }}>
-                  {suggestions.length} opções
-                </span>
-              </div>
+              <span>
+                {suggestions[0]?.kind === "column"
+                  ? "Colunas Disponíveis (Iteração)"
+                  : "Componentes / Fluxos Iteradores"}
+              </span>
+              <span style={{ fontSize: "0.6rem", color: "#64748b" }}>
+                {suggestions.length} opções
+              </span>
+            </div>
 
-              <div style={{ padding: "2px 0" }}>
-                {suggestions.map((item, idx) => {
-                  const isSelected = idx === selectedIndex;
-                  return (
-                    <div
-                      key={item.id}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        padding: "5px 10px",
-                        cursor: "pointer",
-                        background: isSelected ? "rgba(0, 229, 255, 0.16)" : "transparent",
-                        borderLeft: isSelected ? "3px solid #38bdf8" : "3px solid transparent",
-                        transition: "background 0.1s ease",
-                      }}
-                      onMouseEnter={() => setSelectedIndex(idx)}
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        handleApplySuggestion(item);
-                      }}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, flex: 1 }}>
-                        {item.kind === "column" ? (
-                          getColumnIcon(item.badge)
-                        ) : item.kind === "context_var" ? (
-                          <Variable size={12} color="#a855f7" />
-                        ) : (
-                          <Database size={12} color="#10b981" />
-                        )}
+            <div style={{ padding: "2px 0" }}>
+              {suggestions.map((item, idx) => {
+                const isSelected = idx === selectedIndex;
+                return (
+                  <div
+                    key={item.id}
+                    ref={(el) => (itemRefs.current[idx] = el)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      padding: "5px 10px",
+                      cursor: "pointer",
+                      background: isSelected ? "rgba(0, 229, 255, 0.16)" : "transparent",
+                      borderLeft: isSelected ? "3px solid #38bdf8" : "3px solid transparent",
+                      transition: "background 0.1s ease",
+                    }}
+                    onMouseEnter={() => setSelectedIndex(idx)}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      handleApplySuggestion(item);
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, flex: 1 }}>
+                      {item.kind === "column" ? (
+                        getColumnIcon(item.badge)
+                      ) : item.kind === "context_var" ? (
+                        <Variable size={12} color="#a855f7" />
+                      ) : (
+                        <Database size={12} color="#10b981" />
+                      )}
 
-                        <div style={{ minWidth: 0 }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div
+                          style={{
+                            fontSize: "0.76rem",
+                            fontWeight: isSelected ? 600 : 500,
+                            color: isSelected ? "#38bdf8" : "#f1f5f9",
+                            fontFamily: "Consolas, Menlo, Monaco, monospace",
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                        >
+                          {item.title}
+                        </div>
+                        {item.subtitle && (
                           <div
                             style={{
-                              fontSize: "0.76rem",
-                              fontWeight: isSelected ? 600 : 500,
-                              color: isSelected ? "#38bdf8" : "#f1f5f9",
-                              fontFamily: "Consolas, Menlo, Monaco, monospace",
+                              fontSize: "0.64rem",
+                              color: "#64748b",
                               whiteSpace: "nowrap",
                               overflow: "hidden",
                               textOverflow: "ellipsis",
                             }}
                           >
-                            {item.title}
+                            {item.subtitle}
                           </div>
-                          {item.subtitle && (
-                            <div
-                              style={{
-                                fontSize: "0.64rem",
-                                color: "#64748b",
-                                whiteSpace: "nowrap",
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                              }}
-                            >
-                              {item.subtitle}
-                            </div>
-                          )}
-                        </div>
+                        )}
                       </div>
-
-                      {item.badge && (
-                        <span
-                          style={{
-                            fontSize: "0.62rem",
-                            padding: "1px 5px",
-                            borderRadius: 3,
-                            background: "rgba(255, 255, 255, 0.05)",
-                            border: `1px solid ${item.badgeColor || "rgba(255, 255, 255, 0.1)"}`,
-                            color: item.badgeColor || "#94a3b8",
-                            fontFamily: "Consolas, Menlo, Monaco, monospace",
-                            marginLeft: 8,
-                            flexShrink: 0,
-                          }}
-                        >
-                          {item.badge}
-                        </span>
-                      )}
                     </div>
-                  );
-                })}
-              </div>
 
-              <div
-                style={{
-                  padding: "4px 10px",
-                  borderTop: "1px solid rgba(255, 255, 255, 0.08)",
-                  fontSize: "0.62rem",
-                  color: "#64748b",
-                  display: "flex",
-                  justifyContent: "space-between",
-                }}
-              >
-                <span>↑↓ Navegar • ↵ Selecionar</span>
-                <span>Esc Fechar</span>
-              </div>
+                    {item.badge && (
+                      <span
+                        style={{
+                          fontSize: "0.62rem",
+                          padding: "1px 5px",
+                          borderRadius: 3,
+                          background: "rgba(255, 255, 255, 0.05)",
+                          border: `1px solid ${item.badgeColor || "rgba(255, 255, 255, 0.1)"}`,
+                          color: item.badgeColor || "#94a3b8",
+                          fontFamily: "Consolas, Menlo, Monaco, monospace",
+                          marginLeft: 8,
+                          flexShrink: 0,
+                        }}
+                      >
+                        {item.badge}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
-          )}
+
+            <div
+              style={{
+                padding: "4px 10px",
+                borderTop: "1px solid rgba(255, 255, 255, 0.08)",
+                fontSize: "0.62rem",
+                color: "#64748b",
+                display: "flex",
+                justifyContent: "space-between",
+              }}
+            >
+              <span>↑↓ Navegar • ↵ Selecionar</span>
+              <span>Esc Fechar</span>
+            </div>
+          </FloatingMenu>
         </div>
       </div>
 
