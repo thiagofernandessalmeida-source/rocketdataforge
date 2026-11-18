@@ -25,6 +25,8 @@ import {
 import { useEdgeStyle } from "../hooks/useEdgeStyle";
 import { computeBusRoutes } from "./busRouter";
 import { getFlowStrokeStyle } from "./edgeStyleUtils";
+import { FloatingMenu } from "../../../components/common/FloatingMenu";
+import { VirtualRect } from "../../../components/common/floatingPosition";
 
 export interface FlowEdgeData {
   flowName: string;
@@ -207,6 +209,18 @@ export const FlowEdge: React.FC<EdgeProps<FlowEdgeData>> = ({
   const [showContextMenu, setShowContextMenu] = useState(false);
   const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
 
+  const menuAnchor = useMemo(
+    (): VirtualRect => ({
+      left: menuPos.x,
+      top: menuPos.y,
+      right: menuPos.x,
+      bottom: menuPos.y,
+      width: 0,
+      height: 0,
+    }),
+    [menuPos.x, menuPos.y]
+  );
+
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -219,13 +233,6 @@ export const FlowEdge: React.FC<EdgeProps<FlowEdgeData>> = ({
     setShowContextMenu(false);
     setEdges((eds) => eds.filter((edge) => edge.id !== id));
   }, [id, setEdges]);
-
-  useEffect(() => {
-    if (!showContextMenu) return;
-    const handleClickOutside = () => setShowContextMenu(false);
-    window.addEventListener("click", handleClickOutside);
-    return () => window.removeEventListener("click", handleClickOutside);
-  }, [showContextMenu]);
 
   return (
     <>
@@ -391,49 +398,46 @@ export const FlowEdge: React.FC<EdgeProps<FlowEdgeData>> = ({
             </div>
           )}
 
-          {/* Menu de Contexto da Aresta: Excluir Conexão (RF-02.3 & T-1.5) */}
-          {showContextMenu && (
-            <div
-              className="flow-edge-context-menu"
-              style={{
-                position: "fixed",
-                left: menuPos.x,
-                top: menuPos.y,
-                zIndex: 9999,
-                background: "var(--bg-elevated, #1e2230)",
-                border: "1px solid var(--border-subtle, #2a3148)",
-                borderRadius: 6,
-                padding: "4px 0",
-                boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
-                minWidth: 140,
-              }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <button
-                type="button"
-                className="flow-edge-context-item"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  width: "100%",
-                  padding: "6px 12px",
-                  background: "transparent",
-                  border: "none",
-                  color: "var(--status-danger, #ef4444)",
-                  fontSize: "0.8rem",
-                  cursor: "pointer",
-                  textAlign: "left",
-                }}
-                onClick={handleDeleteConnection}
-              >
-                <Trash2 size={13} />
-                <span>Excluir Conexão</span>
-              </button>
-            </div>
-          )}
         </div>
       </EdgeLabelRenderer>
+
+      {/* Menu de Contexto da Aresta: Excluir Conexão (RF-02.3 & T-1.5) via FloatingMenu */}
+      <FloatingMenu
+        open={showContextMenu}
+        anchorRef={menuAnchor}
+        onRequestClose={() => setShowContextMenu(false)}
+        className="flow-edge-context-menu"
+        style={{
+          background: "var(--bg-elevated, #1e2230)",
+          border: "1px solid var(--border-subtle, #2a3148)",
+          borderRadius: 6,
+          padding: "4px 0",
+          boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+          minWidth: 140,
+        }}
+      >
+        <button
+          type="button"
+          className="flow-edge-context-item"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            width: "100%",
+            padding: "6px 12px",
+            background: "transparent",
+            border: "none",
+            color: "var(--status-danger, #ef4444)",
+            fontSize: "0.8rem",
+            cursor: "pointer",
+            textAlign: "left",
+          }}
+          onClick={handleDeleteConnection}
+        >
+          <Trash2 size={13} />
+          <span>Excluir Conexão</span>
+        </button>
+      </FloatingMenu>
     </>
   );
 };

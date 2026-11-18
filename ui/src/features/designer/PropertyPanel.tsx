@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import { ConnectionEntry, ContextVariable, SchemaColumn, Environment, QueryEntry, QueryDialect, ConnectionType } from "../../store/jobStore";
 import { SqlAutocompleteTextarea, AutocompleteSource } from "../../components/common/SqlAutocompleteTextarea";
+import { FloatingMenu } from "../../components/common/FloatingMenu";
 import { extractNodeSchema } from "./utils/nodeSchemaUtils";
 
 export interface PropertyPanelProps {
@@ -134,6 +135,7 @@ export const QuerySelect: React.FC<{
   onSelect: (query: QueryEntry) => void;
 }> = ({ queryBank, connections, connectionRef, onSelect }) => {
   const [open, setOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
 
   // Find the connection entry to get its type/dialect
   const connEntry = connections.find(
@@ -158,6 +160,7 @@ export const QuerySelect: React.FC<{
   return (
     <div style={{ position: "relative", marginBottom: 8 }}>
       <button
+        ref={buttonRef}
         type="button"
         className="btn btn-secondary"
         style={{ width: "100%", justifyContent: "space-between", fontSize: "0.78rem" }}
@@ -172,63 +175,58 @@ export const QuerySelect: React.FC<{
           style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}
         />
       </button>
-      {open && (
-        <div
-          style={{
-            position: "absolute",
-            top: "100%",
-            left: 0,
-            right: 0,
-            zIndex: 200,
-            background: "var(--bg-card)",
-            border: "1px solid var(--border-medium)",
-            borderRadius: 8,
-            boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
-            maxHeight: 260,
-            overflowY: "auto",
-            marginTop: 4,
-          }}
-        >
-          {filtered.map((q) => (
-            <button
-              key={q.id}
-              type="button"
-              style={{
-                display: "block",
-                width: "100%",
-                textAlign: "left",
-                background: "none",
-                border: "none",
-                borderBottom: "1px solid var(--border-subtle)",
-                padding: "9px 12px",
-                cursor: "pointer",
-                color: "var(--text-primary)",
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-card-hover)")}
-              onMouseLeave={(e) => (e.currentTarget.style.background = "none")}
-              onClick={() => {
-                onSelect(q);
-                setOpen(false);
-              }}
-            >
-              <div style={{ fontWeight: 600, fontSize: "0.78rem", marginBottom: 2 }}>{q.name}</div>
-              {q.description && (
-                <div style={{ fontSize: "0.68rem", color: "var(--text-muted)" }}>{q.description}</div>
-              )}
-              <div style={{ display: "flex", gap: 6, marginTop: 4, flexWrap: "wrap" }}>
-                <span style={{ fontSize: "0.65rem", padding: "1px 5px", borderRadius: 3, background: "var(--bg-card)", border: "1px solid var(--border-subtle)" }}>
-                  {q.dialect}
+      <FloatingMenu
+        open={open}
+        anchorRef={buttonRef}
+        onRequestClose={() => setOpen(false)}
+        matchAnchorWidth={true}
+        style={{
+          background: "var(--bg-card)",
+          border: "1px solid var(--border-medium)",
+          borderRadius: 8,
+          boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+          padding: 0,
+        }}
+      >
+        {filtered.map((q) => (
+          <button
+            key={q.id}
+            type="button"
+            style={{
+              display: "block",
+              width: "100%",
+              textAlign: "left",
+              background: "none",
+              border: "none",
+              borderBottom: "1px solid var(--border-subtle)",
+              padding: "9px 12px",
+              cursor: "pointer",
+              color: "var(--text-primary)",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-card-hover)")}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "none")}
+            onClick={() => {
+              onSelect(q);
+              setOpen(false);
+            }}
+          >
+            <div style={{ fontWeight: 600, fontSize: "0.78rem", marginBottom: 2 }}>{q.name}</div>
+            {q.description && (
+              <div style={{ fontSize: "0.68rem", color: "var(--text-muted)" }}>{q.description}</div>
+            )}
+            <div style={{ display: "flex", gap: 6, marginTop: 4, flexWrap: "wrap" }}>
+              <span style={{ fontSize: "0.65rem", padding: "1px 5px", borderRadius: 3, background: "var(--bg-card)", border: "1px solid var(--border-subtle)" }}>
+                {q.dialect}
+              </span>
+              {Array.isArray(q.schema) && q.schema.length > 0 && (
+                <span style={{ fontSize: "0.65rem", padding: "1px 5px", borderRadius: 3, background: "rgba(0,229,255,0.08)", border: "1px solid rgba(0,229,255,0.2)", color: "var(--accent-cyan)" }}>
+                  {q.schema.length} colunas
                 </span>
-                {Array.isArray(q.schema) && q.schema.length > 0 && (
-                  <span style={{ fontSize: "0.65rem", padding: "1px 5px", borderRadius: 3, background: "rgba(0,229,255,0.08)", border: "1px solid rgba(0,229,255,0.2)", color: "var(--accent-cyan)" }}>
-                    {q.schema.length} colunas
-                  </span>
-                )}
-              </div>
-            </button>
-          ))}
-        </div>
-      )}
+              )}
+            </div>
+          </button>
+        ))}
+      </FloatingMenu>
     </div>
   );
 };

@@ -1,4 +1,6 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useMemo } from "react";
+import { FloatingMenu } from "../../components/common/FloatingMenu";
+import { VirtualRect } from "../../components/common/floatingPosition";
 import {
   ChevronRight,
   ChevronDown,
@@ -31,6 +33,21 @@ export const JobRepository: React.FC<JobRepositoryProps> = ({ onOpenJob, onImpor
     x: number;
     y: number;
   } | null>(null);
+
+  const contextMenuAnchor = useMemo(
+    (): VirtualRect | null =>
+      contextMenu
+        ? {
+            left: contextMenu.x,
+            top: contextMenu.y,
+            right: contextMenu.x,
+            bottom: contextMenu.y,
+            width: 0,
+            height: 0,
+          }
+        : null,
+    [contextMenu]
+  );
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
   const [creating, setCreating] = useState<{
     type: "folder" | "job";
@@ -319,15 +336,15 @@ export const JobRepository: React.FC<JobRepositoryProps> = ({ onOpenJob, onImpor
         )}
       </div>
 
-      {/* Context Menu */}
-      {contextMenu && (
-        <>
-          <div className="ctx-overlay" onClick={closeContextMenu} />
-          <div
-            className="ctx-menu"
-            style={{ top: contextMenu.y, left: contextMenu.x }}
-            onClick={(e) => e.stopPropagation()}
-          >
+      {/* Context Menu via FloatingMenu */}
+      <FloatingMenu
+        open={Boolean(contextMenu)}
+        anchorRef={contextMenuAnchor}
+        onRequestClose={closeContextMenu}
+        className="ctx-menu"
+      >
+        {contextMenu && (
+          <>
             {contextMenu.type === "folder" && (
               <>
                 <button
@@ -395,9 +412,9 @@ export const JobRepository: React.FC<JobRepositoryProps> = ({ onOpenJob, onImpor
                 </button>
               </>
             )}
-          </div>
-        </>
-      )}
+          </>
+        )}
+      </FloatingMenu>
     </div>
   );
 };

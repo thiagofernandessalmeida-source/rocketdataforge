@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
+import { FloatingMenu } from "../../components/common/FloatingMenu";
 import {
   X,
   Database,
@@ -575,6 +576,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({
   const [showPassword, setShowPassword] = useState(false);
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const [showQuickAdd, setShowQuickAdd] = useState(false);
+  const quickAddBtnRef = useRef<HTMLButtonElement>(null);
   const [scopeFilter, setScopeFilter] = useState<"all" | "global" | "local">("all");
 
   const selectedConn = state.connections.find((c) => c.id === selectedConnId);
@@ -814,6 +816,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({
               {/* Quick Add button — create new without leaving current view */}
               <div style={{ position: "relative" }}>
                 <button
+                  ref={quickAddBtnRef}
                   className="btn btn-secondary"
                   style={{ padding: "3px 8px", fontSize: "0.72rem" }}
                   onClick={() => setShowQuickAdd((v) => !v)}
@@ -821,28 +824,40 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({
                 >
                   <Plus size={12} /> Nova
                 </button>
-                {showQuickAdd && (
-                  <div className="quick-add-dropdown">
-                    {CONNECTION_GROUPS.map((group) => (
-                      <div key={group.label}>
-                        <div className="quick-add-group-label">{group.label}</div>
-                        {group.types.map((t) => (
-                          <button
-                            key={t.type}
-                            className="conn-type-btn"
-                            onClick={() => startCreate(t.type)}
-                          >
-                            <span className="conn-type-dot" style={{ background: t.color }} />
-                            {t.label}
-                          </button>
-                        ))}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {showQuickAdd && (
-                  <div className="ctx-overlay" onClick={() => setShowQuickAdd(false)} />
-                )}
+                <FloatingMenu
+                  open={showQuickAdd}
+                  anchorRef={quickAddBtnRef}
+                  onRequestClose={() => setShowQuickAdd(false)}
+                  className="quick-add-dropdown"
+                  style={{
+                    zIndex: 1001,
+                    background: "var(--bg-card)",
+                    border: "1px solid var(--border-medium)",
+                    borderRadius: 8,
+                    boxShadow: "var(--shadow-lg)",
+                    minWidth: 200,
+                    padding: 4,
+                  }}
+                >
+                  {CONNECTION_GROUPS.map((group) => (
+                    <div key={group.label}>
+                      <div className="quick-add-group-label">{group.label}</div>
+                      {group.types.map((t) => (
+                        <button
+                          key={t.type}
+                          className="conn-type-btn"
+                          onClick={() => {
+                            setShowQuickAdd(false);
+                            startCreate(t.type);
+                          }}
+                        >
+                          <span className="conn-type-dot" style={{ background: t.color }} />
+                          {t.label}
+                        </button>
+                      ))}
+                    </div>
+                  ))}
+                </FloatingMenu>
               </div>
             </div>
 

@@ -32,6 +32,8 @@ import { DataPreviewDrawer } from "./preview/DataPreviewDrawer";
 import { ScheduleModal } from "./scheduler/ScheduleModal";
 import { ExportCodegenModal } from "./codegen/ExportCodegenModal";
 import { resolveCellDirection, getHandlePositions } from "./utils/resolveCellDirection";
+import { FloatingMenu } from "../../components/common/FloatingMenu";
+import { VirtualRect } from "../../components/common/floatingPosition";
 
 
 const nodeTypes: NodeTypes = {
@@ -108,6 +110,36 @@ interface TMapOutputChoice {
     x: number;
     y: number;
   } | null>(null);
+
+  const nodeAnchor = useMemo(
+    (): VirtualRect | null =>
+      nodeContextMenu
+        ? {
+            left: nodeContextMenu.x,
+            top: nodeContextMenu.y,
+            right: nodeContextMenu.x,
+            bottom: nodeContextMenu.y,
+            width: 0,
+            height: 0,
+          }
+        : null,
+    [nodeContextMenu]
+  );
+
+  const paneAnchor = useMemo(
+    (): VirtualRect | null =>
+      paneContextMenu
+        ? {
+            left: paneContextMenu.x,
+            top: paneContextMenu.y,
+            right: paneContextMenu.x,
+            bottom: paneContextMenu.y,
+            width: 0,
+            height: 0,
+          }
+        : null,
+    [paneContextMenu]
+  );
 
   const [previewDrawer, setPreviewDrawer] = useState<{
     isOpen: boolean;
@@ -833,33 +865,26 @@ interface TMapOutputChoice {
         </div>
       )}
 
-      {/* ─── Menu de Contexto do Nó (T-4.1) ───────────────── */}
-      {nodeContextMenu && (
-        <>
-          <div
-            className="ctx-overlay"
-            style={{ position: "fixed", inset: 0, zIndex: 998 }}
-            onClick={() => setNodeContextMenu(null)}
-          />
-          <div
-            className="rdf-node-context-menu"
-            id="rdf-node-context-menu"
-            style={{
-              position: "fixed",
-              top: nodeContextMenu.y,
-              left: nodeContextMenu.x,
-              background: "rgba(15, 23, 42, 0.97)",
-              border: "1px solid rgba(56, 189, 248, 0.25)",
-              borderRadius: 8,
-              boxShadow: "0 8px 30px rgba(0, 0, 0, 0.7)",
-              backdropFilter: "blur(12px)",
-              padding: "6px 0",
-              zIndex: 999,
-              minWidth: 230,
-              fontFamily: "Inter, sans-serif",
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
+      {/* ─── Menu de Contexto do Nó (T-4.1) via FloatingMenu ───────────────── */}
+      <FloatingMenu
+        id="rdf-node-context-menu"
+        className="rdf-node-context-menu"
+        open={Boolean(nodeContextMenu)}
+        anchorRef={nodeAnchor}
+        onRequestClose={() => setNodeContextMenu(null)}
+        style={{
+          background: "rgba(15, 23, 42, 0.97)",
+          border: "1px solid rgba(56, 189, 248, 0.25)",
+          borderRadius: 8,
+          boxShadow: "0 8px 30px rgba(0, 0, 0, 0.7)",
+          backdropFilter: "blur(12px)",
+          padding: "6px 0",
+          minWidth: 230,
+          fontFamily: "Inter, sans-serif",
+        }}
+      >
+        {nodeContextMenu && (
+          <>
             <div
               style={{
                 padding: "6px 14px",
@@ -1149,37 +1174,30 @@ interface TMapOutputChoice {
               <span style={{ flex: 1 }}>Excluir</span>
               <kbd style={{ fontSize: "0.65rem", opacity: 0.7, background: "rgba(239,68,68,0.2)", padding: "1px 4px", borderRadius: 3 }}>Del</kbd>
             </button>
-          </div>
-        </>
-      )}
+          </>
+        )}
+      </FloatingMenu>
 
-      {/* ─── Menu de Contexto do Fundo do Canvas ───────────── */}
-      {paneContextMenu && (
-        <>
-          <div
-            className="ctx-overlay"
-            style={{ position: "fixed", inset: 0, zIndex: 998 }}
-            onClick={() => setPaneContextMenu(null)}
-          />
-          <div
-            className="rdf-pane-context-menu"
-            id="rdf-pane-context-menu"
-            style={{
-              position: "fixed",
-              top: paneContextMenu.y,
-              left: paneContextMenu.x,
-              background: "rgba(15, 23, 42, 0.97)",
-              border: "1px solid rgba(56, 189, 248, 0.25)",
-              borderRadius: 8,
-              boxShadow: "0 8px 30px rgba(0, 0, 0, 0.7)",
-              backdropFilter: "blur(12px)",
-              padding: "6px 0",
-              zIndex: 999,
-              minWidth: 200,
-              fontFamily: "Inter, sans-serif",
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
+      {/* ─── Menu de Contexto do Fundo do Canvas via FloatingMenu ───────────── */}
+      <FloatingMenu
+        id="rdf-pane-context-menu"
+        className="rdf-pane-context-menu"
+        open={Boolean(paneContextMenu)}
+        anchorRef={paneAnchor}
+        onRequestClose={() => setPaneContextMenu(null)}
+        style={{
+          background: "rgba(15, 23, 42, 0.97)",
+          border: "1px solid rgba(56, 189, 248, 0.25)",
+          borderRadius: 8,
+          boxShadow: "0 8px 30px rgba(0, 0, 0, 0.7)",
+          backdropFilter: "blur(12px)",
+          padding: "6px 0",
+          minWidth: 200,
+          fontFamily: "Inter, sans-serif",
+        }}
+      >
+        {paneContextMenu && (
+          <>
             <div
               style={{
                 padding: "6px 14px",
@@ -1261,9 +1279,9 @@ interface TMapOutputChoice {
               <span style={{ flex: 1 }}>Selecionar Tudo</span>
               <kbd style={{ fontSize: "0.65rem", opacity: 0.6, background: "rgba(255,255,255,0.1)", padding: "1px 4px", borderRadius: 3 }}>Ctrl+A</kbd>
             </button>
-          </div>
-        </>
-      )}
+          </>
+        )}
+      </FloatingMenu>
 
       {/* ─── Menu Suspenso de Ações da Célula (Mantido oculto no Canvas; acionado pela barra da Célula) ─── */}
       <div

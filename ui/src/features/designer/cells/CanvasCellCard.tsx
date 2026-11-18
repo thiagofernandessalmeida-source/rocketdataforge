@@ -43,6 +43,7 @@ import { getLayoutedElements, LayoutDirection } from "../utils/autoLayout";
 import { PythonCellEditor } from "./PythonCellEditor";
 import { CanvasCellData, CellExecutionStatus, CellPrecondition } from "../../../store/jobStore";
 import { CanvasNodeData } from "../../../types";
+import { FloatingMenu } from "../../../components/common/FloatingMenu";
 import { CellPreconditionsModal } from "./CellPreconditionsModal";
 import { ScheduleModal } from "../scheduler/ScheduleModal";
 import { ExportCodegenModal } from "../codegen/ExportCodegenModal";
@@ -968,85 +969,81 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
               <span>Ações</span>
             </button>
 
-            {isCellActionsOpen && (
-              <div
-                className="cell-actions-popover"
-                style={{
-                  position: "absolute",
-                  top: "calc(100% + 4px)",
-                  right: 0,
-                  background: "#0f172a",
-                  border: "1px solid #334155",
-                  borderRadius: 8,
-                  boxShadow: "0 10px 25px rgba(0, 0, 0, 0.7)",
-                  padding: 4,
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 2,
-                  minWidth: 170,
-                  zIndex: 2500,
+            <FloatingMenu
+              open={isCellActionsOpen}
+              anchorRef={cellActionsRef}
+              onRequestClose={() => setIsCellActionsOpen(false)}
+              className="cell-actions-popover"
+              style={{
+                background: "#0f172a",
+                border: "1px solid #334155",
+                borderRadius: 8,
+                boxShadow: "0 10px 25px rgba(0, 0, 0, 0.7)",
+                padding: 4,
+                display: "flex",
+                flexDirection: "column",
+                gap: 2,
+                minWidth: 170,
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  setIsExportModalOpen(true);
+                  setIsCellActionsOpen(false);
                 }}
-                onClick={(e) => e.stopPropagation()}
+                title="Exportar como Código Autônomo (Python DuckDB/Polars ou Airflow DAG)"
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  borderRadius: 5,
+                  padding: "6px 10px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  color: "#cbd5e1",
+                  cursor: "pointer",
+                  fontSize: "0.78rem",
+                  fontWeight: 500,
+                  textAlign: "left",
+                  width: "100%",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(99, 102, 241, 0.15)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
               >
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsExportModalOpen(true);
-                    setIsCellActionsOpen(false);
-                  }}
-                  title="Exportar como Código Autônomo (Python DuckDB/Polars ou Airflow DAG)"
-                  style={{
-                    background: "transparent",
-                    border: "none",
-                    borderRadius: 5,
-                    padding: "6px 10px",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    color: "#cbd5e1",
-                    cursor: "pointer",
-                    fontSize: "0.78rem",
-                    fontWeight: 500,
-                    textAlign: "left",
-                    width: "100%",
-                  }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(99, 102, 241, 0.15)")}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                >
-                  <Code size={14} color="#818cf8" />
-                  <span>Exportar Código</span>
-                </button>
+                <Code size={14} color="#818cf8" />
+                <span>Exportar Código</span>
+              </button>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsScheduleModalOpen(true);
-                    setIsCellActionsOpen(false);
-                  }}
-                  title="Gerenciador de Agendamentos e Automação Cron"
-                  style={{
-                    background: "transparent",
-                    border: "none",
-                    borderRadius: 5,
-                    padding: "6px 10px",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    color: "#cbd5e1",
-                    cursor: "pointer",
-                    fontSize: "0.78rem",
-                    fontWeight: 500,
-                    textAlign: "left",
-                    width: "100%",
-                  }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(99, 102, 241, 0.15)")}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                >
-                  <Clock size={14} color="#818cf8" />
-                  <span>Agendamentos</span>
-                </button>
-              </div>
-            )}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsScheduleModalOpen(true);
+                  setIsCellActionsOpen(false);
+                }}
+                title="Gerenciador de Agendamentos e Automação Cron"
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  borderRadius: 5,
+                  padding: "6px 10px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  color: "#cbd5e1",
+                  cursor: "pointer",
+                  fontSize: "0.78rem",
+                  fontWeight: 500,
+                  textAlign: "left",
+                  width: "100%",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(99, 102, 241, 0.15)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                <Clock size={14} color="#818cf8" />
+                <span>Agendamentos</span>
+              </button>
+            </FloatingMenu>
           </div>
 
           {/* Move Up */}

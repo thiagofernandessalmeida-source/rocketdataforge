@@ -30,6 +30,7 @@ export interface FloatingMenuProps {
   tabIndex?: number;
   onKeyDown?: React.KeyboardEventHandler<HTMLDivElement>;
   autoFocus?: boolean;
+  id?: string;
 }
 
 export function resolveAnchor(anchor: AnchorType): {
@@ -234,6 +235,7 @@ export const FloatingMenu: React.FC<FloatingMenuProps> = ({
   tabIndex,
   onKeyDown,
   autoFocus = false,
+  id,
 }) => {
   const { menuRef, position } = useFloatingMenu({
     open,
@@ -269,6 +271,7 @@ export const FloatingMenu: React.FC<FloatingMenuProps> = ({
   return createPortal(
     <div
       ref={menuRef}
+      id={id}
       className={combinedClassName}
       style={combinedStyle}
       role={role}
