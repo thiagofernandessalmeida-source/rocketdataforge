@@ -743,7 +743,7 @@ class DuckDBRunner:
             flags=re.IGNORECASE
         )
 
-        # ─── 2. Conversões e Casts de Tipos Estilo Java (Parsing & Casting) ───
+        # ─── 2. Conversões e Casts de Tipos Estilo Java e Python (Parsing & Casting) ───
         s = re.sub(r'\bString\.valueOf\s*\(\s*([^\)]+)\s*\)', r'TRY_CAST(\1 AS VARCHAR)', s)
         s = re.sub(r'([a-zA-Z0-9_\.\"]+)\.toString\(\)', r'TRY_CAST(\1 AS VARCHAR)', s)
         s = re.sub(r'\((?:String|java\.lang\.String)\)\s*([a-zA-Z0-9_\.\"]+)', r'TRY_CAST(\1 AS VARCHAR)', s)
@@ -759,6 +759,13 @@ class DuckDBRunner:
         s = re.sub(r'\bBoolean\.parseBoolean\s*\(\s*([^\)]+)\s*\)', r'TRY_CAST(\1 AS BOOLEAN)', s)
         s = re.sub(r'\((?:Boolean|bool|boolean)\)\s*([a-zA-Z0-9_\.\"]+)', r'TRY_CAST(\1 AS BOOLEAN)', s)
 
+        # Conversões e casts no estilo Python
+        s = re.sub(r'\bint\s*\(\s*([^\)]+)\s*\)', r'TRY_CAST(\1 AS INTEGER)', s)
+        s = re.sub(r'\bstr\s*\(\s*([^\)]+)\s*\)', r'TRY_CAST(\1 AS VARCHAR)', s)
+        s = re.sub(r'\bfloat\s*\(\s*([^\)]+)\s*\)', r'TRY_CAST(\1 AS DOUBLE)', s)
+        s = re.sub(r'\bbool\s*\(\s*([^\)]+)\s*\)', r'TRY_CAST(\1 AS BOOLEAN)', s)
+        s = re.sub(r'\blen\s*\(\s*([^\)]+)\s*\)', r'LENGTH(\1)', s)
+
         # ─── 3. Funções Utilitárias Talend (StringHandling, Relational, TalendDate) ───
         s = re.sub(r'\bStringHandling\.UPCASE\s*\(\s*([^\)]+)\s*\)', r'UPPER(\1)', s)
         s = re.sub(r'\bStringHandling\.DOWNCASE\s*\(\s*([^\)]+)\s*\)', r'LOWER(\1)', s)
@@ -767,8 +774,13 @@ class DuckDBRunner:
         s = re.sub(r'\bRelational\.isNull\s*\(\s*([^\)]+)\s*\)', r'\1 IS NULL', s)
 
         # ─── 4. OPERADORES LÓGICOS BOOLEANOS (EXECUTA ANTES DA CONCATENAÇÃO DE STRINGS) ───
-        s = re.sub(r'==\s*null\b', ' IS NULL', s, flags=re.IGNORECASE)
-        s = re.sub(r'!=\s*null\b', ' IS NOT NULL', s, flags=re.IGNORECASE)
+        s = re.sub(r'\bis\s+not\s+(?:null|None)\b', ' IS NOT NULL', s, flags=re.IGNORECASE)
+        s = re.sub(r'\bis\s+(?:null|None)\b', ' IS NULL', s, flags=re.IGNORECASE)
+        s = re.sub(r'==\s*(?:null|None)\b', ' IS NULL', s, flags=re.IGNORECASE)
+        s = re.sub(r'!=\s*(?:null|None)\b', ' IS NOT NULL', s, flags=re.IGNORECASE)
+        s = re.sub(r'\bNone\b', 'NULL', s)
+        s = re.sub(r'\bTrue\b', 'TRUE', s)
+        s = re.sub(r'\bFalse\b', 'FALSE', s)
         s = re.sub(r'==', '=', s)
         s = re.sub(r'&&', ' AND ', s)
         # Protege temporariamente a concatenação SQL de strings ('...' || ou || '...')
@@ -1299,9 +1311,10 @@ class DuckDBRunner:
 
             for v_idx, var in enumerate(active_vars):
                 var_name = var.get("name")
-                var_expr = var.get("expression", "")
+                raw_v_expr = var.get("expression")
+                var_expr = str(raw_v_expr).strip() if raw_v_expr is not None and str(raw_v_expr).strip() else "NULL"
                 var_type = str(var.get("type", "String")).lower()
-                if var_name and var_expr:
+                if var_name:
                     try:
                         transpiled_v = self.compile_tmap_expression(
                             var_expr,
@@ -1408,7 +1421,11 @@ class DuckDBRunner:
                     seen_targets = set()
                     for c in cols:
                         target_name = (c.get("name") or c.get("target") or "col").strip()
-                        raw_expr = (c.get("expression") or target_name).strip()
+                        expr_val = c.get("expression")
+                        if expr_val is None or not str(expr_val).strip():
+                            raw_expr = "NULL"
+                        else:
+                            raw_expr = str(expr_val).strip()
                         target_lower = target_name.lower()
 
                         if target_lower in seen_targets:
@@ -1455,7 +1472,11 @@ class DuckDBRunner:
                                 c_type = c.get("type") or c.get("data_type")
                                 c_duckdb_type = self.map_schema_type_to_duckdb(c_type)
                                 if c_duckdb_type:
-                                    r_expr = (c.get("expression") or t_name).strip()
+                                    expr_val = c.get("expression")
+                                    if expr_val is None or not str(expr_val).strip():
+                                        r_expr = "NULL"
+                                    else:
+                                        r_expr = str(expr_val).strip()
                                     t_expr_col = self.compile_tmap_expression(r_expr, alias_map=alias_map, vars_map=vars_map, known_columns=known_cols)
                                     test_query = f'SELECT CAST(({t_expr_col}) AS {c_duckdb_type}) FROM _tmap_working{where_sql} LIMIT 50;'
                                     try:

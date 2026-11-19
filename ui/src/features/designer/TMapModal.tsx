@@ -132,10 +132,20 @@ interface FunctionDoc {
 }
 
 const FUNCTION_CATALOG: FunctionDoc[] = [
+  // Conversões e Casts (Python & Java)
+  { category: "Conversões / Cast", name: "int", syntax: "int(expr)", description: "Converte para Inteiro (Python/DuckDB)", example: "int(row1.codigo)" },
+  { category: "Conversões / Cast", name: "str", syntax: "str(expr)", description: "Converte para Texto/String (Python/DuckDB)", example: "str(row1.id)" },
+  { category: "Conversões / Cast", name: "float", syntax: "float(expr)", description: "Converte para Float/Double (Python/DuckDB)", example: "float(row1.valor)" },
+  { category: "Conversões / Cast", name: "bool", syntax: "bool(expr)", description: "Converte para Booleano (Python/DuckDB)", example: "bool(row1.ativo)" },
+  { category: "Conversões / Cast", name: "Integer.parseInt", syntax: "Integer.parseInt(expr)", description: "Converte para Inteiro (Java/Talend)", example: "Integer.parseInt(row1.codigo)" },
+  { category: "Conversões / Cast", name: "String.valueOf", syntax: "String.valueOf(expr)", description: "Converte para String (Java/Talend)", example: "String.valueOf(row1.id)" },
+  { category: "Conversões / Cast", name: "CAST", syntax: "CAST(expr AS VARCHAR)", description: "Converte explicitamente o tipo do dado no SQL", example: "CAST(row1.id AS VARCHAR)" },
+
   // Texto
   { category: "Texto / String", name: "UPPER", syntax: "UPPER(str)", description: "Converte para letras maiúsculas", example: "UPPER(row1.nome)" },
   { category: "Texto / String", name: "LOWER", syntax: "LOWER(str)", description: "Converte para letras minúsculas", example: "LOWER(row1.email)" },
   { category: "Texto / String", name: "TRIM", syntax: "TRIM(str)", description: "Remove espaços em branco das extremidades", example: "TRIM(row1.titulo)" },
+  { category: "Texto / String", name: "len", syntax: "len(str)", description: "Retorna o comprimento do texto (Python)", example: "len(row1.cpf)" },
   { category: "Texto / String", name: "CONCAT", syntax: "CONCAT(s1, s2, ...)", description: "Concatena duas ou mais strings", example: "CONCAT(row1.primeiro_nome, ' ', row1.sobrenome)" },
   { category: "Texto / String", name: "SUBSTRING", syntax: "SUBSTRING(str, pos, len)", description: "Extrai parte de uma string", example: "SUBSTRING(row1.codigo, 1, 3)" },
   { category: "Texto / String", name: "REPLACE", syntax: "REPLACE(str, from, to)", description: "Substitui ocorrências de um caractere ou texto", example: "REPLACE(row1.telefone, '-', '')" },
@@ -624,11 +634,12 @@ export const TMapModal: React.FC<TMapModalProps> = ({
       const endpoint = baseUrl.endsWith("/api/v1")
         ? `${baseUrl}/expressions/validate`
         : "/api/v1/expressions/validate";
+      const rawExpr = (col.expression != null && col.expression.trim() !== "") ? col.expression.trim() : "NULL";
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          expression: col.expression,
+          expression: rawExpr,
           alias_map: aliasMap,
           known_columns: knownCols,
         }),
@@ -664,7 +675,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
     } catch (err: any) {
       setViewSqlState((prev) => ({
         ...prev,
-        sqlQuery: `(${col.expression}) AS "${col.target}"`,
+        sqlQuery: `(${col.expression?.trim() || "NULL"}) AS "${col.target}"`,
         error: null,
         loading: false,
       }));
@@ -692,7 +703,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
 
       const colSqlPromises = out.columns.map(async (c) => {
         const target = (c.target || "col").trim();
-        const expr = (c.expression || target).trim();
+        const expr = (c.expression != null && c.expression.trim() !== "") ? c.expression.trim() : "NULL";
         const res = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1947,7 +1958,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                                     <input
                                       className={`out-cell-input expr-font ${validationErrors[`${out.id}-${col.id}`] ? "input-expr-error" : ""}`}
                                       value={col.expression}
-                                      placeholder="row1.coluna"
+                                      placeholder="row1.coluna (ou vazio para NULL)"
                                       title={validationErrors[`${out.id}-${col.id}`] || undefined}
                                       style={
                                         validationErrors[`${out.id}-${col.id}`]
@@ -2488,6 +2499,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
               <div className="func-categories-pane">
                 <span className="func-pane-title">Categorias</span>
                 {[
+                  "Conversões / Cast",
                   "Texto / String",
                   "Numérico / Math",
                   "Data & Hora",

@@ -9,6 +9,10 @@ class RoutineRegistry:
     def is_routine(name: str) -> bool:
         lower_name = name.lower()
         return (
+            lower_name in (
+                "int", "str", "float", "bool", "len", "round", "abs",
+                "previous", "prev", "lag", "next", "lead", "running_sum", "accumulate", "sum_accum", "sequence", "row_number"
+            ) or
             lower_name.startswith("stringhandling.") or
             lower_name.startswith("relational.") or
             lower_name.startswith("talenddate.") or
@@ -19,8 +23,7 @@ class RoutineRegistry:
             lower_name.startswith("float.") or
             lower_name.startswith("boolean.") or
             lower_name.startswith("string.") or
-            lower_name.startswith("cast_") or
-            lower_name in ("previous", "prev", "lag", "next", "lead", "running_sum", "accumulate", "sum_accum", "sequence", "row_number")
+            lower_name.startswith("cast_")
         )
 
     @staticmethod
@@ -87,18 +90,27 @@ class RoutineRegistry:
         if lower_name in ("running_sum", "accumulate", "sum_accum") and len(compiled_args) == 1:
             return f"SUM({compiled_args[0]}) OVER (ORDER BY _tmap_main_idx)"
 
-        # ─── 5. Java Type Parsing & Casting Wrappers ───
-        if lower_name in ("integer.parseint", "cast_integer", "cast_int") and len(compiled_args) == 1:
+        # ─── 5. Type Parsing & Casting Wrappers (Python + Java) ───
+        if lower_name in ("int", "integer.parseint", "cast_integer", "cast_int") and len(compiled_args) == 1:
             return f"TRY_CAST({compiled_args[0]} AS INTEGER)"
-        if lower_name in ("long.parselong", "cast_long") and len(compiled_args) == 1:
+        if lower_name in ("long", "long.parselong", "cast_long") and len(compiled_args) == 1:
             return f"TRY_CAST({compiled_args[0]} AS BIGINT)"
-        if lower_name in ("double.parsedouble", "cast_double") and len(compiled_args) == 1:
+        if lower_name in ("float", "double", "double.parsedouble", "cast_double") and len(compiled_args) == 1:
             return f"TRY_CAST({compiled_args[0]} AS DOUBLE)"
         if lower_name in ("float.parsefloat", "cast_float") and len(compiled_args) == 1:
             return f"TRY_CAST({compiled_args[0]} AS FLOAT)"
-        if lower_name in ("boolean.parseboolean", "cast_boolean", "cast_bool") and len(compiled_args) == 1:
+        if lower_name in ("bool", "boolean.parseboolean", "cast_boolean", "cast_bool") and len(compiled_args) == 1:
             return f"TRY_CAST({compiled_args[0]} AS BOOLEAN)"
-        if lower_name in ("string.valueof", "cast_string") and len(compiled_args) == 1:
+        if lower_name in ("str", "string", "string.valueof", "cast_string") and len(compiled_args) == 1:
             return f"TRY_CAST({compiled_args[0]} AS VARCHAR)"
+        if lower_name in ("len", "length") and len(compiled_args) == 1:
+            return f"LENGTH({compiled_args[0]})"
+        if lower_name == "abs" and len(compiled_args) == 1:
+            return f"ABS({compiled_args[0]})"
+        if lower_name == "round":
+            if len(compiled_args) == 1:
+                return f"ROUND({compiled_args[0]})"
+            elif len(compiled_args) == 2:
+                return f"ROUND({compiled_args[0]}, {compiled_args[1]})"
 
         return None

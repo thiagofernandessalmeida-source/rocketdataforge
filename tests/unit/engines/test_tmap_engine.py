@@ -897,3 +897,86 @@ def test_tmap_execution_with_duckdb_sink_persistence(tmp_path, runner):
     assert saved_count == 2
 
 
+def test_tmap_empty_expression_output_column_treated_as_null(runner):
+    """Garante que colunas de saída sem expressão preenchida (vazias ou espaços) viram NULL preservando tipo."""
+    main_df = pl.DataFrame({
+        "id": [1, 2, 3],
+        "nome": ["Alice", "Bob", "Charlie"]
+    })
+
+    outputs = [{
+        "name": "out",
+        "columns": [
+            {"name": "id", "expression": "row1.id", "type": "Integer"},
+            {"name": "nome", "expression": "row1.nome", "type": "Varchar"},
+            {"name": "validacao_01", "expression": "", "type": "Integer"},
+            {"name": "validacao_02", "expression": "   ", "type": "Varchar"},
+            {"name": "validacao_03", "expression": None, "type": "Boolean"},
+            {"name": "validacao_04", "type": "Double"}  # sem campo expression
+        ]
+    }]
+
+    res = runner.execute_tmap_transform(
+        main_df=main_df,
+        lookups=[],
+        lookup_dfs={},
+        variables=[],
+        outputs=outputs
+    )
+
+    out = res["out"]
+    assert out.height == 3
+    assert out["id"].to_list() == [1, 2, 3]
+    assert out["validacao_01"].dtype in (pl.Int32, pl.Int64)
+    assert out["validacao_01"].to_list() == [None, None, None]
+    assert out["validacao_02"].dtype == pl.String
+    assert out["validacao_02"].to_list() == [None, None, None]
+    assert out["validacao_03"].dtype == pl.Boolean
+    assert out["validacao_03"].to_list() == [None, None, None]
+    assert out["validacao_04"].dtype == pl.Float64
+    assert out["validacao_04"].to_list() == [None, None, None]
+
+
+def test_tmap_python_type_casting_and_conversion(runner):
+    """Valida conversões de tipos com funções Python: int(), str(), float(), bool(), len(), None."""
+    main_df = pl.DataFrame({
+        "person_code": ["101", "102", "103"],
+        "raw_salario": ["1500.50", "2300.75", "3000.00"],
+        "raw_ativo": ["true", "false", "true"],
+        "num_val": [10, 20, 30]
+    })
+
+    outputs = [{
+        "name": "out",
+        "columns": [
+            {"name": "cd_pessoa", "expression": "int(row1.person_code)", "type": "Integer"},
+            {"name": "salario", "expression": "float(row1.raw_salario)", "type": "Double"},
+            {"name": "is_ativo", "expression": "bool(row1.raw_ativo)", "type": "Boolean"},
+            {"name": "num_str", "expression": "str(row1.num_val)", "type": "Varchar"},
+            {"name": "len_str", "expression": "len(row1.person_code)", "type": "Integer"},
+            {"name": "none_col", "expression": "None", "type": "Varchar"}
+        ]
+    }]
+
+    res = runner.execute_tmap_transform(
+        main_df=main_df,
+        lookups=[],
+        lookup_dfs={},
+        variables=[],
+        outputs=outputs
+    )
+
+    out = res["out"]
+    assert out.height == 3
+    assert out["cd_pessoa"].to_list() == [101, 102, 103]
+    assert out["cd_pessoa"].dtype in (pl.Int32, pl.Int64)
+    assert out["salario"].to_list() == [1500.5, 2300.75, 3000.0]
+    assert out["salario"].dtype == pl.Float64
+    assert out["is_ativo"].to_list() == [True, False, True]
+    assert out["is_ativo"].dtype == pl.Boolean
+    assert out["num_str"].to_list() == ["10", "20", "30"]
+    assert out["len_str"].to_list() == [3, 3, 3]
+    assert out["none_col"].to_list() == [None, None, None]
+
+
+

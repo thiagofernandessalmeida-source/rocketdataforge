@@ -230,12 +230,18 @@ class DuckDBSqlVisitor:
 
         if lower_method == "tostring":
             return f"TRY_CAST({obj_sql} AS VARCHAR)"
-        elif lower_method == "touppercase":
+        elif lower_method in ("touppercase", "upper"):
             return f"UPPER({obj_sql})"
-        elif lower_method == "tolowercase":
+        elif lower_method in ("tolowercase", "lower"):
             return f"LOWER({obj_sql})"
-        elif lower_method == "trim":
+        elif lower_method in ("trim", "strip"):
             return f"TRIM({obj_sql})"
+        elif lower_method == "startswith" and len(compiled_args) == 1:
+            return f"STARTS_WITH({obj_sql}, {compiled_args[0]})"
+        elif lower_method == "endswith" and len(compiled_args) == 1:
+            return f"ENDS_WITH({obj_sql}, {compiled_args[0]})"
+        elif lower_method == "replace" and len(compiled_args) == 2:
+            return f"REPLACE({obj_sql}, {compiled_args[0]}, {compiled_args[1]})"
         elif lower_method == "equals" and len(compiled_args) == 1:
             return f"{obj_sql} = {compiled_args[0]}"
         elif lower_method == "length":

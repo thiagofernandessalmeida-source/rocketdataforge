@@ -135,3 +135,44 @@ class TestExpressionParser:
         invalid_res = validate_expression('row1.status == ? : 0')
         assert invalid_res["valid"] is False
         assert "error" in invalid_res
+
+    # ─── 8. Suporte a Expressões e Casts no Estilo Python ───
+
+    def test_python_type_casts(self):
+        """Conversões de tipos nativas do Python: int(), str(), float(), bool()."""
+        assert compile_expression("int(row1.person_code)") == "TRY_CAST(row1.person_code AS INTEGER)"
+        assert compile_expression("str(row1.id)") == "TRY_CAST(row1.id AS VARCHAR)"
+        assert compile_expression("float(row1.salario)") == "TRY_CAST(row1.salario AS DOUBLE)"
+        assert compile_expression("bool(row1.is_ativo)") == "TRY_CAST(row1.is_ativo AS BOOLEAN)"
+        assert compile_expression("len(row1.cpf)") == "LENGTH(row1.cpf)"
+
+    def test_python_none_literal_and_comparisons(self):
+        """Literal Python None e comparações == None e != None convertidas para IS NULL / IS NOT NULL."""
+        assert compile_expression("None") == "NULL"
+        assert compile_expression("row1.cd_pessoa == None") == "row1.cd_pessoa IS NULL"
+        assert compile_expression("row1.cd_pessoa != None") == "row1.cd_pessoa IS NOT NULL"
+        assert compile_expression("row1.status ? row1.val : None") == "CASE WHEN row1.status THEN row1.val ELSE NULL END"
+
+    def test_python_logical_operators(self):
+        """Palavras-chave lógicas do Python: and, or, not."""
+        assert compile_expression("row1.a and row1.b") == "(row1.a) AND (row1.b)"
+        assert compile_expression("row1.a == true or row1.b == true") == "(row1.a = TRUE) OR (row1.b = TRUE)"
+        assert compile_expression("not row1.c") == "NOT (row1.c)"
+
+    def test_python_string_methods(self):
+        """Métodos comuns de string do Python: strip(), upper(), lower(), startswith(), endswith(), replace()."""
+        assert compile_expression("row1.name.strip()") == "TRIM(row1.name)"
+        assert compile_expression("row1.name.upper()") == "UPPER(row1.name)"
+        assert compile_expression("row1.name.lower()") == "LOWER(row1.name)"
+        assert compile_expression("row1.name.startswith('A')") == "STARTS_WITH(row1.name, 'A')"
+        assert compile_expression("row1.name.endswith('Z')") == "ENDS_WITH(row1.name, 'Z')"
+        assert compile_expression("row1.phone.replace('-', '')") == "REPLACE(row1.phone, '-', '')"
+
+    def test_empty_or_whitespace_expression_returns_null(self):
+        """Expressão vazia ou apenas espaços em branco deve compilar para NULL."""
+        assert compile_expression("") == "NULL"
+        assert compile_expression("   ") == "NULL"
+        assert compile_expression(None) == "NULL"
+        val = validate_expression("")
+        assert val["valid"] is True
+        assert val["sql"] == "NULL"

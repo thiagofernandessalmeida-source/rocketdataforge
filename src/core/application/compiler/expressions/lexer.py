@@ -163,21 +163,34 @@ class Lexer:
                 tokens.append(Token(TokenType.NUMBER, num_str, num_str, start_pos))
                 continue
 
-            # Identificadores e palavras-chave (true, false, null, etc.)
+            # Identificadores e palavras-chave (true, false, null, None, and, or, not, etc.)
             if ch.isalpha() or ch == '_':
                 ident_chars = []
                 while self.pos < self.length and (self.source[self.pos].isalnum() or self.source[self.pos] == '_'):
                     ident_chars.append(self._advance())
                 ident_str = "".join(ident_chars)
                 lower_ident = ident_str.lower()
-                if lower_ident == "true":
-                    tokens.append(Token(TokenType.BOOLEAN, "true", ident_str, start_pos))
-                elif lower_ident == "false":
-                    tokens.append(Token(TokenType.BOOLEAN, "false", ident_str, start_pos))
-                elif lower_ident == "null":
-                    tokens.append(Token(TokenType.NULL, "null", ident_str, start_pos))
-                else:
-                    tokens.append(Token(TokenType.IDENTIFIER, ident_str, ident_str, start_pos))
+                is_after_dot = bool(tokens and tokens[-1].type == TokenType.DOT)
+                if not is_after_dot:
+                    if lower_ident == "true":
+                        tokens.append(Token(TokenType.BOOLEAN, "true", ident_str, start_pos))
+                        continue
+                    elif lower_ident == "false":
+                        tokens.append(Token(TokenType.BOOLEAN, "false", ident_str, start_pos))
+                        continue
+                    elif lower_ident in ("null", "none"):
+                        tokens.append(Token(TokenType.NULL, "null", ident_str, start_pos))
+                        continue
+                    elif lower_ident == "and":
+                        tokens.append(Token(TokenType.AND, "&&", ident_str, start_pos))
+                        continue
+                    elif lower_ident == "or":
+                        tokens.append(Token(TokenType.OR, "||", ident_str, start_pos))
+                        continue
+                    elif lower_ident == "not":
+                        tokens.append(Token(TokenType.NOT, "!", ident_str, start_pos))
+                        continue
+                tokens.append(Token(TokenType.IDENTIFIER, ident_str, ident_str, start_pos))
                 continue
 
             # Operadores de dois caracteres
