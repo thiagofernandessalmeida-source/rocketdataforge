@@ -2852,6 +2852,15 @@ export const App: React.FC = () => {
             availableUpstreamNodes={availableUpstreamNodes}
             downstreamNodes={downstreamNodes}
             onSave={(newCfg, targetSchemaUpdates) => {
+              const currentCfg = liveTMap.data?.config || {};
+              const initialMainId = currentCfg.main_input_id;
+              if (newCfg.main_input_id && initialMainId && newCfg.main_input_id !== initialMainId) {
+                const activeJob = jobStore.getActiveJob();
+                const cellId = (liveTMap.data as any)?.cellId || activeJob?.activeCellId;
+                if (activeJob && cellId) {
+                  jobStore.swapTMapMainAndLookup(activeJob.id, cellId, liveTMap.id, newCfg.main_input_id);
+                }
+              }
               handleUpdateConfig(liveTMap.id, { ...(liveTMap.data?.config || {}), ...newCfg });
               if (targetSchemaUpdates && targetSchemaUpdates.length > 0) {
                 targetSchemaUpdates.forEach((up) => {

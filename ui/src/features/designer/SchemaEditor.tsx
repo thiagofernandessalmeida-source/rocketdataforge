@@ -4,7 +4,7 @@ import {
   Key, AlertCircle, Check, Table2, ArrowRight, ArrowLeft,
   ChevronsRight, ChevronsLeft, RefreshCw, Search, ArrowDownToLine,
   ArrowUpFromLine, Layers, HelpCircle, CheckSquare, Square,
-  Copy, Clipboard, Sparkles, GitBranch, Shield
+  Copy, Clipboard, Sparkles, GitBranch, Shield, GripVertical
 } from "lucide-react";
 import { SchemaColumn, SchemaColumnType } from "../../store/jobStore";
 import {
@@ -17,6 +17,7 @@ import {
 } from "../../utils/schemaClipboard";
 import { ImportSchemaModal } from "./ImportSchemaModal";
 import { FloatingMenu } from "../../components/common/FloatingMenu";
+import { reorderItems, moveItemsDirection } from "./utils/reorderUtils";
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -357,6 +358,64 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
     const target = direction === "up" ? idx - 1 : idx + 1;
     [arr[idx], arr[target]] = [arr[target], arr[idx]];
     onChange(arr);
+  };
+
+  // ─── Drag and Drop & Keyboard Reordering ───────────────────────
+  const [colDropIndicator, setColDropIndicator] = useState<{ colId: string; pos: "above" | "below" } | null>(null);
+  const [draggedColId, setDraggedColId] = useState<string | null>(null);
+
+  const handleColDragStart = (e: React.DragEvent, colId: string) => {
+    e.stopPropagation();
+    e.dataTransfer.setData("application/x-rdf-col-id", colId);
+    e.dataTransfer.effectAllowed = "move";
+    setDraggedColId(colId);
+  };
+
+  const handleColDragOver = (e: React.DragEvent, targetId: string) => {
+    if (!e.dataTransfer.types.includes("application/x-rdf-col-id") && !draggedColId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "move";
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const pos = (e.clientY - rect.top) < rect.height / 2 ? "above" : "below";
+    setColDropIndicator((prev) => {
+      if (prev?.colId === targetId && prev.pos === pos) return prev;
+      return { colId: targetId, pos };
+    });
+  };
+
+  const handleColDrop = (e: React.DragEvent, targetId: string) => {
+    const sourceId = e.dataTransfer.getData("application/x-rdf-col-id") || draggedColId;
+    if (!sourceId || sourceId === targetId) {
+      setColDropIndicator(null);
+      setDraggedColId(null);
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    const pos = colDropIndicator?.pos || "below";
+    const idsToMove = selectedComponentKeys.has(sourceId) && selectedComponentKeys.size > 0
+      ? Array.from(selectedComponentKeys)
+      : [sourceId];
+    const reordered = reorderItems(schema, idsToMove, targetId, pos, (c) => c.id);
+    onChange(reordered);
+    setColDropIndicator(null);
+    setDraggedColId(null);
+  };
+
+  const handleColKeyDown = (e: React.KeyboardEvent, colId: string) => {
+    if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      e.preventDefault();
+      e.stopPropagation();
+      const dir = e.key === "ArrowUp" ? "up" : "down";
+      const idsToMove = selectedComponentKeys.has(colId) && selectedComponentKeys.size > 0
+        ? selectedComponentKeys
+        : new Set([colId]);
+      const reordered = moveItemsDirection(schema, idsToMove, dir, (c) => c.id);
+      if (reordered !== schema) {
+        onChange(reordered);
+      }
+    }
   };
 
   const clearAll = () => {
@@ -831,7 +890,24 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
 
                       return (
                         <React.Fragment key={col.id}>
-                          <tr className={`schema-row ${isSelected ? "selected" : ""} ${showAdvanced === col.id ? "expanded" : ""}`}>
+                          <tr
+                            className={`schema-row ${isSelected ? "selected" : ""} ${showAdvanced === col.id ? "expanded" : ""}`}
+                            tabIndex={0}
+                            style={{
+                              borderTop:
+                                colDropIndicator?.colId === col.id && colDropIndicator.pos === "above"
+                                  ? "2px solid var(--accent-cyan, #06b6d4)"
+                                  : undefined,
+                              borderBottom:
+                                colDropIndicator?.colId === col.id && colDropIndicator.pos === "below"
+                                  ? "2px solid var(--accent-cyan, #06b6d4)"
+                                  : undefined,
+                            }}
+                            onDragOver={(e) => handleColDragOver(e, col.id)}
+                            onDragLeave={() => setColDropIndicator(null)}
+                            onDrop={(e) => handleColDrop(e, col.id)}
+                            onKeyDown={(e) => handleColKeyDown(e, col.id)}
+                          >
                             {/* Checkbox */}
                             <td style={{ textAlign: "center" }}>
                               <input
@@ -841,27 +917,44 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
                               />
                             </td>
 
-                            {/* Reorder buttons */}
+                            {/* Reorder drag handle & buttons */}
                             <td className="schema-order-cell">
-                              <div className="schema-order-btns">
-                                <button
-                                  type="button"
-                                  className="schema-order-btn"
-                                  onClick={() => moveColumn(col.id, "up")}
-                                  disabled={idx === 0}
-                                  title="Mover para cima"
+                              <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                                <div
+                                  draggable
+                                  onDragStart={(e) => handleColDragStart(e, col.id)}
+                                  title="Arraste para reordenar esta coluna (ou selecione e use Alt+Seta Acima/Abaixo)"
+                                  style={{
+                                    cursor: "grab",
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                    padding: "1px",
+                                    color: "var(--text-muted)",
+                                  }}
                                 >
-                                  <ChevronUp size={9} />
-                                </button>
-                                <button
-                                  type="button"
-                                  className="schema-order-btn"
-                                  onClick={() => moveColumn(col.id, "down")}
-                                  disabled={idx === schema.length - 1}
-                                  title="Mover para baixo"
-                                >
-                                  <ChevronDown size={9} />
-                                </button>
+                                  <GripVertical size={11} />
+                                </div>
+                                <div className="schema-order-btns">
+                                  <button
+                                    type="button"
+                                    className="schema-order-btn"
+                                    onClick={() => moveColumn(col.id, "up")}
+                                    disabled={idx === 0}
+                                    title="Mover para cima"
+                                  >
+                                    <ChevronUp size={9} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="schema-order-btn"
+                                    onClick={() => moveColumn(col.id, "down")}
+                                    disabled={idx === schema.length - 1}
+                                    title="Mover para baixo"
+                                  >
+                                    <ChevronDown size={9} />
+                                  </button>
+                                </div>
                               </div>
                             </td>
 
@@ -1240,7 +1333,7 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
           <table className="schema-table">
             <thead>
               <tr>
-                <th style={{ width: 24 }}></th>
+                <th style={{ width: 38 }}></th>
                 <th style={{ width: 20 }}><Key size={10} /></th>
                 <th>Nome da Coluna</th>
                 <th style={{ width: 110 }}>Tipo</th>
@@ -1255,26 +1348,60 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
                 <React.Fragment key={col.id}>
                   <tr
                     className={`schema-row ${showAdvanced === col.id ? "expanded" : ""}`}
+                    tabIndex={0}
+                    style={{
+                      borderTop:
+                        colDropIndicator?.colId === col.id && colDropIndicator.pos === "above"
+                          ? "2px solid var(--accent-cyan, #06b6d4)"
+                          : undefined,
+                      borderBottom:
+                        colDropIndicator?.colId === col.id && colDropIndicator.pos === "below"
+                          ? "2px solid var(--accent-cyan, #06b6d4)"
+                          : undefined,
+                    }}
+                    onDragOver={(e) => handleColDragOver(e, col.id)}
+                    onDragLeave={() => setColDropIndicator(null)}
+                    onDrop={(e) => handleColDrop(e, col.id)}
+                    onKeyDown={(e) => handleColKeyDown(e, col.id)}
                   >
                     {/* Drag handle / order */}
                     <td className="schema-order-cell">
-                      <div className="schema-order-btns">
-                        <button
-                          type="button"
-                          className="schema-order-btn"
-                          onClick={() => moveColumn(col.id, "up")}
-                          disabled={idx === 0}
+                      <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                        <div
+                          draggable
+                          onDragStart={(e) => handleColDragStart(e, col.id)}
+                          title="Arraste para reordenar esta coluna (ou use Alt+Seta Acima/Abaixo)"
+                          style={{
+                            cursor: "grab",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            padding: "1px",
+                            color: "var(--text-muted)",
+                          }}
                         >
-                          <ChevronUp size={10} />
-                        </button>
-                        <button
-                          type="button"
-                          className="schema-order-btn"
-                          onClick={() => moveColumn(col.id, "down")}
-                          disabled={idx === schema.length - 1}
-                        >
-                          <ChevronDown size={10} />
-                        </button>
+                          <GripVertical size={11} />
+                        </div>
+                        <div className="schema-order-btns">
+                          <button
+                            type="button"
+                            className="schema-order-btn"
+                            onClick={() => moveColumn(col.id, "up")}
+                            disabled={idx === 0}
+                            title="Mover para cima"
+                          >
+                            <ChevronUp size={10} />
+                          </button>
+                          <button
+                            type="button"
+                            className="schema-order-btn"
+                            onClick={() => moveColumn(col.id, "down")}
+                            disabled={idx === schema.length - 1}
+                            title="Mover para baixo"
+                          >
+                            <ChevronDown size={10} />
+                          </button>
+                        </div>
                       </div>
                     </td>
 

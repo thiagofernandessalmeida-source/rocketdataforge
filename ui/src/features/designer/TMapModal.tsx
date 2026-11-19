@@ -4,7 +4,7 @@ import {
   Table2, Layers, Play, Wand2, Search, Maximize2, Minimize2,
   ChevronDown, ChevronUp, Key, Filter, HelpCircle, AlertCircle, AlertTriangle,
   Copy, RefreshCw, ChevronsRight, FileCode, CheckSquare, Sparkles,
-  Sliders, Link2, Info, Zap, Undo2, Redo2, Clipboard
+  Sliders, Link2, Info, Zap, Undo2, Redo2, Clipboard, GripVertical
 } from "lucide-react";
 import { SchemaColumn, SchemaColumnType } from "../../store/jobStore";
 import {
@@ -14,6 +14,7 @@ import {
 } from "../../utils/schemaClipboard";
 import { ImportSchemaModal } from "./ImportSchemaModal";
 import { getBaseApiUrl } from "../../api/client";
+import { reorderItems, moveItemsDirection } from "./utils/reorderUtils";
 import {
   deriveTMapLookups,
   getLookupEffectiveSchema,
@@ -191,10 +192,22 @@ export const TMapModal: React.FC<TMapModalProps> = ({
   const [showUpstreamChips, setShowUpstreamChips] = useState(true);
   const [copiedChipToken, setCopiedChipToken] = useState<string | null>(null);
 
-  // Main Alias state (row1 / main)
-  const mainNode = getMainInputNode(availableUpstreamNodes, config.main_input_id);
+  // Main Input & Alias state (row1 / main)
+  const initialMainNode = getMainInputNode(availableUpstreamNodes, config.main_input_id);
+  const [selectedMainId, setSelectedMainId] = useState<string>(
+    () => initialMainNode?.id || config.main_input_id || availableUpstreamNodes[0]?.id || ""
+  );
+  const mainNode = availableUpstreamNodes.find((n) => n.id === selectedMainId) || initialMainNode;
   const initialMainAlias = config.main_alias || mainNode?.alias || "row1";
   const [mainAlias, setMainAlias] = useState<string>(initialMainAlias);
+
+  const effectiveMainSchema: SchemaColumn[] = useMemo(() => {
+    if (mainNode?.schema && mainNode.schema.length > 0) return mainNode.schema;
+    if (mainNode && lookupSchemas[mainNode.id] && lookupSchemas[mainNode.id].length > 0) {
+      return lookupSchemas[mainNode.id];
+    }
+    return mainSchema;
+  }, [mainNode, lookupSchemas, mainSchema]);
 
   // Lookups state derivado dos nós conectados que não são o main (1.1)
   const [lookups, setLookups] = useState<TMapLookupConfig[]>(() => {
@@ -202,7 +215,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
       availableUpstreamNodes,
       (config.lookups || []) as any,
       lookupSchemas,
-      config.main_input_id
+      selectedMainId || config.main_input_id
     ).lookups as TMapLookupConfig[];
   });
 
@@ -211,11 +224,45 @@ export const TMapModal: React.FC<TMapModalProps> = ({
       availableUpstreamNodes,
       (config.lookups || []) as any,
       lookupSchemas,
-      config.main_input_id
+      selectedMainId || config.main_input_id
     ).disconnectedWarnings;
   });
 
   const [lookupNotice, setLookupNotice] = useState<string | null>(null);
+
+  // Ação de UX: Alternar qual nó conectado upstream é o Main vs Lookup
+  const handleSetMainInput = (newMainId: string) => {
+    if (newMainId === selectedMainId) return;
+    const oldMainNode = mainNode;
+    const newMainNode = availableUpstreamNodes.find((n) => n.id === newMainId);
+    if (!newMainNode) return;
+
+    setSelectedMainId(newMainId);
+    setMainAlias(newMainNode.alias || "row1");
+
+    setLookups((prev) => {
+      // Remove o novo main dos lookups
+      const filtered = prev.filter((l) => l.node_id !== newMainId);
+      // Adiciona o antigo main aos lookups se ainda não estiver na lista
+      if (oldMainNode && !filtered.some((l) => l.node_id === oldMainNode.id)) {
+        filtered.unshift({
+          node_id: oldMainNode.id,
+          label: oldMainNode.label || oldMainNode.id,
+          alias: oldMainNode.alias || "row2",
+          join_type: "left",
+          match_model: "All matches",
+          left_keys: [],
+          right_keys: [],
+          schema: oldMainNode.schema || [],
+        });
+      }
+      return filtered;
+    });
+
+    setLookupNotice(
+      `Entrada Principal alterada para "${newMainNode.label || newMainId}". A entrada anterior "${oldMainNode?.label || oldMainNode?.id}" tornou-se Lookup. Revise expressões que utilizem os aliases antigos.`
+    );
+  };
 
   // 1.1: Recalcula quando as conexões upstream mudarem, preservando edições locais
   useEffect(() => {
@@ -224,12 +271,12 @@ export const TMapModal: React.FC<TMapModalProps> = ({
         availableUpstreamNodes,
         currentLookups.length > 0 ? (currentLookups as any) : ((config.lookups || []) as any),
         lookupSchemas,
-        config.main_input_id
+        selectedMainId || config.main_input_id
       );
       setDisconnectedWarnings(derived.disconnectedWarnings);
       return derived.lookups as TMapLookupConfig[];
     });
-  }, [availableUpstreamNodes, lookupSchemas, config.main_input_id]);
+  }, [availableUpstreamNodes, lookupSchemas, selectedMainId, config.main_input_id]);
 
   // Variables state (inicia vazio para novos mappers - sem mocks fantasmas como row1.Title)
   const [variables, setVariables] = useState<TMapVariable[]>(
@@ -416,6 +463,67 @@ export const TMapModal: React.FC<TMapModalProps> = ({
     }
   }, [historyIndex, historyStack]);
 
+  // ─── Drag and Drop & Keyboard Reordering for Output Columns ──────
+  const [outDropIndicator, setOutDropIndicator] = useState<{ colId: string; pos: "above" | "below" } | null>(null);
+  const [draggedOutColId, setDraggedOutColId] = useState<string | null>(null);
+
+  const handleOutColDragStart = (e: React.DragEvent, colId: string) => {
+    e.stopPropagation();
+    e.dataTransfer.setData("application/x-rdf-out-col-id", colId);
+    e.dataTransfer.effectAllowed = "move";
+    setDraggedOutColId(colId);
+  };
+
+  const handleOutColDragOver = (e: React.DragEvent, targetColId: string) => {
+    if (!e.dataTransfer.types.includes("application/x-rdf-out-col-id") && !draggedOutColId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "move";
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const pos = (e.clientY - rect.top) < rect.height / 2 ? "above" : "below";
+    setOutDropIndicator((prev) => {
+      if (prev?.colId === targetColId && prev.pos === pos) return prev;
+      return { colId: targetColId, pos };
+    });
+  };
+
+  const handleOutColDrop = (e: React.DragEvent, outputId: string, targetColId: string) => {
+    const sourceColId = e.dataTransfer.getData("application/x-rdf-out-col-id") || draggedOutColId;
+    if (!sourceColId || sourceColId === targetColId) {
+      setOutDropIndicator(null);
+      setDraggedOutColId(null);
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    const targetOut = outputs.find((o) => o.id === outputId);
+    if (!targetOut) return;
+
+    const pos = outDropIndicator?.pos || "below";
+    const reordered = reorderItems(targetOut.columns, [sourceColId], targetColId, pos, (c) => c.id || c.target);
+    const nextOutputs = outputs.map((o) => (o.id === outputId ? { ...o, columns: reordered } : o));
+    setOutputs(nextOutputs);
+    pushHistorySnapshot(lookups, variables, nextOutputs);
+    setOutDropIndicator(null);
+    setDraggedOutColId(null);
+  };
+
+  const handleOutColKeyDown = (e: React.KeyboardEvent, outputId: string, colId: string) => {
+    if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      e.preventDefault();
+      e.stopPropagation();
+      const targetOut = outputs.find((o) => o.id === outputId);
+      if (!targetOut) return;
+      const dir = e.key === "ArrowUp" ? "up" : "down";
+      const moved = moveItemsDirection(targetOut.columns, new Set([colId]), dir, (c) => c.id || c.target);
+      if (moved !== targetOut.columns) {
+        const nextOutputs = outputs.map((o) => (o.id === outputId ? { ...o, columns: moved } : o));
+        setOutputs(nextOutputs);
+        pushHistorySnapshot(lookups, variables, nextOutputs);
+      }
+    }
+  };
+
   const handleModalKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       const isCtrlOrMeta = e.ctrlKey || e.metaKey;
@@ -539,7 +647,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
   });
 
   const buildValidationContext = useCallback(() => {
-    const effectiveMain = (mainNode?.schema && mainNode.schema.length > 0) ? mainNode.schema : mainSchema;
+    const effectiveMain = effectiveMainSchema;
     const aliasMap: Record<string, any> = {};
     const mainCols: Record<string, string> = {};
     effectiveMain.forEach((c) => {
@@ -567,7 +675,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
 
     const knownCols = Object.keys(aliasMap).flatMap((a) => Object.keys(aliasMap[a].columns));
     return { aliasMap, knownCols };
-  }, [mainNode, mainSchema, mainAlias, lookups, availableUpstreamNodes, lookupSchemas]);
+  }, [mainNode, effectiveMainSchema, mainAlias, lookups, availableUpstreamNodes, lookupSchemas]);
 
   // ─── Inline Expression Validation (POST /api/v1/expressions/validate) ───
   const [validationErrors, setValidationErrors] = useState<Record<string, string | null>>({});
@@ -753,9 +861,9 @@ export const TMapModal: React.FC<TMapModalProps> = ({
       return availableUpstreamNodes.map((un, idx) => ({
         id: un.id,
         label: un.label || un.id,
-        alias: un.alias || (idx === 0 ? mainAlias : `row${idx + 1}`),
-        schema: un.schema && un.schema.length > 0 ? un.schema : (idx === 0 ? mainSchema : (lookupSchemas[un.id] || [])),
-        isMain: idx === 0,
+        alias: un.alias || (un.id === mainNode?.id ? mainAlias : `row${idx + 1}`),
+        schema: un.schema && un.schema.length > 0 ? un.schema : (un.id === mainNode?.id ? effectiveMainSchema : (lookupSchemas[un.id] || [])),
+        isMain: un.id === mainNode?.id,
       }));
     }
     const list = [
@@ -763,7 +871,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
         id: "main",
         label: "Entrada Principal (Main)",
         alias: mainAlias,
-        schema: mainSchema,
+        schema: effectiveMainSchema,
         isMain: true,
       },
     ];
@@ -778,7 +886,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
       });
     });
     return list;
-  }, [availableUpstreamNodes, mainAlias, mainSchema, lookups, lookupSchemas]);
+  }, [availableUpstreamNodes, mainAlias, effectiveMainSchema, lookups, lookupSchemas, mainNode]);
 
   // ─── Direct Mapping / Click-to-Map Handler ───────────────────
   const handleAddOrMapColumnToActiveOutput = (
@@ -877,7 +985,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
   // ─── Auto Map Handler ─────────────────────────────────────────
   const handleAutoMap = (outId: string) => {
     const availableSources: { name: string; expr: string; type: SchemaColumnType; prefix: string }[] = [];
-    mainSchema.forEach((c) =>
+    effectiveMainSchema.forEach((c) =>
       availableSources.push({ name: c.name, expr: `${mainAlias}.${c.name}`, type: c.type, prefix: mainAlias })
     );
     lookups.forEach((lk, idx) => {
@@ -1067,7 +1175,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
 
     onSave(
       {
-        main_input_id: config.main_input_id || mainNode?.id,
+        main_input_id: selectedMainId || mainNode?.id || config.main_input_id,
         main_alias: mainAlias,
         lookups: normalizedLookups,
         variables,
@@ -1325,10 +1433,10 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                       title="Namespace / Alias do Main (ex: row1, main)"
                       onChange={(e) => setMainAlias(e.target.value.trim() || "row1")}
                     />
-                    <span className="card-name">Fluxo Principal</span>
+                    <span className="card-name">{mainNode?.label || mainNode?.id || "Fluxo Principal"} (Main)</span>
                   </div>
                   <div className="card-header-actions" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <span className="card-badge">{mainSchema.length} colunas</span>
+                    <span className="card-badge">{effectiveMainSchema.length} colunas</span>
                     <button
                       className="icon-btn btn-xs"
                       title={isMainExpanded ? "Recolher colunas" : "Expandir colunas"}
@@ -1341,8 +1449,8 @@ export const TMapModal: React.FC<TMapModalProps> = ({
 
                 {isMainExpanded && (
                   <div className="table-card-columns">
-                    {mainSchema.length > 0 ? (
-                      mainSchema
+                    {effectiveMainSchema.length > 0 ? (
+                      effectiveMainSchema
                         .filter((c) => matchesSearch(c.name) || matchesSearch(mainAlias))
                         .map((c) => (
                           <div
@@ -1399,6 +1507,27 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                         <span className="card-name">{lk.label || lk.node_id} ({lk.join_type === "left" ? "Left" : "Inner"})</span>
                       </div>
                       <div className="card-header-actions" style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <button
+                          type="button"
+                          className="btn btn-xs"
+                          style={{
+                            background: "rgba(56, 189, 248, 0.12)",
+                            border: "1px solid rgba(56, 189, 248, 0.35)",
+                            color: "#38bdf8",
+                            fontSize: "0.68rem",
+                            padding: "2px 7px",
+                            borderRadius: 4,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 4,
+                            cursor: "pointer",
+                          }}
+                          title="Tornar este nó o Fluxo Principal (Main Stream) do Data Mapper"
+                          onClick={() => handleSetMainInput(lk.node_id)}
+                        >
+                          <Zap size={11} color="#38bdf8" />
+                          <span>Definir como Main</span>
+                        </button>
                         <span className="card-badge">{lkCols.length} colunas</span>
                         <button
                           className="icon-btn btn-xs"
@@ -1930,15 +2059,16 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                       <table className="mapper-out-grid">
                         <thead>
                           <tr>
-                            <th style={{ width: "55%" }}>Expression / Origem</th>
-                            <th style={{ width: "35%" }}>Column</th>
-                            <th style={{ width: "10%" }}></th>
+                            <th style={{ width: 24, textAlign: "center" }}></th>
+                            <th style={{ width: "52%" }}>Expression / Origem</th>
+                            <th style={{ width: "34%" }}>Column</th>
+                            <th style={{ width: "14%" }}></th>
                           </tr>
                         </thead>
                         <tbody>
                           {out.columns.length === 0 ? (
                             <tr>
-                              <td colSpan={3} style={{ textAlign: "center", padding: "36px 16px" }}>
+                              <td colSpan={4} style={{ textAlign: "center", padding: "36px 16px" }}>
                                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, color: "var(--text-muted)" }}>
                                   <Wand2 size={26} style={{ opacity: 0.4, color: "var(--accent-cyan)" }} />
                                   <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "var(--text-primary)" }}>
@@ -1951,8 +2081,35 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                               </td>
                             </tr>
                           ) : (
-                            out.columns.map((col, idx) => (
-                              <tr key={col.id || idx}>
+                            out.columns.map((col, idx) => {
+                              const colKey = col.id || `col-${idx}`;
+                              return (
+                              <tr
+                                key={colKey}
+                                tabIndex={0}
+                                style={{
+                                  borderTop:
+                                    outDropIndicator?.colId === colKey && outDropIndicator.pos === "above"
+                                      ? "2px solid var(--accent-cyan, #06b6d4)"
+                                      : undefined,
+                                  borderBottom:
+                                    outDropIndicator?.colId === colKey && outDropIndicator.pos === "below"
+                                      ? "2px solid var(--accent-cyan, #06b6d4)"
+                                      : undefined,
+                                }}
+                                onDragOver={(e) => handleOutColDragOver(e, colKey)}
+                                onDragLeave={() => setOutDropIndicator(null)}
+                                onDrop={(e) => handleOutColDrop(e, out.id, colKey)}
+                                onKeyDown={(e) => handleOutColKeyDown(e, out.id, colKey)}
+                              >
+                                <td
+                                  style={{ width: 24, textAlign: "center", cursor: "grab", padding: "2px" }}
+                                  draggable
+                                  onDragStart={(e) => handleOutColDragStart(e, colKey)}
+                                  title="Arraste para reordenar esta coluna (ou use Alt+Seta Acima/Abaixo)"
+                                >
+                                  <GripVertical size={12} style={{ opacity: 0.6 }} />
+                                </td>
                                 <td>
                                   <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
                                     <input
@@ -2089,7 +2246,8 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                                 </button>
                               </td>
                             </tr>
-                          ))
+                            );
+                          })
                         )}
                         </tbody>
                       </table>
@@ -2203,7 +2361,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                     </thead>
                     <tbody>
                       {(activeInputId === "main"
-                        ? mainSchema
+                        ? effectiveMainSchema
                         : getLookupEffectiveSchema(
                             lookups.find((l) => l.node_id === activeInputId) || { node_id: activeInputId },
                             availableUpstreamNodes.find((un) => un.id === activeInputId),
@@ -2235,7 +2393,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                   onClick={() => {
                     const src =
                       activeInputId === "main"
-                        ? mainSchema
+                        ? effectiveMainSchema
                         : getLookupEffectiveSchema(
                             lookups.find((l) => l.node_id === activeInputId) || { node_id: activeInputId },
                             availableUpstreamNodes.find((un) => un.id === activeInputId),
@@ -2341,6 +2499,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                   <table className="schema-studio-table">
                     <thead>
                       <tr>
+                        <th style={{ width: 22 }}></th>
                         <th>Column</th>
                         <th style={{ width: 32 }}>K</th>
                         <th style={{ width: 95 }}>Type</th>
@@ -2352,8 +2511,35 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                       </tr>
                     </thead>
                     <tbody>
-                      {(activeOutput?.columns || []).map((c, i) => (
-                        <tr key={c.id || i}>
+                      {(activeOutput?.columns || []).map((c, i) => {
+                        const colKey = c.id || `col-${i}`;
+                        return (
+                        <tr
+                          key={colKey}
+                          tabIndex={0}
+                          style={{
+                            borderTop:
+                              outDropIndicator?.colId === colKey && outDropIndicator.pos === "above"
+                                ? "2px solid var(--accent-cyan, #06b6d4)"
+                                : undefined,
+                            borderBottom:
+                              outDropIndicator?.colId === colKey && outDropIndicator.pos === "below"
+                                ? "2px solid var(--accent-cyan, #06b6d4)"
+                                : undefined,
+                          }}
+                          onDragOver={(e) => handleOutColDragOver(e, colKey)}
+                          onDragLeave={() => setOutDropIndicator(null)}
+                          onDrop={(e) => handleOutColDrop(e, activeOutputId, colKey)}
+                          onKeyDown={(e) => handleOutColKeyDown(e, activeOutputId, colKey)}
+                        >
+                          <td
+                            style={{ width: 22, textAlign: "center", cursor: "grab", padding: "2px" }}
+                            draggable
+                            onDragStart={(e) => handleOutColDragStart(e, colKey)}
+                            title="Arraste para reordenar esta coluna (ou use Alt+Seta Acima/Abaixo)"
+                          >
+                            <GripVertical size={11} style={{ opacity: 0.6 }} />
+                          </td>
                           <td>
                             <input
                               className="table-cell-input"
@@ -2484,7 +2670,8 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                             </button>
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
