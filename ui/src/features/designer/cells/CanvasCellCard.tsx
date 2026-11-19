@@ -36,6 +36,7 @@ import {
   EyeOff,
   MoreVertical,
   Code,
+  GripVertical,
 } from "lucide-react";
 
 import { Canvas } from "../Canvas";
@@ -594,26 +595,49 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
               }}
             />
           ) : (
-            <button
-              type="button"
-              className="badge"
-              style={{
-                cursor: "pointer",
-                background: "rgba(79, 142, 247, 0.12)",
-                color: "var(--accent-blue)",
-                borderColor: "rgba(79, 142, 247, 0.3)",
-                fontSize: "0.7rem",
-                fontWeight: 600,
-                padding: "2px 6px",
-              }}
-              title="Clique para editar a ordem de execução da célula"
-              onClick={(e) => {
-                e.stopPropagation();
-                setIsEditingOrder(true);
-              }}
-            >
-              Ordem: #{cell.order}
-            </button>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
+              {!isFocusMode && (
+                <div
+                  draggable
+                  onDragStart={(e) => {
+                    e.stopPropagation();
+                    e.dataTransfer.setData("application/x-rdf-cell-id", cell.id);
+                    e.dataTransfer.effectAllowed = "move";
+                  }}
+                  title="Arraste para reordenar esta célula"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    cursor: "grab",
+                    padding: "2px",
+                    color: "var(--text-muted)",
+                  }}
+                >
+                  <GripVertical size={13} />
+                </div>
+              )}
+              <button
+                type="button"
+                className="badge"
+                style={{
+                  cursor: "pointer",
+                  background: "rgba(79, 142, 247, 0.12)",
+                  color: "var(--accent-blue)",
+                  borderColor: "rgba(79, 142, 247, 0.3)",
+                  fontSize: "0.7rem",
+                  fontWeight: 600,
+                  padding: "2px 6px",
+                }}
+                title="Clique para editar a ordem de execução da célula"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsEditingOrder(true);
+                }}
+              >
+                Ordem: #{cell.order}
+              </button>
+            </div>
           )}
 
           {/* Cell Name (Editable, max 50 chars) */}

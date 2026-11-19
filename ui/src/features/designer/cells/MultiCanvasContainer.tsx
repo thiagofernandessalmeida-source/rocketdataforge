@@ -169,18 +169,82 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
 
   const handleMoveUp = (index: number) => {
     if (index <= 0) return;
-    const targetCell = sortedCells[index];
-    const prevCell = sortedCells[index - 1];
-    jobStore.updateCell(job.id, targetCell.id, { order: prevCell.order });
-    jobStore.updateCell(job.id, prevCell.id, { order: targetCell.order });
+    const nextIds = sortedCells.map((c) => c.id);
+    const temp = nextIds[index];
+    nextIds[index] = nextIds[index - 1];
+    nextIds[index - 1] = temp;
+    jobStore.reorderCells(job.id, nextIds);
   };
 
   const handleMoveDown = (index: number) => {
     if (index >= sortedCells.length - 1) return;
-    const targetCell = sortedCells[index];
-    const nextCell = sortedCells[index + 1];
-    jobStore.updateCell(job.id, targetCell.id, { order: nextCell.order });
-    jobStore.updateCell(job.id, nextCell.id, { order: targetCell.order });
+    const nextIds = sortedCells.map((c) => c.id);
+    const temp = nextIds[index];
+    nextIds[index] = nextIds[index + 1];
+    nextIds[index + 1] = temp;
+    jobStore.reorderCells(job.id, nextIds);
+  };
+
+  // ─── Drag-and-drop Cell Reordering ────────────────────────────
+  const [cellDropIndicator, setCellDropIndicator] = useState<{ targetId: string; position: "above" | "below" } | null>(null);
+
+  const handleCardDragOver = (e: React.DragEvent, targetCellId: string) => {
+    if (!e.dataTransfer.types.includes("application/x-rdf-cell-id")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "move";
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const relY = e.clientY - rect.top;
+    const position: "above" | "below" = relY < rect.height / 2 ? "above" : "below";
+    setCellDropIndicator((prev) => {
+      if (prev?.targetId === targetCellId && prev.position === position) return prev;
+      return { targetId: targetCellId, position };
+    });
+  };
+
+  const handleCardDrop = (e: React.DragEvent, targetCellId: string) => {
+    const draggedId = e.dataTransfer.getData("application/x-rdf-cell-id");
+    const indicator = cellDropIndicator;
+    setCellDropIndicator(null);
+
+    if (!draggedId || draggedId === targetCellId) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const currentIds = sortedCells.map((c) => c.id);
+    const fromIndex = currentIds.indexOf(draggedId);
+    const targetIndex = currentIds.indexOf(targetCellId);
+    if (fromIndex === -1 || targetIndex === -1) return;
+
+    const position = indicator?.position || "below";
+    const nextIds = [...currentIds];
+    nextIds.splice(fromIndex, 1);
+    const newTargetIndex = nextIds.indexOf(targetCellId);
+    const insertIndex = position === "above" ? newTargetIndex : newTargetIndex + 1;
+    nextIds.splice(insertIndex, 0, draggedId);
+
+    jobStore.reorderCells(job.id, nextIds);
+
+    // Precondition violation check
+    const newOrderMap = new Map<string, number>();
+    nextIds.forEach((id, idx) => newOrderMap.set(id, idx + 1));
+
+    const warnings: string[] = [];
+    sortedCells.forEach((c) => {
+      if (c.preconditions?.length) {
+        const myOrder = newOrderMap.get(c.id) || 0;
+        c.preconditions.forEach((p: any) => {
+          const depOrder = newOrderMap.get(p.target_cell_id) || 0;
+          if (depOrder >= myOrder) {
+            const depCell = sortedCells.find((x) => x.id === p.target_cell_id);
+            warnings.push(`A célula "${c.name}" depende de "${depCell?.name || p.target_cell_id}", que agora está na ordem #${depOrder} (após ou no mesmo nível).`);
+          }
+        });
+      }
+    });
+    if (warnings.length > 0) {
+      showToast?.("info", warnings[0]);
+    }
   };
 
   const handleToggleFocus = (cellId: string) => {
@@ -691,36 +755,55 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
           // ─── Default / Medium View: Scrollable Cards ─────────
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             {sortedCells.map((cell, idx) => (
-              <CanvasCellCard
+              <div
                 key={cell.id}
-                cell={cell}
-                jobId={job.id}
-                allCells={sortedCells}
-                isFocusMode={false}
-                isActive={activeCellId === cell.id}
-                canDelete={sortedCells.length > 1}
-                onSelectCell={handleSelectCell}
-                onUpdateGraph={handleUpdateGraph}
-                onRenameCell={handleRenameCell}
-                onUpdateCellMeta={handleUpdateCellMeta}
-                onDeleteCell={handleDeleteCell}
-                onDuplicateCell={handleDuplicateCell}
-                onMoveUp={idx > 0 ? () => handleMoveUp(idx) : undefined}
-                onMoveDown={idx < sortedCells.length - 1 ? () => handleMoveDown(idx) : undefined}
-                onToggleFocus={handleToggleFocus}
-                onRunSingleCell={handleRunSingleCell}
-                onStopSingleCell={handleStopSingleCell}
-                onResetStatus={(cellId) => {
-                  const target = sortedCells.find((c) => c.id === cellId);
-                  if (target && target.status === "running") {
-                    handleStopSingleCell(target);
-                  }
-                  jobStore.resetCellStatus(job.id, cellId);
-                  showToast?.("info", "Status da célula resetado.");
+                onDragOver={(e) => handleCardDragOver(e, cell.id)}
+                onDragLeave={() => setCellDropIndicator(null)}
+                onDrop={(e) => handleCardDrop(e, cell.id)}
+                style={{
+                  position: "relative",
+                  borderRadius: 8,
+                  borderTop:
+                    cellDropIndicator?.targetId === cell.id && cellDropIndicator.position === "above"
+                      ? "3px solid var(--accent-cyan, #06b6d4)"
+                      : "3px solid transparent",
+                  borderBottom:
+                    cellDropIndicator?.targetId === cell.id && cellDropIndicator.position === "below"
+                      ? "3px solid var(--accent-cyan, #06b6d4)"
+                      : "3px solid transparent",
+                  transition: "border-color 0.1s ease",
                 }}
-                onSelectNode={onSelectNode}
-                onDoubleClickNode={onDoubleClickNode}
-              />
+              >
+                <CanvasCellCard
+                  cell={cell}
+                  jobId={job.id}
+                  allCells={sortedCells}
+                  isFocusMode={false}
+                  isActive={activeCellId === cell.id}
+                  canDelete={sortedCells.length > 1}
+                  onSelectCell={handleSelectCell}
+                  onUpdateGraph={handleUpdateGraph}
+                  onRenameCell={handleRenameCell}
+                  onUpdateCellMeta={handleUpdateCellMeta}
+                  onDeleteCell={handleDeleteCell}
+                  onDuplicateCell={handleDuplicateCell}
+                  onMoveUp={idx > 0 ? () => handleMoveUp(idx) : undefined}
+                  onMoveDown={idx < sortedCells.length - 1 ? () => handleMoveDown(idx) : undefined}
+                  onToggleFocus={handleToggleFocus}
+                  onRunSingleCell={handleRunSingleCell}
+                  onStopSingleCell={handleStopSingleCell}
+                  onResetStatus={(cellId) => {
+                    const target = sortedCells.find((c) => c.id === cellId);
+                    if (target && target.status === "running") {
+                      handleStopSingleCell(target);
+                    }
+                    jobStore.resetCellStatus(job.id, cellId);
+                    showToast?.("info", "Status da célula resetado.");
+                  }}
+                  onSelectNode={onSelectNode}
+                  onDoubleClickNode={onDoubleClickNode}
+                />
+              </div>
             ))}
 
             {/* Bottom Add Cell Quick Bar */}

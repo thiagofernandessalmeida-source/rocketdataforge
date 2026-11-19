@@ -1808,9 +1808,39 @@ print("Dados publicados com sucesso via context.write_output!")
         if (j.id !== jobId) return j;
         const updatedCells = (j.cells || []).map((c) => {
           if (c.id !== cellId) return c;
+          const deletedEdge = (c.edges || []).find((e) => e.id === edgeId);
           const nextEdges = (c.edges || []).filter((e) => e.id !== edgeId);
+          let nextNodes = c.nodes || [];
+
+          if (deletedEdge) {
+            nextNodes = nextNodes.map((n) => {
+              if (n.id !== deletedEdge.target) return n;
+              const ct = (n.data?.componentType || "").toLowerCase();
+              if (ct.includes("tmap") || ct.includes("mapper")) {
+                const cfg = { ...(n.data?.config || {}) };
+                if (cfg.main_input_id === deletedEdge.source) {
+                  const remIncoming = nextEdges.filter((e) => e.target === n.id);
+                  const remMain = remIncoming.find((e) => e.targetHandle === "main" || e.data?.flowType === "main");
+                  cfg.main_input_id = remMain ? remMain.source : (remIncoming[0] ? remIncoming[0].source : undefined);
+                }
+                if (cfg.lookups && Array.isArray(cfg.lookups)) {
+                  cfg.lookups = cfg.lookups.filter((lk: any) => lk.node_id !== deletedEdge.source);
+                }
+                return {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    config: cfg,
+                  },
+                };
+              }
+              return n;
+            });
+          }
+
           return {
             ...c,
+            nodes: nextNodes,
             edges: nextEdges,
           };
         });
@@ -1841,16 +1871,203 @@ print("Dados publicados com sucesso via context.write_output!")
         if (j.id !== jobId) return j;
         const updatedCells = (j.cells || []).map((c) => {
           if (c.id !== cellId) return c;
-          const nextNodes = (c.nodes || []).filter((n) => n.id !== nodeId);
           const nextEdges = (c.edges || []).filter(
             (e) => e.source !== nodeId && e.target !== nodeId
           );
+          const nextNodes = (c.nodes || [])
+            .filter((n) => n.id !== nodeId)
+            .map((n) => {
+              const ct = (n.data?.componentType || "").toLowerCase();
+              if (ct.includes("tmap") || ct.includes("mapper")) {
+                const cfg = { ...(n.data?.config || {}) };
+                if (cfg.main_input_id === nodeId) {
+                  const remEdges = nextEdges.filter((e) => e.target === n.id);
+                  const remMain = remEdges.find((e) => e.targetHandle === "main" || e.data?.flowType === "main");
+                  cfg.main_input_id = remMain ? remMain.source : (remEdges[0] ? remEdges[0].source : undefined);
+                }
+                if (cfg.lookups && Array.isArray(cfg.lookups)) {
+                  cfg.lookups = cfg.lookups.filter((lk: any) => lk.node_id !== nodeId);
+                }
+                return {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    config: cfg,
+                  },
+                };
+              }
+              return n;
+            });
           return {
             ...c,
             nodes: nextNodes,
             edges: nextEdges,
           };
         });
+        const activeCell = updatedCells.find((c) => c.id === j.activeCellId);
+        return {
+          ...j,
+          cells: updatedCells,
+          nodes: activeCell ? activeCell.nodes : j.nodes,
+          edges: activeCell ? activeCell.edges : j.edges,
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+    return true;
+  },
+
+  reorderCells(jobId: string, cellIdsInOrder: string[]): boolean {
+    const job = state.jobs.find((j) => j.id === jobId);
+    if (!job) return false;
+
+    takeSnapshot(jobId, true);
+
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const currentCells = j.cells || [];
+        const cellMap = new Map(currentCells.map((c) => [c.id, c]));
+        const orderedCells: CanvasCellData[] = [];
+
+        cellIdsInOrder.forEach((cid, index) => {
+          const c = cellMap.get(cid);
+          if (c) {
+            orderedCells.push({
+              ...c,
+              order: index + 1,
+            });
+            cellMap.delete(cid);
+          }
+        });
+
+        cellMap.forEach((c) => {
+          orderedCells.push({
+            ...c,
+            order: orderedCells.length + 1,
+          });
+        });
+
+        const activeCell = orderedCells.find((c) => c.id === j.activeCellId) || orderedCells[0];
+
+        return {
+          ...j,
+          cells: orderedCells,
+          nodes: activeCell ? activeCell.nodes : j.nodes,
+          edges: activeCell ? activeCell.edges : j.edges,
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    };
+    saveState(state);
+    notify();
+    return true;
+  },
+
+  swapTMapMainAndLookup(
+    jobId: string,
+    cellId: string,
+    tmapNodeId: string,
+    newMainSourceId: string
+  ): boolean {
+    const job = state.jobs.find((j) => j.id === jobId);
+    if (!job) return false;
+
+    takeSnapshot(jobId, true);
+
+    state = {
+      ...state,
+      jobs: state.jobs.map((j) => {
+        if (j.id !== jobId) return j;
+        const updatedCells = (j.cells || []).map((c) => {
+          if (c.id !== cellId) return c;
+          const currentEdges = c.edges || [];
+          const currentNodes = c.nodes || [];
+          const targetNode = currentNodes.find((n) => n.id === tmapNodeId);
+          if (!targetNode) return c;
+
+          const oldMainId = targetNode.data?.config?.main_input_id;
+
+          let lkpCount = 1;
+          const updatedEdges = currentEdges.map((e) => {
+            if (e.target !== tmapNodeId) return e;
+
+            if (e.source === newMainSourceId) {
+              return {
+                ...e,
+                targetHandle: "main",
+                label: "main1",
+                style: { ...(e.style || {}), stroke: "#38bdf8", strokeWidth: 2 },
+                data: {
+                  ...(e.data || {}),
+                  flowName: "main1",
+                  flowType: "main",
+                },
+              };
+            }
+
+            if (e.source === oldMainId || e.targetHandle === "main" || e.data?.flowType === "main") {
+              const flowName = `lkp${lkpCount++}`;
+              return {
+                ...e,
+                targetHandle: "lookup",
+                label: flowName,
+                style: { ...(e.style || {}), stroke: "#c084fc", strokeWidth: 2 },
+                data: {
+                  ...(e.data || {}),
+                  flowName,
+                  flowType: "lkp",
+                },
+              };
+            }
+
+            return e;
+          });
+
+          const updatedNodes = currentNodes.map((n) => {
+            if (n.id !== tmapNodeId) return n;
+            const cfg = { ...(n.data?.config || {}) };
+            cfg.main_input_id = newMainSourceId;
+
+            const oldLookups = (cfg.lookups || []).filter((lk: any) => lk.node_id !== newMainSourceId);
+            if (oldMainId && oldMainId !== newMainSourceId) {
+              const oldMainNode = currentNodes.find((x) => x.id === oldMainId);
+              const alreadyHas = oldLookups.some((lk: any) => lk.node_id === oldMainId);
+              if (!alreadyHas) {
+                oldLookups.unshift({
+                  node_id: oldMainId,
+                  label: oldMainNode?.data?.label || oldMainId,
+                  alias: "lkp1",
+                  join_type: "left",
+                  join_model: "left_outer",
+                  match_model: "unique",
+                  lookup_model: "Load once",
+                  schema: (oldMainNode?.data as any)?.schema || [],
+                  join_keys: [],
+                });
+              }
+            }
+            cfg.lookups = oldLookups;
+
+            return {
+              ...n,
+              data: {
+                ...n.data,
+                config: cfg,
+              },
+            };
+          });
+
+          return {
+            ...c,
+            nodes: updatedNodes,
+            edges: updatedEdges,
+          };
+        });
+
         const activeCell = updatedCells.find((c) => c.id === j.activeCellId);
         return {
           ...j,
@@ -1951,37 +2168,6 @@ print("Dados publicados com sucesso via context.write_output!")
     saveState(state);
     notify();
     return newCell;
-  },
-
-  reorderCells(jobId: string, orderedCellIds: string[]): void {
-    state = {
-      ...state,
-      jobs: state.jobs.map((j) => {
-        if (j.id !== jobId) return j;
-        const currentCells = j.cells || [];
-        const cellMap = new Map(currentCells.map((c) => [c.id, c]));
-        const reordered = orderedCellIds
-          .map((id, index) => {
-            const cell = cellMap.get(id);
-            return cell ? { ...cell, order: index + 1 } : null;
-          })
-          .filter(Boolean) as CanvasCellData[];
-
-        // Append any cells not explicitly in orderedCellIds
-        const remaining = currentCells.filter((c) => !orderedCellIds.includes(c.id));
-        remaining.forEach((c, idx) => {
-          reordered.push({ ...c, order: reordered.length + idx + 1 });
-        });
-
-        return {
-          ...j,
-          cells: reordered,
-          updatedAt: new Date().toISOString(),
-        };
-      }),
-    };
-    saveState(state);
-    notify();
   },
 
   setCellStatus(jobId: string, cellId: string, status: CellExecutionStatus): void {
@@ -2287,18 +2473,48 @@ print("Dados publicados com sucesso via context.write_output!")
         };
       });
 
+    // Reconciliação atômica de main_input_id e lookups para nós Data Mapper (tMap)
+    const reconciledNodes = safeNodes.map((n) => {
+      const ct = (n.data?.componentType || "").toLowerCase();
+      if (!ct.includes("tmap") && !ct.includes("mapper")) return n;
+      const incoming = safeEdges.filter((e) => e.target === n.id);
+      const incomingSourceIds = new Set(incoming.map((e) => e.source));
+      const mainEdge = incoming.find((e) => e.targetHandle === "main" || e.data?.flowType === "main");
+      const cfg = { ...(n.data?.config || {}) };
+
+      if (mainEdge) {
+        cfg.main_input_id = mainEdge.source;
+      } else if (cfg.main_input_id && !incomingSourceIds.has(cfg.main_input_id)) {
+        cfg.main_input_id = incoming[0]?.source;
+      }
+
+      if (cfg.lookups && Array.isArray(cfg.lookups)) {
+        cfg.lookups = cfg.lookups.filter(
+          (lk: any) => lk.node_id !== cfg.main_input_id && incomingSourceIds.has(lk.node_id)
+        );
+      }
+
+      return {
+        ...n,
+        data: {
+          ...n.data,
+          config: cfg,
+        },
+      };
+    });
+
     state = {
       ...state,
       jobs: state.jobs.map((j) => {
         if (j.id !== jobId) return j;
         const updatedCells = (j.cells || []).map((c) =>
-          c.id === cellId ? { ...c, nodes: safeNodes, edges: safeEdges, viewport } : c
+          c.id === cellId ? { ...c, nodes: reconciledNodes, edges: safeEdges, viewport } : c
         );
         const isActive = j.activeCellId === cellId;
         return {
           ...j,
           cells: updatedCells,
-          nodes: isActive ? safeNodes : j.nodes,
+          nodes: isActive ? reconciledNodes : j.nodes,
           edges: isActive ? safeEdges : j.edges,
           viewport: isActive ? viewport : j.viewport,
           updatedAt: new Date().toISOString(),
