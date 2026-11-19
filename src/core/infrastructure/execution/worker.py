@@ -1190,9 +1190,35 @@ class ExecutionWorker:
             inp for inp in input_ids
             if inp.split(":")[0].split(".")[0] not in lookup_node_ids
         ]
-        main_id = cfg.get("main_input_id") or (candidate_mains[0] if candidate_mains else (input_ids[0] if input_ids else ""))
+
+        raw_main = cfg.get("main_input_id")
+        clean_main = str(raw_main).split(":")[0].split(".")[0] if raw_main else ""
+        clean_inputs = [inp.split(":")[0].split(".")[0] for inp in input_ids]
+
+        if clean_main and clean_main in clean_inputs:
+            main_id = clean_main
+        elif candidate_mains:
+            main_id = candidate_mains[0].split(":")[0].split(".")[0]
+        elif input_ids:
+            main_id = input_ids[0].split(":")[0].split(".")[0]
+        else:
+            main_id = ""
+
+        if not main_id or main_id not in clean_inputs:
+            from src.core.domain.shared.exceptions import DomainError
+            raise DomainError(
+                f"Data Mapper (tMap) '{phys_op.id}' falhou: nenhuma entrada principal válida conectada (main_input_id='{raw_main}', entradas={input_ids}).",
+                code="ERR_TMAP_MISSING_MAIN_STREAM"
+            )
+
         main_chunks = self._get_node_chunks(main_id, node_buffers)
-        main_df = pl.concat(main_chunks) if main_chunks else pl.DataFrame()
+        if not main_chunks:
+            from src.core.domain.shared.exceptions import DomainError
+            raise DomainError(
+                f"Data Mapper (tMap) '{phys_op.id}' falhou: o fluxo principal '{main_id}' não produziu dados para processamento.",
+                code="ERR_TMAP_EMPTY_MAIN_STREAM"
+            )
+        main_df = pl.concat(main_chunks)
         initial_rows = main_df.height
 
         lookup_dfs: Dict[str, pl.DataFrame] = {}

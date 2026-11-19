@@ -415,21 +415,58 @@ interface TMapOutputChoice {
         return;
       }
 
+      const tgtType = (tgtNode.data?.componentType || "").toLowerCase();
+      const isTgtTMap = tgtType.includes("tmap") || tgtType.includes("mapper");
+
       setEdges((eds) => {
-        const flowType = getFlowType(
+        let flowType = getFlowType(
           srcNode,
           tgtNode,
           eds,
           params.targetHandle,
           params.sourceHandle
         );
+
+        // Se o usuário conectou explicitamente no handle 'main' do Data Mapper
+        if (isTgtTMap && params.targetHandle === "main") {
+          flowType = "main";
+        }
+
         const flowName = generateFlowName(flowType, eds);
         const meta = FLOW_CONFIG[flowType];
 
-        const targetHandle =
+        let targetHandle =
           flowType === "lkp" && (!params.targetHandle || params.targetHandle === "main")
             ? "lookup"
             : (params.targetHandle || (flowType === "trigger" ? "trigger" : "input"));
+
+        if (isTgtTMap && flowType === "main") {
+          targetHandle = "main";
+        }
+
+        let updatedEds = eds;
+        // Se a nova aresta for main no tMap, rebaixa qualquer aresta main pré-existente para lookup
+        if (isTgtTMap && flowType === "main") {
+          let lkpCount = 1;
+          updatedEds = eds.map((e) => {
+            if (e.target !== tgtNode.id) return e;
+            if (e.targetHandle === "main" || e.data?.flowType === "main") {
+              const demotedName = `lkp${lkpCount++}`;
+              return {
+                ...e,
+                targetHandle: "lookup",
+                label: demotedName,
+                style: { ...(e.style || {}), stroke: "#c084fc", strokeWidth: 2 },
+                data: {
+                  ...(e.data || {}),
+                  flowName: demotedName,
+                  flowType: "lkp",
+                },
+              };
+            }
+            return e;
+          });
+        }
 
         const edgeData = {
           ...params,
@@ -447,10 +484,29 @@ interface TMapOutputChoice {
           },
         };
 
-        return addEdge(edgeData, eds);
+        return addEdge(edgeData, updatedEds);
       });
+
+      // Se conectou ao fluxo principal do Data Mapper, sincroniza atomicamente config.main_input_id
+      if (isTgtTMap && (params.targetHandle === "main" || (!params.targetHandle && !edges.some((e) => e.target === tgtNode.id)))) {
+        setNodes((nds) =>
+          nds.map((n) => {
+            if (n.id !== tgtNode.id) return n;
+            return {
+              ...n,
+              data: {
+                ...n.data,
+                config: {
+                  ...(n.data?.config || {}),
+                  main_input_id: params.source,
+                },
+              },
+            };
+          })
+        );
+      }
     },
-    [nodes, edges, setEdges]
+    [nodes, edges, setEdges, setNodes]
   );
 
   const handleConfirmTMapConnection = useCallback(() => {
@@ -475,6 +531,7 @@ interface TMapOutputChoice {
         flowType: "out",
         sourceLabel: srcNode?.data?.label || srcNode?.id || connection.source,
         targetLabel: tgtNode?.data?.label || tgtNode?.id || connection.target,
+        cellId: (tgtNode.data as any)?.cellId || (srcNode.data as any)?.cellId,
       },
     };
 

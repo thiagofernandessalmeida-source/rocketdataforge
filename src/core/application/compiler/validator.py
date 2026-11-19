@@ -334,6 +334,49 @@ class GraphValidator:
                 # Componente não encontrado no catálogo
                 pass
 
+        # 4.1 Validação Semântica para nós Data Mapper (tMap)
+        for node_id, node in draft.nodes.items():
+            ctype = (node.component_type or "").lower()
+            if ctype in ("core.tmap", "transform.tmap", "processor.tmap", "tmap"):
+                incoming = [e for e in draft.edges.values() if e.to_port.node_id == node_id]
+                if not incoming:
+                    errors.append(ValidationErrorItem(
+                        code="ERR_TMAP_NO_INPUT",
+                        node_id=node_id,
+                        message=f"O componente Data Mapper (tMap) '{node_id}' não possui conexões de entrada."
+                    ))
+                    continue
+
+                cfg = node.config or {}
+                main_input_id = cfg.get("main_input_id")
+                connected_src_ids = {e.from_port.node_id for e in incoming}
+
+                if main_input_id:
+                    clean_main_id = str(main_input_id).split(":")[0].split(".")[0]
+                    if clean_main_id not in draft.nodes:
+                        errors.append(ValidationErrorItem(
+                            code="ERR_TMAP_INVALID_MAIN_INPUT",
+                            node_id=node_id,
+                            message=f"O componente Data Mapper (tMap) '{node_id}' referencia uma entrada principal inexistente ('{main_input_id}')."
+                        ))
+                    elif clean_main_id not in connected_src_ids:
+                        errors.append(ValidationErrorItem(
+                            code="ERR_TMAP_INVALID_MAIN_INPUT",
+                            node_id=node_id,
+                            message=f"O componente Data Mapper (tMap) '{node_id}' referencia '{main_input_id}' como entrada principal, mas não há conexão ativa entre eles."
+                        ))
+                else:
+                    has_main_candidate = any(
+                        e.to_port.port_name not in ("lookup", "lookups", "lkp")
+                        for e in incoming
+                    )
+                    if not has_main_candidate and len(incoming) > 0:
+                        errors.append(ValidationErrorItem(
+                            code="ERR_TMAP_NO_MAIN_INPUT",
+                            node_id=node_id,
+                            message=f"O componente Data Mapper (tMap) '{node_id}' não possui conexão de fluxo principal (porta 'main')."
+                        ))
+
         # 5. Validação de Políticas Corporativas ABAC (se policy fornecida)
         if policy is not None:
             evaluator: PolicyEvaluator

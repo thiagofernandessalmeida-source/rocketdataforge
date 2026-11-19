@@ -998,6 +998,11 @@ class DuckDBRunner:
             register_active_connection(exec_id, conn)
 
         try:
+            if main_df is None or (main_df.width == 0 and main_df.height == 0):
+                raise DomainError(
+                    "Data Mapper (tMap) executado sem fluxo principal válido (main_df vazio ou nulo).",
+                    code="ERR_TMAP_INVALID_MAIN_STREAM"
+                )
 
             # ─── 1. Criação das Views e Tabela de Trabalho do Fluxo Principal (Main) ───
             main_alias_raw = kwargs.get("main_alias") or main_alias or "main"
