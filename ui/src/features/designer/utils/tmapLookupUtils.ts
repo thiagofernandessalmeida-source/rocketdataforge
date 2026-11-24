@@ -25,6 +25,7 @@ export interface TMapLookupConfig {
   filter_expression?: string;
   join_filter?: string;
   schema?: SchemaColumn[];
+  allow_cross_join?: boolean;
 }
 
 export interface UpstreamNodeInfo {
@@ -144,15 +145,38 @@ export function deriveTMapLookups(
     const match_model = normalizeMatchModel(existing?.match_model);
     const lookup_model = existing?.lookup_model || "Load once";
 
-    const join_keys =
-      existing?.join_keys && existing.join_keys.length > 0
-        ? existing.join_keys
-        : existing?.left_keys && existing.left_keys.length > 0
-        ? existing.left_keys.map((k, i) => ({
-            expr_key: k,
-            column: existing.right_keys?.[i] || "",
-          }))
-        : [{ expr_key: "", column: "" }];
+    const hasValidExistingJoinKeys = (existing?.join_keys || []).some(
+      (jk) => jk.expr_key?.trim() && jk.column?.trim()
+    );
+    const hasValidLeftRight =
+      (existing?.left_keys || []).some((k) => k?.trim()) &&
+      (existing?.right_keys || []).some((k) => k?.trim());
+
+    let join_keys: { expr_key: string; column: string }[] = [{ expr_key: "", column: "" }];
+    if (hasValidExistingJoinKeys) {
+      join_keys = (existing!.join_keys || []).filter((jk) => jk.expr_key?.trim() && jk.column?.trim());
+    } else if (hasValidLeftRight) {
+      join_keys = (existing!.left_keys || [])
+        .map((k, i) => ({
+          expr_key: k,
+          column: existing!.right_keys?.[i] || "",
+        }))
+        .filter((jk) => jk.expr_key.trim() && jk.column.trim());
+    } else if (existing?.join_keys && existing.join_keys.length > 0) {
+      join_keys = existing.join_keys;
+    }
+    if (join_keys.length === 0) {
+      join_keys = [{ expr_key: "", column: "" }];
+    }
+
+    const left_keys =
+      existing?.left_keys && existing.left_keys.length > 0
+        ? existing.left_keys
+        : join_keys.filter((jk) => jk.expr_key?.trim() && jk.column?.trim()).map((jk) => jk.expr_key.trim());
+    const right_keys =
+      existing?.right_keys && existing.right_keys.length > 0
+        ? existing.right_keys
+        : join_keys.filter((jk) => jk.expr_key?.trim() && jk.column?.trim()).map((jk) => jk.column.trim());
 
     return {
       node_id: un.id,
@@ -162,8 +186,9 @@ export function deriveTMapLookups(
       join_model,
       match_model,
       lookup_model,
-      left_keys: existing?.left_keys || [],
-      right_keys: existing?.right_keys || [],
+      allow_cross_join: Boolean(existing?.allow_cross_join),
+      left_keys,
+      right_keys,
       join_keys,
       filter_expression: existing?.filter_expression || "",
       join_filter: existing?.join_filter || existing?.filter_expression || "",

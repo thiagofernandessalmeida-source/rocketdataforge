@@ -45,6 +45,7 @@ export interface TMapLookupConfig {
   filter_expression?: string;
   join_filter?: string;
   schema?: SchemaColumn[];
+  allow_cross_join?: boolean;
 }
 
 export interface TMapVariable {
@@ -230,6 +231,12 @@ export const TMapModal: React.FC<TMapModalProps> = ({
   });
 
   const [lookupNotice, setLookupNotice] = useState<string | null>(null);
+  const lookupCacheRef = useRef<Record<string, TMapLookupConfig>>({});
+  if (Object.keys(lookupCacheRef.current).length === 0 && config.lookups) {
+    (config.lookups as TMapLookupConfig[]).forEach((l) => {
+      if (l.node_id) lookupCacheRef.current[l.node_id] = l;
+    });
+  }
 
   // Ação de UX: Alternar qual nó conectado upstream é o Main vs Lookup
   const handleSetMainInput = (newMainId: string) => {
@@ -242,20 +249,32 @@ export const TMapModal: React.FC<TMapModalProps> = ({
     setMainAlias(newMainNode.alias || "row1");
 
     setLookups((prev) => {
+      // Salva o config do nó que está virando main no cache antes de remover
+      const targetLk = prev.find((l) => l.node_id === newMainId);
+      if (targetLk) {
+        lookupCacheRef.current[newMainId] = targetLk;
+      }
       // Remove o novo main dos lookups
       const filtered = prev.filter((l) => l.node_id !== newMainId);
       // Adiciona o antigo main aos lookups se ainda não estiver na lista
       if (oldMainNode && !filtered.some((l) => l.node_id === oldMainNode.id)) {
-        filtered.unshift({
-          node_id: oldMainNode.id,
-          label: oldMainNode.label || oldMainNode.id,
-          alias: oldMainNode.alias || "row2",
-          join_type: "left",
-          match_model: "unique",
-          left_keys: [],
-          right_keys: [],
-          schema: oldMainNode.schema || [],
-        });
+        const cached = lookupCacheRef.current[oldMainNode.id];
+        filtered.unshift(
+          cached
+            ? { ...cached, node_id: oldMainNode.id }
+            : {
+                node_id: oldMainNode.id,
+                label: oldMainNode.label || oldMainNode.id,
+                alias: oldMainNode.alias || "row2",
+                join_type: "left",
+                match_model: "unique",
+                allow_cross_join: false,
+                left_keys: [],
+                right_keys: [],
+                join_keys: [{ expr_key: "", column: "" }],
+                schema: oldMainNode.schema || [],
+              }
+        );
       }
       return filtered;
     });
@@ -1108,20 +1127,35 @@ export const TMapModal: React.FC<TMapModalProps> = ({
 
   // ─── Save & Sync ──────────────────────────────────────────────
   const handleSaveAll = () => {
+    // Bloqueia salvar se houver lookup sem chave e sem allow_cross_join
+    const invalidLookup = lookups.find((lk) => {
+      const hasKeys = (lk.join_keys || []).some((jk) => jk.expr_key?.trim() && jk.column?.trim()) ||
+        Boolean(lk.left_keys?.length && lk.right_keys?.length) ||
+        Boolean(lk.join_filter?.trim() || lk.filter_expression?.trim());
+      return !hasKeys && !lk.allow_cross_join;
+    });
+
+    if (invalidLookup) {
+      const lkName = invalidLookup.alias || invalidLookup.label || invalidLookup.node_id;
+      alert(`O lookup '${lkName}' não possui chave de junção definida. Defina as chaves ou marque 'Permitir produto cartesiano'.`);
+      return;
+    }
+
     // Normaliza os join_keys para left_keys e right_keys para o backend
     const normalizedLookups = lookups.map((lk, idx) => {
+      const validJoinKeys = (lk.join_keys || []).filter(
+        (jk) => jk.expr_key?.trim() && jk.column?.trim()
+      );
       const left_keys: string[] = [];
       const right_keys: string[] = [];
-      (lk.join_keys || []).forEach((jk) => {
-        if (jk.expr_key && jk.column) {
-          left_keys.push(jk.expr_key.trim());
-          let cleanRight = jk.column.trim();
-          if (cleanRight.includes(".")) {
-            cleanRight = cleanRight.split(".").pop()!.trim();
-          }
-          cleanRight = cleanRight.replace(/["'{}]/g, "").trim();
-          right_keys.push(cleanRight);
+      validJoinKeys.forEach((jk) => {
+        left_keys.push(jk.expr_key.trim());
+        let cleanRight = jk.column.trim();
+        if (cleanRight.includes(".")) {
+          cleanRight = cleanRight.split(".").pop()!.trim();
         }
+        cleanRight = cleanRight.replace(/["'{}]/g, "").trim();
+        right_keys.push(cleanRight);
       });
       const isInner = lk.join_type === "inner" || lk.join_model === "inner";
       const joinType = isInner ? "inner" : "left";
@@ -1137,9 +1171,11 @@ export const TMapModal: React.FC<TMapModalProps> = ({
         join_type: joinType as "left" | "inner",
         join_model: joinModel,
         match_model: matchModel,
+        allow_cross_join: Boolean(lk.allow_cross_join),
         join_filter: lk.join_filter || lk.filter_expression || "",
-        left_keys: left_keys.length > 0 ? left_keys : lk.left_keys,
-        right_keys: right_keys.length > 0 ? right_keys : lk.right_keys,
+        join_keys: validJoinKeys.length > 0 ? validJoinKeys : (lk.join_keys || []),
+        left_keys: left_keys.length > 0 ? left_keys : (lk.left_keys || []),
+        right_keys: right_keys.length > 0 ? right_keys : (lk.right_keys || []),
       };
     });
 
@@ -1283,10 +1319,25 @@ export const TMapModal: React.FC<TMapModalProps> = ({
               {isMaximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
             </button>
 
-            <button className="btn btn-success btn-sm" onClick={handleSaveAll}>
-              <Check size={14} />
-              <span>Aplicar</span>
-            </button>
+            {(() => {
+              const hasInvalidLk = lookups.some((lk) => {
+                const hasKeys = (lk.join_keys || []).some((jk) => jk.expr_key?.trim() && jk.column?.trim()) ||
+                  Boolean(lk.left_keys?.length && lk.right_keys?.length) ||
+                  Boolean(lk.join_filter?.trim() || lk.filter_expression?.trim());
+                return !hasKeys && !lk.allow_cross_join;
+              });
+              return (
+                <button
+                  className="btn btn-success btn-sm"
+                  disabled={hasInvalidLk}
+                  title={hasInvalidLk ? "Defina chaves de junção para todos os lookups ou marque 'Permitir produto cartesiano'." : "Aplicar alterações"}
+                  onClick={handleSaveAll}
+                >
+                  <Check size={14} />
+                  <span>Aplicar</span>
+                </button>
+              );
+            })()}
 
             <button className="modal-close" onClick={onClose}>
               <X size={16} />
@@ -1729,6 +1780,49 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                             }}
                           />
                         </div>
+
+                        {/* Aviso de falta de chave / Produto Cartesiano e Aviso de All matches com chave não-única */}
+                        {(() => {
+                          const hasKeys = (lk.join_keys || []).some((jk) => jk.expr_key?.trim() && jk.column?.trim()) ||
+                            Boolean(lk.left_keys?.length && lk.right_keys?.length) ||
+                            Boolean(lk.join_filter?.trim() || lk.filter_expression?.trim());
+                          const isAll = normalizeMatchModel(lk.match_model) === "all";
+                          const hasNonUniqueKey = isAll && (lk.join_keys || []).some((jk) => {
+                            const colName = jk.column?.trim();
+                            if (!colName) return false;
+                            const col = lkCols.find((c) => c.name?.toLowerCase() === colName.toLowerCase());
+                            return col && !col.isPrimaryKey && !col.is_primary_key && !col.unique;
+                          });
+
+                          return (
+                            <>
+                              {!hasKeys && (
+                                <div style={{ marginTop: 8, padding: "6px 8px", background: "rgba(239, 68, 68, 0.12)", border: "1px solid rgba(239, 68, 68, 0.35)", borderRadius: 4, fontSize: 11, color: "var(--accent-red, #ef4444)" }}>
+                                  <div>Sem chave de junção: todas as linhas do main serão combinadas com todas as linhas do lookup.</div>
+                                  <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, cursor: "pointer", color: "var(--text-primary, #e2e8f0)", fontWeight: 500 }}>
+                                    <input
+                                      type="checkbox"
+                                      checked={Boolean(lk.allow_cross_join)}
+                                      onChange={(e) =>
+                                        setLookups(
+                                          lookups.map((l) =>
+                                            l.node_id === lk.node_id ? { ...l, allow_cross_join: e.target.checked } : l
+                                          )
+                                        )
+                                      }
+                                    />
+                                    <span>Permitir produto cartesiano</span>
+                                  </label>
+                                </div>
+                              )}
+                              {hasNonUniqueKey && (
+                                <div style={{ marginTop: 6, padding: "4px 8px", background: "rgba(245, 158, 11, 0.12)", border: "1px solid rgba(245, 158, 11, 0.35)", borderRadius: 4, fontSize: 11, color: "var(--accent-amber, #f59e0b)" }}>
+                                  Aviso: Match Model está como &quot;All matches&quot; e a chave não é única no schema. Se houver registros repetidos no lookup, linhas do fluxo principal serão duplicadas.
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
                       </div>
                     )}
 

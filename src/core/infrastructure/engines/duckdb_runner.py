@@ -997,6 +997,8 @@ class DuckDBRunner:
         if exec_id:
             register_active_connection(exec_id, conn)
 
+        warning_fn = kwargs.get("warning_fn") or kwargs.get("log_fn")
+
         try:
             if main_df is None or (main_df.width == 0 and main_df.height == 0):
                 raise DomainError(
@@ -1147,11 +1149,25 @@ class DuckDBRunner:
                     for jk in join_keys:
                         ek = jk.get("expr_key") or jk.get("left") or ""
                         rc = jk.get("column") or jk.get("right") or ""
-                        if ek and rc:
+                        if str(ek).strip() and str(rc).strip():
                             key_pairs.append((str(ek).strip(), str(rc).strip()))
                 elif left_keys and right_keys:
                     for lk_k, rk_k in zip(left_keys, right_keys):
-                        key_pairs.append((str(lk_k).strip(), str(rk_k).strip()))
+                        if str(lk_k).strip() and str(rk_k).strip():
+                            key_pairs.append((str(lk_k).strip(), str(rk_k).strip()))
+
+                # Join Filter no ON
+                raw_join_filter = (lk.get("join_filter") or lk.get("filter_expression") or "").strip()
+                allow_cross_join = bool(lk.get("allow_cross_join", False))
+
+                if not key_pairs and not raw_join_filter and not allow_cross_join:
+                    lk_alias_name = lk.get("alias") or f"lkp{idx+1}"
+                    lk_label = lk.get("label") or lk.get("node_id") or ""
+                    lk_desc = f" ({lk_label})" if lk_label and lk_label != lk_alias_name else ""
+                    raise DomainValidationError(
+                        f"O lookup '{lk_alias_name}'{lk_desc} não tem chave de junção. Defina a chave ou marque 'Permitir produto cartesiano'",
+                        code="ERR_TMAP_LOOKUP_WITHOUT_KEY"
+                    )
 
                 join_clauses = []
                 for raw_left, raw_right in key_pairs:
@@ -1246,6 +1262,28 @@ class DuckDBRunner:
                         ON {join_cond}
                     {qualify_clause};
                 """)
+
+                # Aviso quando o join multiplica linhas (contando linhas distintas por _step_N_row_id anterior)
+                res_counts = conn.execute(f"""
+                    SELECT 
+                        COUNT(DISTINCT _step_{idx}_row_id),
+                        COUNT(*)
+                    FROM _tmap_step_{idx+1};
+                """).fetchone()
+                prev_distinct_rows = res_counts[0] if res_counts else 0
+                step_total_rows = res_counts[1] if res_counts else 0
+
+                if ("all" in match_model) and step_total_rows > prev_distinct_rows:
+                    extra_rows = step_total_rows - prev_distinct_rows
+                    lk_warn_name = lk.get("alias") or f"lkp{idx+1}"
+                    warn_msg = f"{lk_warn_name} (all matches): {prev_distinct_rows} linhas do main viraram {step_total_rows} ({extra_rows} linhas extras por chaves repetidas no lookup)"
+                    logger.warning(warn_msg)
+                    if warning_fn:
+                        try:
+                            warning_fn("WARN", warn_msg)
+                        except Exception as log_err:
+                            logger.debug(f"Falha ao emitir warning de multiplicacao de linhas: {log_err}")
+
                 conn.execute("DROP TABLE _tmap_working;")
                 conn.execute(f"ALTER TABLE _tmap_step_{idx+1} RENAME TO _tmap_working;")
 

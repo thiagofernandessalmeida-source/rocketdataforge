@@ -580,10 +580,15 @@ export function cloneNodes(
         delete deepData.config.main_input_id;
       }
       if (Array.isArray(deepData.config.lookups)) {
-        deepData.config.lookups = deepData.config.lookups.filter((lk: any) => {
-          const lkNodeId = lk.node_id;
-          return lkNodeId && (idMap[lkNodeId] || sourceNodeIds.has(lkNodeId));
-        });
+        deepData.config.lookups = deepData.config.lookups
+          .filter((lk: any) => {
+            const lkNodeId = lk.node_id;
+            return lkNodeId && (idMap[lkNodeId] || sourceNodeIds.has(lkNodeId));
+          })
+          .map((lk: any) => ({
+            ...lk,
+            node_id: idMap[lk.node_id] || lk.node_id,
+          }));
       }
     }
 
@@ -1823,9 +1828,7 @@ print("Dados publicados com sucesso via context.write_output!")
                   const remMain = remIncoming.find((e) => e.targetHandle === "main" || e.data?.flowType === "main");
                   cfg.main_input_id = remMain ? remMain.source : (remIncoming[0] ? remIncoming[0].source : undefined);
                 }
-                if (cfg.lookups && Array.isArray(cfg.lookups)) {
-                  cfg.lookups = cfg.lookups.filter((lk: any) => lk.node_id !== deletedEdge.source);
-                }
+                // Preserva cfg.lookups intactos para que reconectar a aresta restaure as chaves e match_model configurados
                 return {
                   ...n,
                   data: {
@@ -2032,22 +2035,35 @@ print("Dados publicados com sucesso via context.write_output!")
             const cfg = { ...(n.data?.config || {}) };
             cfg.main_input_id = newMainSourceId;
 
+            cfg._savedLookupCache = cfg._savedLookupCache || {};
+            const prevLkForNewMain = (cfg.lookups || []).find((lk: any) => lk.node_id === newMainSourceId);
+            if (prevLkForNewMain) {
+              cfg._savedLookupCache[newMainSourceId] = prevLkForNewMain;
+            }
+
             const oldLookups = (cfg.lookups || []).filter((lk: any) => lk.node_id !== newMainSourceId);
             if (oldMainId && oldMainId !== newMainSourceId) {
               const oldMainNode = currentNodes.find((x) => x.id === oldMainId);
               const alreadyHas = oldLookups.some((lk: any) => lk.node_id === oldMainId);
               if (!alreadyHas) {
-                oldLookups.unshift({
-                  node_id: oldMainId,
-                  label: oldMainNode?.data?.label || oldMainId,
-                  alias: "lkp1",
-                  join_type: "left",
-                  join_model: "left_outer",
-                  match_model: "unique",
-                  lookup_model: "Load once",
-                  schema: (oldMainNode?.data as any)?.schema || [],
-                  join_keys: [],
-                });
+                const cachedLk = cfg._savedLookupCache[oldMainId];
+                oldLookups.unshift(
+                  cachedLk
+                    ? { ...cachedLk, node_id: oldMainId }
+                    : {
+                        node_id: oldMainId,
+                        label: oldMainNode?.data?.label || oldMainId,
+                        alias: "lkp1",
+                        join_type: "left",
+                        join_model: "left_outer",
+                        match_model: "unique",
+                        lookup_model: "Load once",
+                        schema: (oldMainNode?.data as any)?.schema || [],
+                        join_keys: [],
+                        left_keys: [],
+                        right_keys: [],
+                      }
+                );
               }
             }
             cfg.lookups = oldLookups;
@@ -2490,7 +2506,7 @@ print("Dados publicados com sucesso via context.write_output!")
 
       if (cfg.lookups && Array.isArray(cfg.lookups)) {
         cfg.lookups = cfg.lookups.filter(
-          (lk: any) => lk.node_id !== cfg.main_input_id && incomingSourceIds.has(lk.node_id)
+          (lk: any) => lk.node_id !== cfg.main_input_id
         );
       }
 

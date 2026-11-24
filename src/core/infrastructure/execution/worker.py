@@ -178,7 +178,7 @@ class ExecutionWorker:
                         elif op_type == "join":
                             self._execute_join_node(phys_op, cfg, token, task, node_buffers)
                         elif op_type == "tmap":
-                            self._execute_tmap_node(phys_op, cfg, token, task, node_buffers)
+                            self._execute_tmap_node(phys_op, cfg, token, task, node_buffers, execution=execution, log_fn=log_fn, cell_id=cell_id)
                         elif op_type == "sink":
                             self._execute_sink_node(phys_op, cfg, token, task, node_buffers)
                         elif op_type in ("barrier", "control.sync", "control.barrier"):
@@ -1172,7 +1172,7 @@ class ExecutionWorker:
         node_buffers[phys_op.id] = [joined_df]
 
     def _execute_tmap_node(
-        self, phys_op, cfg, token, task, node_buffers
+        self, phys_op, cfg, token, task, node_buffers, execution=None, log_fn=None, cell_id=None
     ) -> None:
         """Executa transformações e mapeamento visual complexo estilo tMap com suporte a match models e múltiplos outputs."""
         input_ids = phys_op.input_ids
@@ -1234,6 +1234,11 @@ class ExecutionWorker:
         main_alias = cfg.get("main_alias") or cfg.get("raw_config", {}).get("main_alias") or "main"
 
         # Executa transformação avançada com DuckDB
+        warning_callback = None
+        if log_fn and execution:
+            def warning_callback(lvl, msg):
+                log_fn(execution.id, lvl, msg, node_id=phys_op.id, cell_id=cell_id)
+
         results = self.duckdb_runner.execute_tmap_transform(
             main_df=main_df,
             lookups=lookups,
@@ -1241,7 +1246,10 @@ class ExecutionWorker:
             variables=variables,
             outputs=outputs,
             main_alias=main_alias,
-            main_node_id=main_id
+            main_node_id=main_id,
+            warning_fn=warning_callback,
+            execution_id=execution.id if execution else None,
+            cancellation_token=token
         )
 
         total_out_rows = sum(df.height for df in results.values())
