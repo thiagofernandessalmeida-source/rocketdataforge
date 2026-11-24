@@ -5,6 +5,7 @@ import { SchemaEditor, SchemaEditorModal } from "./SchemaEditor";
 import { ImportSchemaModal } from "./ImportSchemaModal";
 import { FileBrowserModal } from "./files/FileBrowserModal";
 import { TMapModal, TMapConfig } from "./TMapModal";
+import { getMainInputNode } from "./utils/tmapLookupUtils";
 import { api } from "../../api/client";
 import {
   Settings,
@@ -2723,14 +2724,26 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
           config={config as TMapConfig}
           mainSchema={(() => {
             const tmapCfg = config as TMapConfig;
-            const mainInputId = tmapCfg?.main_input_id;
-            const mainNode = (mainInputId ? upstreamNodes.find((n) => n.id === mainInputId) : null) || upstreamNodes[0];
+            const lookupNodeIds = (tmapCfg?.lookups || []).map((lk: any) => lk.node_id);
+            const resolvedMain = getMainInputNode(
+              upstreamNodes.map((n) => ({ id: n.id, label: n.data?.label || n.id })),
+              tmapCfg?.main_input_id,
+              incomingEdges,
+              lookupNodeIds
+            );
+            const mainNode = upstreamNodes.find((n) => n.id === resolvedMain?.id) || upstreamNodes[0];
             return (mainNode?.data as any)?.schema || schema || [];
           })()}
           lookupSchemas={(() => {
             const tmapCfg = config as TMapConfig;
-            const mainInputId = tmapCfg?.main_input_id;
-            const mainNode = (mainInputId ? upstreamNodes.find((n) => n.id === mainInputId) : null) || upstreamNodes[0];
+            const lookupNodeIds = (tmapCfg?.lookups || []).map((lk: any) => lk.node_id);
+            const resolvedMain = getMainInputNode(
+              upstreamNodes.map((n) => ({ id: n.id, label: n.data?.label || n.id })),
+              tmapCfg?.main_input_id,
+              incomingEdges,
+              lookupNodeIds
+            );
+            const mainNode = upstreamNodes.find((n) => n.id === resolvedMain?.id) || upstreamNodes[0];
             const lookupNodes = upstreamNodes.filter((un) => un.id !== mainNode?.id);
             const lkSchemas: Record<string, SchemaColumn[]> = {};
             lookupNodes.forEach((un) => {
@@ -2740,8 +2753,14 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
           })()}
           availableUpstreamNodes={(() => {
             const tmapCfg = config as TMapConfig;
-            const mainInputId = tmapCfg?.main_input_id;
-            const mainNode = (mainInputId ? upstreamNodes.find((n) => n.id === mainInputId) : null) || upstreamNodes[0];
+            const lookupNodeIds = (tmapCfg?.lookups || []).map((lk: any) => lk.node_id);
+            const resolvedMain = getMainInputNode(
+              upstreamNodes.map((n) => ({ id: n.id, label: n.data?.label || n.id })),
+              tmapCfg?.main_input_id,
+              incomingEdges,
+              lookupNodeIds
+            );
+            const mainNode = upstreamNodes.find((n) => n.id === resolvedMain?.id) || upstreamNodes[0];
             const lookupNodes = upstreamNodes.filter((un) => un.id !== mainNode?.id);
             const ordered = mainNode ? [mainNode, ...lookupNodes] : upstreamNodes;
             return ordered.map((un, idx) => {

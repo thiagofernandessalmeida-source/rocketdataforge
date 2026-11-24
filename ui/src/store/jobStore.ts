@@ -799,9 +799,32 @@ function loadState(): StoreState {
                 : isV2OrHigher
                 ? []
                 : inferPipelineEdges(normNodes);
+
+            // Cura main_input_id desatualizado para nós Data Mapper (tMap)
+            const healedTMapNodes = normNodes.map((n: any) => {
+              const ct = (n.data?.componentType || "").toLowerCase();
+              if (!ct.includes("tmap") && !ct.includes("mapper")) return n;
+              const cfg = { ...(n.data?.config || {}) };
+              const incoming = normEdges.filter((e: any) => e.target === n.id);
+              const lookupIds = new Set((cfg.lookups || []).map((lk: any) => lk.node_id));
+              const mainEdge = incoming.find((e: any) => e.targetHandle === "main" || e.data?.flowType === "main");
+              const firstNonLookup = incoming.find((e: any) => !lookupIds.has(e.source));
+              const isValidMain = cfg.main_input_id && incoming.some((e: any) => e.source === cfg.main_input_id) && !lookupIds.has(cfg.main_input_id);
+              if (!isValidMain && incoming.length > 0) {
+                cfg.main_input_id = mainEdge ? mainEdge.source : (firstNonLookup ? firstNonLookup.source : incoming[0].source);
+              }
+              return {
+                ...n,
+                data: {
+                  ...n.data,
+                  config: cfg,
+                },
+              };
+            });
+
             return {
               ...c,
-              nodes: normNodes,
+              nodes: healedTMapNodes,
               edges: normEdges,
             };
           });
@@ -1825,8 +1848,10 @@ print("Dados publicados com sucesso via context.write_output!")
                 const cfg = { ...(n.data?.config || {}) };
                 if (cfg.main_input_id === deletedEdge.source) {
                   const remIncoming = nextEdges.filter((e) => e.target === n.id);
+                  const lookupIds = new Set((cfg.lookups || []).map((lk: any) => lk.node_id));
                   const remMain = remIncoming.find((e) => e.targetHandle === "main" || e.data?.flowType === "main");
-                  cfg.main_input_id = remMain ? remMain.source : (remIncoming[0] ? remIncoming[0].source : undefined);
+                  const firstNonLookup = remIncoming.find((e) => !lookupIds.has(e.source));
+                  cfg.main_input_id = remMain ? remMain.source : (firstNonLookup ? firstNonLookup.source : (remIncoming[0] ? remIncoming[0].source : undefined));
                 }
                 // Preserva cfg.lookups intactos para que reconectar a aresta restaure as chaves e match_model configurados
                 return {
@@ -2645,6 +2670,29 @@ print("Dados publicados com sucesso via context.write_output!")
     const viewport = imported.viewport || rawJob.viewport;
 
     const rawCells = (rawJob as any).cells;
+    const healNodesInCell = (nodes: any[], cellEdges: any[]) => {
+      return nodes.map((n: any) => {
+        const ct = (n.data?.componentType || "").toLowerCase();
+        if (!ct.includes("tmap") && !ct.includes("mapper")) return n;
+        const cfg = { ...(n.data?.config || {}) };
+        const incoming = cellEdges.filter((e: any) => e.target === n.id);
+        const lookupIds = new Set((cfg.lookups || []).map((lk: any) => lk.node_id));
+        const mainEdge = incoming.find((e: any) => e.targetHandle === "main" || e.data?.flowType === "main");
+        const firstNonLookup = incoming.find((e: any) => !lookupIds.has(e.source));
+        const isValidMain = cfg.main_input_id && incoming.some((e: any) => e.source === cfg.main_input_id) && !lookupIds.has(cfg.main_input_id);
+        if (!isValidMain && incoming.length > 0) {
+          cfg.main_input_id = mainEdge ? mainEdge.source : (firstNonLookup ? firstNonLookup.source : incoming[0].source);
+        }
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            config: cfg,
+          },
+        };
+      });
+    };
+
     const importedCells: CanvasCellData[] =
       Array.isArray(rawCells) && rawCells.length > 0
         ? rawCells.map((c: CanvasCellData) => {
@@ -2657,7 +2705,7 @@ print("Dados publicados com sucesso via context.write_output!")
                 : inferPipelineEdges(normC);
             return {
               ...c,
-              nodes: normC,
+              nodes: healNodesInCell(normC, edgeC),
               edges: edgeC,
             };
           })
@@ -2669,7 +2717,7 @@ print("Dados publicados com sucesso via context.write_output!")
               order: 1,
               preconditions: [],
               preconditionOperator: "AND",
-              nodes: normalizedNodes,
+              nodes: healNodesInCell(normalizedNodes, edges),
               edges: edges,
               viewport,
               nodeSchemas,

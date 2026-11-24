@@ -23,6 +23,7 @@ import { PropertyPanel } from "./features/designer/PropertyPanel";
 import { RightSidebar } from "./features/designer/RightSidebar";
 import { FloatingNodeConfig } from "./features/designer/FloatingNodeConfig";
 import { TMapModal, TMapConfig } from "./features/designer/TMapModal";
+import { getMainInputNode } from "./features/designer/utils/tmapLookupUtils";
 import { ExecutionConsole, ProblemItem } from "./features/execution/ExecutionConsole";
 import { JobRepository } from "./features/repository/JobRepository";
 import { JobTabBar } from "./features/repository/JobTabBar";
@@ -2816,8 +2817,14 @@ export const App: React.FC = () => {
           .filter((d) => Boolean(d.targetId));
 
         const tmapConfig = (liveTMap.data?.config || {}) as TMapConfig;
-        const mainInputId = tmapConfig.main_input_id;
-        const mainNode = (mainInputId ? upstreamNodes.find((n) => n.id === mainInputId) : null) || upstreamNodes[0];
+        const lookupNodeIds = (tmapConfig.lookups || []).map((lk: any) => lk.node_id);
+        const resolvedMain = getMainInputNode(
+          upstreamNodes.map((n) => ({ id: n.id, label: n.data?.label || n.id })),
+          tmapConfig.main_input_id,
+          incomingEdges,
+          lookupNodeIds
+        );
+        const mainNode = upstreamNodes.find((n) => n.id === resolvedMain?.id) || upstreamNodes[0];
         const mainSchema: SchemaColumn[] = (mainNode?.data as any)?.schema || (liveTMap.data as any)?.schema || [];
 
         const lookupNodes = upstreamNodes.filter((un) => un.id !== mainNode?.id);

@@ -1,7 +1,75 @@
 from collections import defaultdict, deque
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
+
+logger = logging.getLogger(__name__)
+
+
+def resolve_tmap_main_input(
+    cfg: Dict[str, Any],
+    input_ids: List[str],
+    node_id: Optional[str] = None,
+    warning_fn: Optional[Any] = None
+) -> str:
+    """Resolve determinísticamente a entrada principal do Data Mapper (tMap).
+
+    Regras:
+    1. Usa main_input_id só se ele estiver entre as entradas conectadas (sem sufixo de porta) e não for um lookup.
+    2. Senão, usa a entrada ligada à porta 'main' (targetHandle == 'main') se indicada em cfg ou inputs.
+    3. Em último caso, usa a primeira entrada conectada que não é lookup.
+    4. Registra WARNING se o main_input_id configurado for substituído ou inválido.
+    """
+    lookups = cfg.get("lookups", []) or []
+    lookup_node_ids = {
+        (lk.get("node_id") or lk.get("id") or "").split(":")[0].split(".")[0].strip()
+        for lk in lookups
+        if isinstance(lk, dict)
+    }
+
+    clean_inputs = [inp.split(":")[0].split(".")[0].strip() for inp in input_ids if inp]
+    candidate_mains = [
+        inp.split(":")[0].split(".")[0].strip()
+        for inp in input_ids
+        if inp.split(":")[0].split(".")[0].strip() not in lookup_node_ids
+    ]
+
+    raw_main = cfg.get("main_input_id")
+    clean_main = str(raw_main).split(":")[0].split(".")[0].strip() if raw_main else ""
+
+    resolved_main = ""
+    # 1. Usa main_input_id só se estiver entre as entradas conectadas e não for lookup
+    if clean_main and (clean_main in clean_inputs) and (clean_main not in lookup_node_ids):
+        resolved_main = clean_main
+    else:
+        # 2. Entrada indicada como porta main
+        main_port_source = cfg.get("main_port_source") or cfg.get("raw_config", {}).get("main_port_source")
+        if main_port_source:
+            candidate = str(main_port_source).split(":")[0].split(".")[0].strip()
+            if candidate in clean_inputs and candidate not in lookup_node_ids:
+                resolved_main = candidate
+
+        # 3. Em último caso, primeira entrada que não é lookup
+        if not resolved_main and candidate_mains:
+            resolved_main = candidate_mains[0]
+        elif not resolved_main and clean_inputs:
+            resolved_main = clean_inputs[0]
+
+        if clean_main and clean_main != resolved_main:
+            warn_msg = (
+                f"Data Mapper (tMap) '{node_id or 'tmap'}': main_input_id configurado ('{clean_main}') "
+                f"é inválido ou desatualizado (não conectado ou configurado como lookup). "
+                f"Entrada principal ajustada para '{resolved_main}'."
+            )
+            logger.warning(warn_msg)
+            if warning_fn:
+                try:
+                    warning_fn("WARN", warn_msg)
+                except Exception:
+                    pass
+
+    return resolved_main
 
 from src.core.application.compiler.operators import (
     AggregateField,
@@ -347,30 +415,7 @@ class LogicalPlanner:
 
         # tMap Transform
         if component_type in ("core.tmap", "transform.tmap", "processor.tmap", "tmap"):
-            lookups = cfg.get("lookups", []) or []
-            lookup_node_ids = {
-                (lk.get("node_id") or lk.get("id") or "").split(":")[0].split(".")[0]
-                for lk in lookups
-                if isinstance(lk, dict)
-            }
-            candidate_mains = [
-                inp for inp in input_ids
-                if inp.split(":")[0].split(".")[0] not in lookup_node_ids
-            ]
-
-            raw_main = cfg.get("main_input_id")
-            clean_main = str(raw_main).split(":")[0].split(".")[0] if raw_main else ""
-            clean_inputs = [inp.split(":")[0].split(".")[0] for inp in input_ids]
-
-            if clean_main and clean_main in clean_inputs:
-                main_id = clean_main
-            elif candidate_mains:
-                main_id = candidate_mains[0].split(":")[0].split(".")[0]
-            elif input_ids:
-                main_id = input_ids[0].split(":")[0].split(".")[0]
-            else:
-                main_id = ""
-
+            main_id = resolve_tmap_main_input(cfg, input_ids, node_id=node_id)
             main_alias = cfg.get("main_alias") or "main"
             return LogicalTMap(
                 id=node_id,

@@ -1210,7 +1210,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
 
     onSave(
       {
-        main_input_id: selectedMainId || mainNode?.id || config.main_input_id,
+        main_input_id: selectedMainId || mainNode?.id || "",
         main_alias: mainAlias,
         lookups: normalizedLookups,
         variables,

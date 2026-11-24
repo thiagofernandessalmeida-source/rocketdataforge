@@ -43,16 +43,43 @@ export interface DerivedLookupsResult {
 
 /**
  * Retorna o nó upstream que representa o Main Stream.
- * Prioriza explicitamente config.main_input_id; fallback para o primeiro nó upstream.
+ * 1. Prioriza explicitamente config.main_input_id se ele estiver conectado e não for lookup.
+ * 2. Escolhe a entrada ligada à porta 'main' (targetHandle === "main" ou flowType === "main").
+ * 3. Fallback para a primeira entrada que não é lookup.
+ * 4. Fallback final para o primeiro nó upstream disponível.
  */
 export function getMainInputNode(
   availableUpstreamNodes: UpstreamNodeInfo[] = [],
-  mainInputId?: string
+  mainInputId?: string,
+  incomingEdges?: Array<{ source: string; targetHandle?: string | null; data?: { flowType?: string } }>,
+  lookupNodeIds?: string[]
 ): UpstreamNodeInfo | undefined {
+  const lookupSet = new Set(lookupNodeIds || []);
+  const nonLookupNodes = availableUpstreamNodes.filter((n) => !lookupSet.has(n.id));
+
+  // 1. Prioriza explicitamente config.main_input_id SE ele estiver conectado e não for lookup
   if (mainInputId) {
     const found = availableUpstreamNodes.find((n) => n.id === mainInputId);
-    if (found) return found;
+    if (found && !lookupSet.has(found.id)) return found;
   }
+
+  // 2. Procura aresta conectada ao handle 'main'
+  if (incomingEdges && incomingEdges.length > 0) {
+    const mainEdge = incomingEdges.find(
+      (e) => e.targetHandle === "main" || e.data?.flowType === "main"
+    );
+    if (mainEdge) {
+      const found = availableUpstreamNodes.find((n) => n.id === mainEdge.source);
+      if (found && !lookupSet.has(found.id)) return found;
+    }
+  }
+
+  // 3. Fallback: primeira entrada que não é lookup
+  if (nonLookupNodes.length > 0) {
+    return nonLookupNodes[0];
+  }
+
+  // 4. Último caso: primeiro nó upstream
   return availableUpstreamNodes[0];
 }
 
@@ -108,9 +135,11 @@ export function deriveTMapLookups(
   availableUpstreamNodes: UpstreamNodeInfo[] = [],
   savedLookups: TMapLookupConfig[] = [],
   lookupSchemas: Record<string, SchemaColumn[]> = {},
-  mainInputId?: string
+  mainInputId?: string,
+  incomingEdges?: Array<{ source: string; targetHandle?: string | null; data?: { flowType?: string } }>
 ): DerivedLookupsResult {
-  const mainNode = getMainInputNode(availableUpstreamNodes, mainInputId);
+  const lookupIds = savedLookups.map((lk) => lk.node_id);
+  const mainNode = getMainInputNode(availableUpstreamNodes, mainInputId, incomingEdges, lookupIds);
   const mainNodeId = mainNode?.id || "";
 
   // Nós conectados que são candidatos a lookups (todos exceto o main)

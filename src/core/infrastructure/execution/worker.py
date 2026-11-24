@@ -1175,39 +1175,28 @@ class ExecutionWorker:
         self, phys_op, cfg, token, task, node_buffers, execution=None, log_fn=None, cell_id=None
     ) -> None:
         """Executa transformações e mapeamento visual complexo estilo tMap com suporte a match models e múltiplos outputs."""
+        from src.core.application.compiler.logical_planner import resolve_tmap_main_input
+
         input_ids = phys_op.input_ids
         if not input_ids:
-            node_buffers[phys_op.id] = []
-            return
+            from src.core.domain.shared.exceptions import DomainError
+            raise DomainError(
+                f"Data Mapper (tMap) '{phys_op.id}' falhou: nenhum nó conectado como entrada.",
+                code="ERR_TMAP_MISSING_MAIN_STREAM"
+            )
 
-        lookups = cfg.get("lookups", [])
-        lookup_node_ids = {
-            (lk.get("node_id") or lk.get("id") or "").split(":")[0].split(".")[0]
-            for lk in lookups
-            if isinstance(lk, dict)
-        }
-        candidate_mains = [
-            inp for inp in input_ids
-            if inp.split(":")[0].split(".")[0] not in lookup_node_ids
-        ]
+        warning_callback = None
+        if log_fn and execution:
+            def warning_callback(lvl, msg):
+                log_fn(execution.id, lvl, msg, node_id=phys_op.id, cell_id=cell_id)
 
-        raw_main = cfg.get("main_input_id")
-        clean_main = str(raw_main).split(":")[0].split(".")[0] if raw_main else ""
-        clean_inputs = [inp.split(":")[0].split(".")[0] for inp in input_ids]
-
-        if clean_main and clean_main in clean_inputs:
-            main_id = clean_main
-        elif candidate_mains:
-            main_id = candidate_mains[0].split(":")[0].split(".")[0]
-        elif input_ids:
-            main_id = input_ids[0].split(":")[0].split(".")[0]
-        else:
-            main_id = ""
+        main_id = resolve_tmap_main_input(cfg, input_ids, node_id=phys_op.id, warning_fn=warning_callback)
+        clean_inputs = [inp.split(":")[0].split(".")[0].strip() for inp in input_ids if inp]
 
         if not main_id or main_id not in clean_inputs:
             from src.core.domain.shared.exceptions import DomainError
             raise DomainError(
-                f"Data Mapper (tMap) '{phys_op.id}' falhou: nenhuma entrada principal válida conectada (main_input_id='{raw_main}', entradas={input_ids}).",
+                f"Data Mapper (tMap) '{phys_op.id}' falhou: nenhuma entrada principal válida conectada (main_input_id='{cfg.get('main_input_id')}', entradas={input_ids}).",
                 code="ERR_TMAP_MISSING_MAIN_STREAM"
             )
 
@@ -1221,6 +1210,7 @@ class ExecutionWorker:
         main_df = pl.concat(main_chunks)
         initial_rows = main_df.height
 
+        lookups = cfg.get("lookups", [])
         lookup_dfs: Dict[str, pl.DataFrame] = {}
         for lk in lookups:
             lk_id = lk.get("node_id") or lk.get("id") or ""
@@ -1234,11 +1224,6 @@ class ExecutionWorker:
         main_alias = cfg.get("main_alias") or cfg.get("raw_config", {}).get("main_alias") or "main"
 
         # Executa transformação avançada com DuckDB
-        warning_callback = None
-        if log_fn and execution:
-            def warning_callback(lvl, msg):
-                log_fn(execution.id, lvl, msg, node_id=phys_op.id, cell_id=cell_id)
-
         results = self.duckdb_runner.execute_tmap_transform(
             main_df=main_df,
             lookups=lookups,
