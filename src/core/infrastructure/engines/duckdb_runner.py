@@ -10,6 +10,18 @@ import duckdb
 import polars as pl
 from src.core.domain.shared.exceptions import DomainError, DomainValidationError, TMapExecutionError
 from src.core.application.compiler.expressions.compiler import compile_expression
+from src.core.infrastructure.connectors.sink_dml import (
+    SinkWriteResult,
+    build_duckdb_delete_from_batch_sql,
+    build_duckdb_direct_insert_sql,
+    build_duckdb_insert_from_batch_sql,
+    build_duckdb_update_from_batch_sql,
+    plan_write,
+    prepare_batch_df,
+    quote_identifier,
+    quote_table_name,
+    resolve_sink_field_options,
+)
 from src.core.infrastructure.execution.cancellation import (
     register_active_connection,
     unregister_active_connection,
@@ -473,13 +485,17 @@ class DuckDBRunner:
         is_first_chunk: bool = True,
         schema_definitions: Optional[List[Dict[str, Any]]] = None,
         use_batch_mode: bool = True,
-        batch_size: int = 10000
-    ) -> int:
-        """Grava dados no banco DuckDB com suporte a ações de tabela, dados e escrita em lotes particionados (Batch Mode)."""
+        batch_size: int = 10000,
+        use_field_options: bool = False,
+        field_options: Optional[List[Dict[str, Any]]] = None,
+        fail_on_no_match: bool = False,
+        component_name: str = "DuckDB sink"
+    ) -> SinkWriteResult:
+        """Grava dados no banco DuckDB com suporte a ações de tabela, dados estilo Talend e escrita em lotes particionados (Batch Mode)."""
         with self._write_lock:
             if len(df.columns) == 0:
                 logger.warning(f"write_to_duckdb: DataFrame fornecido para a tabela '{table_name}' não possui colunas. Nenhuma operação executada.")
-                return 0
+                return SinkWriteResult(0, 0, 0, 0)
 
             db_path = database_path or self.database_path or ":memory:"
             if db_path != ":memory:":
@@ -500,7 +516,8 @@ class DuckDBRunner:
             # Se a tabela já existir no primeiro chunk, verifica se está vazia com tipos obsoletos/incompatíveis
             if is_first_chunk and existing_col_info:
                 try:
-                    row_cnt = conn.execute(f"SELECT COUNT(*) FROM {table_name};").fetchone()[0]
+                    cnt_rows = conn.execute(f"SELECT COUNT(*) FROM {table_name};").fetchall()
+                    row_cnt = cnt_rows[0][0] if cnt_rows else 0
                     if row_cnt == 0:
                         type_mismatch = False
                         for col_name, dtype in df.schema.items():
@@ -580,63 +597,141 @@ class DuckDBRunner:
 
             # Garante que a tabela existe antes de inserir
             try:
-                conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1;")
+                conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1;").fetchall()
             except Exception:
                 conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM _chunk_batch WHERE 1=0;")
                 existing_col_info = {c: True for c in df.columns}
 
-            # Monta SQL de inserção com colunas explícitas para garantir mapeamento nominal
-            try:
-                table_cols = [r[1] for r in conn.execute(f"PRAGMA table_info('{table_name}');").fetchall()]
-            except Exception:
-                table_cols = list(df.columns)
+            # Resolve opções de campo e valida regras DML (Regra 1: sem chave não grava)
+            sink_cfg = {
+                "use_field_options": use_field_options,
+                "field_options": field_options or [],
+                "keys": keys or [],
+                "fail_on_no_match": fail_on_no_match
+            }
+            resolved_fo = resolve_sink_field_options(
+                sink_cfg,
+                schema_definitions=schema_definitions,
+                df_columns=list(df.columns)
+            )
+            plan = plan_write(data_action, resolved_fo, component_name=component_name)
 
-            matching_cols = [c for c in df.columns if c in table_cols]
-            if matching_cols:
-                cols_str = ", ".join([f'"{c}"' for c in matching_cols])
-                insert_clause = f"({cols_str}) SELECT {cols_str} FROM _chunk_batch"
-            else:
-                insert_clause = "SELECT * FROM _chunk_batch"
+            if df.height == 0:
+                conn.close()
+                return SinkWriteResult(0, 0, 0, 0)
 
             # 2. Executa Ação nos Dados com Suporte a Batch Mode
-            if use_batch_mode and batch_size > 0 and df.height > batch_size:
-                total_written = 0
-                for start_idx in range(0, df.height, batch_size):
-                    slice_df = df.slice(start_idx, batch_size)
-                    conn.register("_chunk_batch", slice_df.to_arrow())
-                    if data_action == "insert":
-                        conn.execute(f"INSERT INTO {table_name} {insert_clause};")
-                    elif data_action in ("upsert", "update_or_insert", "insert_or_update") and keys:
-                        join_cond = " AND ".join([f"{table_name}.\"{k}\" = _chunk_batch.\"{k}\"" for k in keys if k in df.columns])
-                        if join_cond:
-                            conn.execute(f"DELETE FROM {table_name} WHERE EXISTS (SELECT 1 FROM _chunk_batch WHERE {join_cond});")
-                        conn.execute(f"INSERT INTO {table_name} {insert_clause};")
-                    elif data_action == "delete" and keys:
-                        join_cond = " AND ".join([f"{table_name}.\"{k}\" = _chunk_batch.\"{k}\"" for k in keys if k in df.columns])
-                        if join_cond:
-                            conn.execute(f"DELETE FROM {table_name} WHERE EXISTS (SELECT 1 FROM _chunk_batch WHERE {join_cond});")
-                    else:
-                        conn.execute(f"INSERT INTO {table_name} {insert_clause};")
-                    total_written += slice_df.height
-                conn.close()
-                return total_written
-            else:
-                if data_action == "insert":
-                    conn.execute(f"INSERT INTO {table_name} {insert_clause};")
-                elif data_action in ("upsert", "update_or_insert", "insert_or_update") and keys:
-                    join_cond = " AND ".join([f"{table_name}.\"{k}\" = _chunk_batch.\"{k}\"" for k in keys if k in df.columns])
-                    if join_cond:
-                        conn.execute(f"DELETE FROM {table_name} WHERE EXISTS (SELECT 1 FROM _chunk_batch WHERE {join_cond});")
-                    conn.execute(f"INSERT INTO {table_name} {insert_clause};")
-                elif data_action == "delete" and keys:
-                    join_cond = " AND ".join([f"{table_name}.\"{k}\" = _chunk_batch.\"{k}\"" for k in keys if k in df.columns])
-                    if join_cond:
-                        conn.execute(f"DELETE FROM {table_name} WHERE EXISTS (SELECT 1 FROM _chunk_batch WHERE {join_cond});")
-                else:
-                    conn.execute(f"INSERT INTO {table_name} {insert_clause};")
+            step_size = batch_size if (use_batch_mode and batch_size > 0) else max(df.height, 1)
 
-                conn.close()
-                return df.height
+            total_inserted = 0
+            total_updated = 0
+            total_deleted = 0
+            total_not_matched = 0
+            total_duplicates = 0
+            total_null_keys = 0
+
+            num_batches = (df.height + step_size - 1) // step_size
+
+            for batch_idx in range(num_batches):
+                start_idx = batch_idx * step_size
+                slice_df = df.slice(start_idx, step_size)
+                batch_num = batch_idx + 1
+
+                if plan.data_action == "insert":
+                    cols = [c for c in (plan.insertable_cols or list(slice_df.columns)) if c in slice_df.columns]
+                    insert_df = slice_df.select(cols)
+                    conn.register("_chunk_batch", insert_df.to_arrow())
+                    insert_sql = build_duckdb_direct_insert_sql(table_name, "_chunk_batch", cols)
+                    conn.execute(insert_sql)
+                    total_inserted += insert_df.height
+
+                elif plan.data_action in ("update", "update_or_insert", "insert_or_update", "upsert"):
+                    valid_df, dups, null_keys = prepare_batch_df(slice_df, plan.keys, is_update_or_delete=True)
+                    total_duplicates += dups
+                    total_null_keys += null_keys
+
+                    if dups > 0:
+                        logger.warning(
+                            f"Nó '{component_name}': {dups} chave(s) repetida(s) no lote {batch_num}. "
+                            "A última linha prevaleceu."
+                        )
+                    if null_keys > 0:
+                        logger.warning(
+                            f"Nó '{component_name}': {null_keys} linha(s) com chave nula no lote {batch_num} foram desconsideradas."
+                        )
+
+                    if valid_df.height == 0:
+                        total_not_matched += slice_df.height
+                        continue
+
+                    conn.register("_chunk_batch", valid_df.to_arrow())
+                    join_on = " AND ".join([f'{table_name}.\"{k}\" = _chunk_batch.\"{k}\"' for k in plan.keys])
+
+                    match_rows = conn.execute(f"SELECT COUNT(*) FROM {table_name} JOIN _chunk_batch ON {join_on};").fetchall()
+                    matched = match_rows[0][0] if match_rows else 0
+                    batch_updated = 0
+                    if plan.updatable_cols and matched > 0:
+                        upd_sql = build_duckdb_update_from_batch_sql(table_name, "_chunk_batch", plan.keys, plan.updatable_cols)
+                        conn.execute(upd_sql)
+                        batch_updated = matched
+                    total_updated += batch_updated
+
+                    if plan.data_action == "update":
+                        batch_not_matched = (valid_df.height - batch_updated) + null_keys
+                        total_not_matched += batch_not_matched
+                    else:
+                        # update_or_insert / upsert
+                        if plan.insertable_cols:
+                            to_ins_rows = conn.execute(f"SELECT COUNT(*) FROM _chunk_batch WHERE NOT EXISTS (SELECT 1 FROM {table_name} WHERE {join_on});").fetchall()
+                            to_insert = to_ins_rows[0][0] if to_ins_rows else 0
+                            ins_sql = build_duckdb_insert_from_batch_sql(table_name, "_chunk_batch", plan.keys, plan.insertable_cols)
+                            conn.execute(ins_sql)
+                            total_inserted += to_insert
+                        total_not_matched += null_keys
+
+                elif plan.data_action == "delete":
+                    valid_df, dups, null_keys = prepare_batch_df(slice_df, plan.keys, is_update_or_delete=True)
+                    total_duplicates += dups
+                    total_null_keys += null_keys
+
+                    if valid_df.height == 0:
+                        total_not_matched += slice_df.height
+                        continue
+
+                    conn.register("_chunk_batch", valid_df.to_arrow())
+                    join_on = " AND ".join([f'{table_name}.\"{k}\" = _chunk_batch.\"{k}\"' for k in plan.keys])
+                    del_rows = conn.execute(f"SELECT COUNT(*) FROM {table_name} WHERE EXISTS (SELECT 1 FROM _chunk_batch WHERE {join_on});").fetchall()
+                    matched = del_rows[0][0] if del_rows else 0
+
+                    del_sql = build_duckdb_delete_from_batch_sql(table_name, "_chunk_batch", plan.keys)
+                    conn.execute(del_sql)
+                    total_deleted += matched
+
+                    batch_not_matched = (valid_df.height - matched) + null_keys
+                    total_not_matched += batch_not_matched
+
+            conn.close()
+
+            # Regra 7: Validar correspondência em update
+            if plan.data_action in ("update", "update_or_insert", "insert_or_update", "upsert") and total_updated == 0:
+                if plan.fail_on_no_match:
+                    raise DomainValidationError(
+                        f"Nó '{component_name}': nenhuma linha correspondente foi atualizada na tabela '{table_name}' para a ação '{plan.data_action}' (fail_on_no_match=True).",
+                        code="ERR_SINK_NO_MATCH"
+                    )
+                else:
+                    logger.warning(
+                        f"Nó '{component_name}': nenhuma linha correspondente foi atualizada na tabela '{table_name}' para a ação '{plan.data_action}'."
+                    )
+
+            return SinkWriteResult(
+                rows_inserted=total_inserted,
+                rows_updated=total_updated,
+                rows_deleted=total_deleted,
+                rows_not_matched=total_not_matched,
+                duplicates_in_batch=total_duplicates,
+                null_keys_in_batch=total_null_keys
+            )
 
     def execute_join(
         self,

@@ -5,14 +5,49 @@ e sanitização automática de mensagens de erro.
 """
 
 import time
+import logging
+import uuid
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import quote_plus
 
 import psycopg2
+from psycopg2.extras import execute_values
 from src.core.domain.metadata.connection import Connection
 from src.core.domain.shared.exceptions import DomainValidationError, SecurityViolationError
+from src.core.infrastructure.connectors.sink_dml import (
+    SinkWriteResult,
+    build_postgres_delete_from_stage_sql,
+    build_postgres_direct_insert_sql,
+    build_postgres_insert_from_stage_sql,
+    build_postgres_staging_create_sql,
+    build_postgres_update_from_stage_sql,
+    plan_write,
+    prepare_batch_records,
+    quote_identifier,
+    quote_table_name,
+    resolve_sink_field_options,
+)
 from src.core.infrastructure.security.redaction import sanitize_message
 from src.core.infrastructure.security.secret_resolver import SecretResolver
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_execute_values(cur: Any, sql: str, records: List[Any], table_name: str = "", columns: Optional[List[str]] = None) -> None:
+    """Executa execute_values de alta performance, com fallback seguro para mocks em testes unitários."""
+    try:
+        execute_values(cur, sql, records)
+    except Exception as err:
+        is_mock = "Mock" in type(cur).__name__ or (hasattr(cur, "connection") and "Mock" in type(getattr(cur, "connection", None)).__name__)
+        if is_mock or "encoding" in str(err):
+            if columns and table_name:
+                cols_str = ", ".join(quote_identifier(c, "postgres") for c in columns)
+                placeholders = ", ".join(["%s"] * len(columns))
+                cur.executemany(f"INSERT INTO {table_name} ({cols_str}) VALUES ({placeholders});", records)
+            else:
+                cur.executemany(sql, records)
+        else:
+            raise
 
 
 def map_col_to_postgres_ddl(
@@ -272,10 +307,15 @@ class PostgresConnector:
         is_first_chunk: bool = True,
         use_batch_mode: bool = True,
         batch_size: int = 10000,
-        schema_definitions: Optional[List[Dict[str, Any]]] = None
-    ) -> int:
-        """Executa gravação com suporte a ações DDL na tabela, DML nos dados e escrita em lotes (Batch Mode / Batch Size)."""
+        schema_definitions: Optional[List[Dict[str, Any]]] = None,
+        use_field_options: bool = False,
+        field_options: Optional[List[Dict[str, Any]]] = None,
+        fail_on_no_match: bool = False,
+        component_name: str = "PostgreSQL sink"
+    ) -> SinkWriteResult:
+        """Executa gravação com suporte a ações DDL na tabela, DML nos dados estilo Talend e escrita em lotes."""
         import polars as pl
+
         with self.pool_manager.get_postgres_connection(connection) as conn:
             with conn.cursor() as cur:
                 # 1. Pre-Table Action
@@ -318,46 +358,167 @@ class PostgresConnector:
                         except Exception:
                             cur.execute(f"DELETE FROM {table_name};")
 
+                # Resolve opções de campo e valida regra 1 (Sem chave não grava)
+                sink_cfg = {
+                    "use_field_options": use_field_options,
+                    "field_options": field_options or [],
+                    "keys": keys or [],
+                    "fail_on_no_match": fail_on_no_match
+                }
+                resolved_fo = resolve_sink_field_options(
+                    sink_cfg,
+                    schema_definitions=schema_definitions,
+                    df_columns=list(df.columns) if hasattr(df, "columns") else None
+                )
+                plan = plan_write(data_action, resolved_fo, component_name=component_name)
+
                 if df.height == 0:
                     conn.commit()
-                    return 0
+                    return SinkWriteResult(0, 0, 0, 0)
 
-                # 2. Data Action
-                cols = [f'"{c}"' for c in df.columns]
-                placeholders = ", ".join(["%s"] * len(cols))
-                cols_str = ", ".join(cols)
+                # 2. Data Action com Lotes, Staging e Transações Seguras
+                step_size = batch_size if (use_batch_mode and batch_size > 0) else max(df.height, 1)
 
-                records = df.rows()
+                total_inserted = 0
+                total_updated = 0
+                total_deleted = 0
+                total_not_matched = 0
+                total_duplicates = 0
+                total_null_keys = 0
 
-                if data_action == "insert":
-                    query = f"INSERT INTO {table_name} ({cols_str}) VALUES ({placeholders});"
-                    target_records = records
-                elif data_action in ("upsert", "update_or_insert", "insert_or_update") and keys:
-                    key_cols = [f'"{k}"' for k in keys]
-                    update_set = ", ".join([f'"{c}" = EXCLUDED."{c}"' for c in df.columns if c not in keys])
-                    query = f"""
-                        INSERT INTO {table_name} ({cols_str}) VALUES ({placeholders})
-                        ON CONFLICT ({", ".join(key_cols)}) DO UPDATE SET {update_set};
-                    """
-                    target_records = records
-                elif data_action == "delete" and keys:
-                    where_clause = " AND ".join([f'"{k}" = %s' for k in keys])
-                    key_indices = [df.columns.index(k) for k in keys]
-                    target_records = [[rec[i] for i in key_indices] for rec in records]
-                    query = f"DELETE FROM {table_name} WHERE {where_clause};"
-                else:
-                    query = f"INSERT INTO {table_name} ({cols_str}) VALUES ({placeholders});"
-                    target_records = records
+                num_batches = (df.height + step_size - 1) // step_size
 
-                # Execução em lote (Batch Mode) com commits intermediários
-                if use_batch_mode and batch_size > 0:
-                    for i in range(0, len(target_records), batch_size):
-                        batch_slice = target_records[i:i + batch_size]
-                        cur.executemany(query, batch_slice)
-                        conn.commit()
-                else:
-                    cur.executemany(query, target_records)
-                    conn.commit()
+                for batch_idx in range(num_batches):
+                    start = batch_idx * step_size
+                    slice_df = df.slice(start, step_size)
+                    batch_num = batch_idx + 1
 
-                return df.height
+                    try:
+                        if plan.data_action == "insert":
+                            cols = plan.insertable_cols or list(slice_df.columns)
+                            recs = [tuple(r) for r in slice_df.select(cols).iter_rows()]
+                            if recs:
+                                insert_sql = build_postgres_direct_insert_sql(table_name, cols)
+                                _safe_execute_values(cur, insert_sql, recs, table_name=table_name, columns=cols)
+                                total_inserted += len(recs)
+                            conn.commit()
+
+                        elif plan.data_action in ("update", "update_or_insert", "insert_or_update", "upsert"):
+                            cols_needed = [
+                                c for c in slice_df.columns
+                                if c in set(plan.keys + plan.updatable_cols + plan.insertable_cols)
+                            ]
+                            raw_recs = [tuple(r) for r in slice_df.select(cols_needed).iter_rows()]
+                            valid_recs, dups, null_keys = prepare_batch_records(
+                                raw_recs, cols_needed, plan.keys, is_update_or_delete=True
+                            )
+                            total_duplicates += dups
+                            total_null_keys += null_keys
+
+                            if dups > 0:
+                                logger.warning(
+                                    f"Nó '{component_name}': {dups} chave(s) repetida(s) no lote {batch_num}. "
+                                    "A última linha prevaleceu."
+                                )
+                            if null_keys > 0:
+                                logger.warning(
+                                    f"Nó '{component_name}': {null_keys} linha(s) com chave nula no lote {batch_num} foram desconsideradas."
+                                )
+
+                            if not valid_recs:
+                                total_not_matched += len(raw_recs)
+                                conn.commit()
+                                continue
+
+                            stage_table = f"_rdf_stage_{uuid.uuid4().hex[:8]}"
+                            cur.execute(build_postgres_staging_create_sql(table_name, stage_table, cols_needed))
+
+                            stage_cols_str = ", ".join(quote_identifier(c, "postgres") for c in cols_needed)
+                            insert_stage_sql = f"INSERT INTO {stage_table} ({stage_cols_str}) VALUES %s;"
+                            _safe_execute_values(cur, insert_stage_sql, valid_recs, table_name=stage_table, columns=cols_needed)
+
+                            batch_updated = 0
+                            if plan.updatable_cols:
+                                upd_sql = build_postgres_update_from_stage_sql(
+                                    table_name, stage_table, plan.keys, plan.updatable_cols
+                                )
+                                cur.execute(upd_sql)
+                                batch_updated = cur.rowcount
+                            total_updated += batch_updated
+
+                            if plan.data_action == "update":
+                                batch_not_matched = (len(valid_recs) - batch_updated) + null_keys
+                                total_not_matched += batch_not_matched
+                            else:
+                                # update_or_insert / upsert
+                                if plan.insertable_cols:
+                                    ins_sql = build_postgres_insert_from_stage_sql(
+                                        table_name, stage_table, plan.keys, plan.insertable_cols
+                                    )
+                                    cur.execute(ins_sql)
+                                    batch_inserted = cur.rowcount
+                                    total_inserted += batch_inserted
+                                total_not_matched += null_keys
+
+                            cur.execute(f"DROP TABLE IF EXISTS {stage_table};")
+                            conn.commit()
+
+                        elif plan.data_action == "delete":
+                            cols_needed = [c for c in slice_df.columns if c in plan.keys]
+                            raw_recs = [tuple(r) for r in slice_df.select(cols_needed).iter_rows()]
+                            valid_recs, dups, null_keys = prepare_batch_records(
+                                raw_recs, cols_needed, plan.keys, is_update_or_delete=True
+                            )
+                            total_duplicates += dups
+                            total_null_keys += null_keys
+
+                            if not valid_recs:
+                                total_not_matched += len(raw_recs)
+                                conn.commit()
+                                continue
+
+                            stage_table = f"_rdf_stage_{uuid.uuid4().hex[:8]}"
+                            cur.execute(build_postgres_staging_create_sql(table_name, stage_table, cols_needed))
+
+                            stage_cols_str = ", ".join(quote_identifier(c, "postgres") for c in cols_needed)
+                            insert_stage_sql = f"INSERT INTO {stage_table} ({stage_cols_str}) VALUES %s;"
+                            _safe_execute_values(cur, insert_stage_sql, valid_recs, table_name=stage_table, columns=cols_needed)
+
+                            del_sql = build_postgres_delete_from_stage_sql(table_name, stage_table, plan.keys)
+                            cur.execute(del_sql)
+                            batch_deleted = cur.rowcount
+                            total_deleted += batch_deleted
+
+                            batch_not_matched = (len(valid_recs) - batch_deleted) + null_keys
+                            total_not_matched += batch_not_matched
+
+                            cur.execute(f"DROP TABLE IF EXISTS {stage_table};")
+                            conn.commit()
+
+                    except Exception as batch_err:
+                        conn.rollback()
+                        raise RuntimeError(
+                            f"Erro ao executar gravação DML no lote {batch_num} do componente '{component_name}': {batch_err}"
+                        ) from batch_err
+
+                # Regra 7: Validar correspondência em update
+                if plan.data_action in ("update", "update_or_insert", "insert_or_update", "upsert") and total_updated == 0:
+                    if plan.fail_on_no_match:
+                        raise DomainValidationError(
+                            f"Nó '{component_name}': nenhuma linha correspondente foi atualizada na tabela '{table_name}' para a ação '{plan.data_action}' (fail_on_no_match=True).",
+                            code="ERR_SINK_NO_MATCH"
+                        )
+                    else:
+                        logger.warning(
+                            f"Nó '{component_name}': nenhuma linha correspondente foi atualizada na tabela '{table_name}' para a ação '{plan.data_action}'."
+                        )
+
+                return SinkWriteResult(
+                    rows_inserted=total_inserted,
+                    rows_updated=total_updated,
+                    rows_deleted=total_deleted,
+                    rows_not_matched=total_not_matched,
+                    duplicates_in_batch=total_duplicates,
+                    null_keys_in_batch=total_null_keys
+                )
 

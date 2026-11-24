@@ -13,6 +13,17 @@ from urllib.parse import quote_plus
 import polars as pl
 from src.core.domain.metadata.connection import Connection
 from src.core.domain.shared.exceptions import DomainError, DomainValidationError
+from src.core.infrastructure.connectors.sink_dml import (
+    SinkWriteResult,
+    build_oracle_delete_sql,
+    build_oracle_insert_sql,
+    build_oracle_merge_sql,
+    plan_write,
+    prepare_batch_records,
+    quote_identifier,
+    quote_table_name,
+    resolve_sink_field_options,
+)
 from src.core.infrastructure.security.redaction import sanitize_message
 from src.core.infrastructure.security.secret_resolver import SecretResolver
 
@@ -440,15 +451,32 @@ class OracleConnector:
         is_first_chunk: bool = True,
         use_batch_mode: bool = True,
         batch_size: int = 10000,
-        schema_definitions: Optional[List[Dict[str, Any]]] = None
-    ) -> int:
-        """Grava dados no Oracle Database (INSERT, UPDATE, UPSERT / MERGE)."""
+        schema_definitions: Optional[List[Dict[str, Any]]] = None,
+        use_field_options: bool = False,
+        field_options: Optional[List[Dict[str, Any]]] = None,
+        fail_on_no_match: bool = False,
+        component_name: str = "Oracle sink"
+    ) -> SinkWriteResult:
+        """Grava dados no Oracle Database (INSERT, UPDATE, UPSERT / MERGE, DELETE) estilo Talend."""
+        # Resolve opções de campo e valida regra 1 (Sem chave não grava)
+        sink_cfg = {
+            "use_field_options": use_field_options,
+            "field_options": field_options or [],
+            "keys": keys or [],
+            "fail_on_no_match": fail_on_no_match
+        }
+        resolved_fo = resolve_sink_field_options(
+            sink_cfg,
+            schema_definitions=schema_definitions,
+            df_columns=list(df.columns)
+        )
+        plan = plan_write(data_action, resolved_fo, component_name=component_name)
+
         if df.height == 0:
-            return 0
+            return SinkWriteResult(0, 0, 0, 0)
 
         conn = self.connect(connection)
-        keys = keys or []
-        columns = df.columns
+        keys = plan.keys
 
         try:
             with conn.cursor() as cur:
@@ -514,52 +542,110 @@ class OracleConnector:
                             pass
 
                 # ─── Ação de Dados ───
-                # Converte dataframe para lista de tuplas com None para valores nulos
-                rows = df.to_numpy().tolist() if hasattr(df, "to_numpy") else [tuple(r) for r in df.iter_rows()]
+                step_size = batch_size if (use_batch_mode and batch_size > 0) else max(df.height, 1)
 
-                if data_action == "insert":
-                    cols_str = ", ".join([f'"{c}"' for c in columns])
-                    binds_str = ", ".join([f":{i+1}" for i in range(len(columns))])
-                    sql = f'INSERT INTO {table_name} ({cols_str}) VALUES ({binds_str})'
+                total_inserted = 0
+                total_updated = 0
+                total_deleted = 0
+                total_not_matched = 0
+                total_duplicates = 0
+                total_null_keys = 0
 
-                    if use_batch_mode and rows:
+                num_batches = (df.height + step_size - 1) // step_size
+
+                for batch_idx in range(num_batches):
+                    start = batch_idx * step_size
+                    slice_df = df.slice(start, step_size)
+                    batch_num = batch_idx + 1
+
+                    if plan.data_action == "insert":
+                        cols = [c for c in (plan.insertable_cols or list(slice_df.columns)) if c in slice_df.columns]
+                        rows = slice_df.select(cols).to_numpy().tolist() if hasattr(slice_df, "to_numpy") else [tuple(r) for r in slice_df.select(cols).iter_rows()]
+                        sql = build_oracle_insert_sql(table_name, cols)
                         cur.executemany(sql, rows)
-                    else:
-                        for row in rows:
-                            cur.execute(sql, row)
+                        conn.commit()
+                        total_inserted += len(rows)
 
-                elif data_action == "upsert" and keys:
-                    # MERGE INTO table USING DUAL ON ...
-                    on_clause = " AND ".join([f'tgt."{k}" = src."{k}"' for k in keys])
-                    update_cols = [c for c in columns if c not in keys]
-                    update_set = ", ".join([f'tgt."{c}" = src."{c}"' for c in update_cols])
-                    insert_cols = ", ".join([f'"{c}"' for c in columns])
-                    insert_vals = ", ".join([f'src."{c}"' for c in columns])
+                    elif plan.data_action in ("update", "update_or_insert", "insert_or_update", "upsert"):
+                        cols_needed = [
+                            c for c in slice_df.columns
+                            if c in set(plan.keys + plan.updatable_cols + plan.insertable_cols)
+                        ]
+                        raw_recs = [tuple(r) for r in slice_df.select(cols_needed).iter_rows()]
+                        valid_recs, dups, null_keys = prepare_batch_records(
+                            raw_recs, cols_needed, plan.keys, is_update_or_delete=True
+                        )
+                        total_duplicates += dups
+                        total_null_keys += null_keys
 
-                    select_src = ", ".join([f":{i+1} AS \"{c}\"" for i, c in enumerate(columns)])
-                    merge_sql = f"""
-                    MERGE INTO {table_name} tgt
-                    USING (SELECT {select_src} FROM DUAL) src
-                    ON ({on_clause})
-                    """
-                    if update_cols:
-                        merge_sql += f" WHEN MATCHED THEN UPDATE SET {update_set}"
-                    merge_sql += f" WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})"
+                        if not valid_recs:
+                            total_not_matched += len(raw_recs)
+                            conn.commit()
+                            continue
 
-                    for row in rows:
-                        cur.execute(merge_sql, row)
+                        is_only_update = (plan.data_action == "update")
+                        merge_sql = build_oracle_merge_sql(
+                            table_name=table_name,
+                            keys=plan.keys,
+                            updatable_cols=plan.updatable_cols,
+                            insertable_cols=plan.insertable_cols,
+                            columns=cols_needed,
+                            only_update=is_only_update
+                        )
+                        cur.executemany(merge_sql, valid_recs)
+                        affected = cur.rowcount if hasattr(cur, "rowcount") and cur.rowcount is not None and cur.rowcount >= 0 else len(valid_recs)
+                        conn.commit()
 
-                else:
-                    # Fallback insert
-                    cols_str = ", ".join([f'"{c}"' for c in columns])
-                    binds_str = ", ".join([f":{i+1}" for i in range(len(columns))])
-                    sql = f'INSERT INTO {table_name} ({cols_str}) VALUES ({binds_str})'
-                    for row in rows:
-                        cur.execute(sql, row)
+                        if is_only_update:
+                            total_updated += affected
+                            total_not_matched += (len(valid_recs) - affected) + null_keys
+                        else:
+                            total_updated += affected
+                            total_not_matched += null_keys
 
-            conn.commit()
+                    elif plan.data_action == "delete":
+                        cols_needed = [c for c in slice_df.columns if c in plan.keys]
+                        raw_recs = [tuple(r) for r in slice_df.select(cols_needed).iter_rows()]
+                        valid_recs, dups, null_keys = prepare_batch_records(
+                            raw_recs, cols_needed, plan.keys, is_update_or_delete=True
+                        )
+                        total_duplicates += dups
+                        total_null_keys += null_keys
+
+                        if not valid_recs:
+                            total_not_matched += len(raw_recs)
+                            conn.commit()
+                            continue
+
+                        del_sql = build_oracle_delete_sql(table_name, plan.keys)
+                        cur.executemany(del_sql, valid_recs)
+                        affected = cur.rowcount if hasattr(cur, "rowcount") and cur.rowcount is not None and cur.rowcount >= 0 else len(valid_recs)
+                        conn.commit()
+                        total_deleted += affected
+                        total_not_matched += (len(valid_recs) - affected) + null_keys
+
             conn.close()
-            return df.height
+
+            # Regra 7: Validar correspondência em update
+            if plan.data_action in ("update", "update_or_insert", "insert_or_update", "upsert") and total_updated == 0:
+                if plan.fail_on_no_match:
+                    raise DomainValidationError(
+                        f"Nó '{component_name}': nenhuma linha correspondente foi atualizada na tabela '{table_name}' para a ação '{plan.data_action}' (fail_on_no_match=True).",
+                        code="ERR_SINK_NO_MATCH"
+                    )
+                else:
+                    logger.warning(
+                        f"Nó '{component_name}': nenhuma linha correspondente foi atualizada na tabela '{table_name}' para a ação '{plan.data_action}'."
+                    )
+
+            return SinkWriteResult(
+                rows_inserted=total_inserted,
+                rows_updated=total_updated,
+                rows_deleted=total_deleted,
+                rows_not_matched=total_not_matched,
+                duplicates_in_batch=total_duplicates,
+                null_keys_in_batch=total_null_keys
+            )
         except Exception:
             try:
                 conn.rollback()

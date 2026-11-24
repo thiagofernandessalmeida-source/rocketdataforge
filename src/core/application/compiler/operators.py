@@ -331,6 +331,9 @@ class LogicalSink(LogicalOperator):
     table_action: str = "none"  # "none", "drop_create", "create_if_not_exists", "drop_if_exists_create", "truncate", "delete_all"
     data_action: str = "insert"  # "insert", "update", "upsert", "update_or_insert", "delete"
     keys: List[str] = field(default_factory=list)
+    use_field_options: bool = False
+    field_options: List[Dict[str, Any]] = field(default_factory=list)
+    fail_on_no_match: bool = False
     connection_ref: str = ""
     connection_details: Optional[Dict[str, Any]] = None
     raw_config: Optional[Dict[str, Any]] = None
@@ -360,6 +363,9 @@ class LogicalSink(LogicalOperator):
             "table_action": self.table_action,
             "data_action": self.data_action,
             "keys": self.keys,
+            "use_field_options": self.use_field_options,
+            "field_options": self.field_options,
+            "fail_on_no_match": self.fail_on_no_match,
             "connection_ref": conn_ref,
             "connection_details": self.connection_details,
             "raw_config": self.raw_config,

@@ -22,6 +22,7 @@ from src.core.infrastructure.connectors.oracle_connector import OracleConnector
 from src.core.infrastructure.connectors.scylla_connector import ScyllaConnector
 from src.core.infrastructure.connectors.kafka_connector import KafkaConnector
 from src.core.infrastructure.connectors.aws_messaging_connector import AwsMessagingConnector
+from src.core.infrastructure.connectors.sink_dml import SinkWriteResult, format_sink_dml_log
 from src.core.infrastructure.engines.duckdb_runner import DuckDBRunner
 from src.core.infrastructure.engines.polars_runner import PolarsRunner, batch_to_polars_df
 from src.core.infrastructure.execution.cancellation import CancellationToken
@@ -180,7 +181,7 @@ class ExecutionWorker:
                         elif op_type == "tmap":
                             self._execute_tmap_node(phys_op, cfg, token, task, node_buffers, execution=execution, log_fn=log_fn, cell_id=cell_id)
                         elif op_type == "sink":
-                            self._execute_sink_node(phys_op, cfg, token, task, node_buffers)
+                            self._execute_sink_node(phys_op, cfg, token, task, node_buffers, execution=execution, log_fn=log_fn, cell_id=cell_id)
                         elif op_type in ("barrier", "control.sync", "control.barrier"):
                             self._execute_barrier_node(phys_op, cfg, execution, token, task, node_buffers)
 
@@ -1262,7 +1263,7 @@ class ExecutionWorker:
         node_buffers[phys_op.id] = [first_df]
 
     def _execute_sink_node(
-        self, phys_op, cfg, token, task, node_buffers
+        self, phys_op, cfg, token, task, node_buffers, execution=None, log_fn=None, cell_id=None
     ) -> None:
         if not phys_op.input_ids:
             logger.warning(f"Nó sink '{phys_op.id}' não possui nós conectados como entrada.")
@@ -1323,6 +1324,10 @@ class ExecutionWorker:
 
         fmt = str(cfg.get("format") or "csv").lower()
 
+        use_fo = bool(raw_cfg.get("use_field_options", cfg.get("use_field_options", False)))
+        fo_list = raw_cfg.get("field_options") or cfg.get("field_options") or []
+        fail_no_match = bool(raw_cfg.get("fail_on_no_match", cfg.get("fail_on_no_match", False)))
+
         # Destino DuckDB
         if fmt == "duckdb":
             conn_details = cfg.get("connection_details") or {}
@@ -1358,7 +1363,9 @@ class ExecutionWorker:
             use_batch = bool(raw_cfg.get("use_batch_mode", cfg.get("use_batch_mode", True)))
             batch_sz = int(raw_cfg.get("batch_size") or cfg.get("batch_size") or 10000)
 
-            total = 0
+            total_read = sum(chunk.height for chunk in input_chunks)
+            agg_res = SinkWriteResult(0, 0, 0, 0)
+
             for idx, chunk in enumerate(input_chunks):
                 token.check_cancelled()
                 written = self.duckdb_runner.write_to_duckdb(
@@ -1371,11 +1378,43 @@ class ExecutionWorker:
                     is_first_chunk=(idx == 0),
                     schema_definitions=schema_defs,
                     use_batch_mode=use_batch,
-                    batch_size=batch_sz
+                    batch_size=batch_sz,
+                    use_field_options=use_fo,
+                    field_options=fo_list,
+                    fail_on_no_match=fail_no_match,
+                    component_name=phys_op.id
                 )
-                total += written
-                task.record_progress(rows_in_increment=chunk.height, rows_out_increment=written)
-            logger.info(f"Nó DuckDB sink '{phys_op.id}': {total} linhas gravadas na tabela '{table}' em '{db_path}' (Batch Mode: {use_batch}, Lote: {batch_sz}).")
+                if isinstance(written, SinkWriteResult):
+                    agg_res = SinkWriteResult(
+                        rows_inserted=agg_res.rows_inserted + written.rows_inserted,
+                        rows_updated=agg_res.rows_updated + written.rows_updated,
+                        rows_deleted=agg_res.rows_deleted + written.rows_deleted,
+                        rows_not_matched=agg_res.rows_not_matched + written.rows_not_matched,
+                        duplicates_in_batch=agg_res.duplicates_in_batch + written.duplicates_in_batch,
+                        null_keys_in_batch=agg_res.null_keys_in_batch + written.null_keys_in_batch,
+                    )
+                else:
+                    cnt = int(written)
+                    agg_res = SinkWriteResult(rows_inserted=agg_res.rows_inserted + cnt)
+
+                task.record_progress(
+                    rows_in_increment=chunk.height,
+                    rows_out_increment=int(written),
+                    rejected_increment=getattr(written, "rows_not_matched", 0)
+                )
+
+            log_msg = format_sink_dml_log("DuckDB", phys_op.id, data_act, total_read, agg_res)
+            logger.info(log_msg)
+            if log_fn and execution:
+                log_fn(execution.id, "INFO", log_msg, node_id=phys_op.id, cell_id=cell_id)
+
+            if data_act in ("update", "update_or_insert", "insert_or_update", "upsert") and agg_res.rows_updated == 0 and total_read > 0:
+                warn_msg = f"Nó DuckDB sink '{phys_op.id}': nenhuma linha correspondente foi atualizada na tabela '{table}' para a ação '{data_act}'."
+                if fail_no_match:
+                    raise DomainValidationError(f"{warn_msg} (fail_on_no_match=True)", code="ERR_SINK_NO_MATCH")
+                logger.warning(warn_msg)
+                if log_fn and execution:
+                    log_fn(execution.id, "WARNING", warn_msg, node_id=phys_op.id, cell_id=cell_id)
             return
 
         # Destino PostgreSQL com Ação de Tabela e Dados
@@ -1400,7 +1439,9 @@ class ExecutionWorker:
                 from src.core.infrastructure.connectors.postgres_connector import PostgresConnector
                 pg_conn = PostgresConnector(self.secret_resolver)
 
-                total = 0
+                total_read = sum(chunk.height for chunk in input_chunks)
+                agg_res = SinkWriteResult(0, 0, 0, 0)
+
                 for idx, chunk in enumerate(input_chunks):
                     token.check_cancelled()
                     written = pg_conn.execute_write(
@@ -1413,11 +1454,43 @@ class ExecutionWorker:
                         is_first_chunk=(idx == 0),
                         use_batch_mode=use_batch,
                         batch_size=batch_sz,
-                        schema_definitions=schema_defs
+                        schema_definitions=schema_defs,
+                        use_field_options=use_fo,
+                        field_options=fo_list,
+                        fail_on_no_match=fail_no_match,
+                        component_name=phys_op.id
                     )
-                    total += written
-                    task.record_progress(rows_in_increment=chunk.height, rows_out_increment=written)
-                logger.info(f"Nó PostgreSQL sink '{phys_op.id}': {total} linhas gravadas na tabela '{table}' (Batch Mode: {use_batch}, Lote: {batch_sz}).")
+                    if isinstance(written, SinkWriteResult):
+                        agg_res = SinkWriteResult(
+                            rows_inserted=agg_res.rows_inserted + written.rows_inserted,
+                            rows_updated=agg_res.rows_updated + written.rows_updated,
+                            rows_deleted=agg_res.rows_deleted + written.rows_deleted,
+                            rows_not_matched=agg_res.rows_not_matched + written.rows_not_matched,
+                            duplicates_in_batch=agg_res.duplicates_in_batch + written.duplicates_in_batch,
+                            null_keys_in_batch=agg_res.null_keys_in_batch + written.null_keys_in_batch,
+                        )
+                    else:
+                        cnt = int(written)
+                        agg_res = SinkWriteResult(rows_inserted=agg_res.rows_inserted + cnt)
+
+                    task.record_progress(
+                        rows_in_increment=chunk.height,
+                        rows_out_increment=int(written),
+                        rejected_increment=getattr(written, "rows_not_matched", 0)
+                    )
+
+                log_msg = format_sink_dml_log("PostgreSQL", phys_op.id, data_act, total_read, agg_res)
+                logger.info(log_msg)
+                if log_fn and execution:
+                    log_fn(execution.id, "INFO", log_msg, node_id=phys_op.id, cell_id=cell_id)
+
+                if data_act in ("update", "update_or_insert", "insert_or_update", "upsert") and agg_res.rows_updated == 0 and total_read > 0:
+                    warn_msg = f"Nó PostgreSQL sink '{phys_op.id}': nenhuma linha correspondente foi atualizada na tabela '{table}' para a ação '{data_act}'."
+                    if fail_no_match:
+                        raise DomainValidationError(f"{warn_msg} (fail_on_no_match=True)", code="ERR_SINK_NO_MATCH")
+                    logger.warning(warn_msg)
+                    if log_fn and execution:
+                        log_fn(execution.id, "WARNING", warn_msg, node_id=phys_op.id, cell_id=cell_id)
                 return
             else:
                 raise DomainValidationError(
@@ -1442,7 +1515,9 @@ class ExecutionWorker:
                 use_batch = bool(raw_cfg.get("use_batch_mode", cfg.get("use_batch_mode", True)))
                 batch_sz = int(raw_cfg.get("batch_size") or cfg.get("batch_size") or 10000)
 
-                total = 0
+                total_read = sum(chunk.height for chunk in input_chunks)
+                agg_res = SinkWriteResult(0, 0, 0, 0)
+
                 for idx, chunk in enumerate(input_chunks):
                     token.check_cancelled()
                     written = self.oracle_connector.execute_write(
@@ -1455,11 +1530,43 @@ class ExecutionWorker:
                         is_first_chunk=(idx == 0),
                         use_batch_mode=use_batch,
                         batch_size=batch_sz,
-                        schema_definitions=schema_defs
+                        schema_definitions=schema_defs,
+                        use_field_options=use_fo,
+                        field_options=fo_list,
+                        fail_on_no_match=fail_no_match,
+                        component_name=phys_op.id
                     )
-                    total += written
-                    task.record_progress(rows_in_increment=chunk.height, rows_out_increment=written)
-                logger.info(f"Nó Oracle sink '{phys_op.id}': {total} linhas gravadas na tabela '{table}' (Batch Mode: {use_batch}, Lote: {batch_sz}).")
+                    if isinstance(written, SinkWriteResult):
+                        agg_res = SinkWriteResult(
+                            rows_inserted=agg_res.rows_inserted + written.rows_inserted,
+                            rows_updated=agg_res.rows_updated + written.rows_updated,
+                            rows_deleted=agg_res.rows_deleted + written.rows_deleted,
+                            rows_not_matched=agg_res.rows_not_matched + written.rows_not_matched,
+                            duplicates_in_batch=agg_res.duplicates_in_batch + written.duplicates_in_batch,
+                            null_keys_in_batch=agg_res.null_keys_in_batch + written.null_keys_in_batch,
+                        )
+                    else:
+                        cnt = int(written)
+                        agg_res = SinkWriteResult(rows_inserted=agg_res.rows_inserted + cnt)
+
+                    task.record_progress(
+                        rows_in_increment=chunk.height,
+                        rows_out_increment=int(written),
+                        rejected_increment=getattr(written, "rows_not_matched", 0)
+                    )
+
+                log_msg = format_sink_dml_log("Oracle", phys_op.id, data_act, total_read, agg_res)
+                logger.info(log_msg)
+                if log_fn and execution:
+                    log_fn(execution.id, "INFO", log_msg, node_id=phys_op.id, cell_id=cell_id)
+
+                if data_act in ("update", "update_or_insert", "insert_or_update", "upsert") and agg_res.rows_updated == 0 and total_read > 0:
+                    warn_msg = f"Nó Oracle sink '{phys_op.id}': nenhuma linha correspondente foi atualizada na tabela '{table}' para a ação '{data_act}'."
+                    if fail_no_match:
+                        raise DomainValidationError(f"{warn_msg} (fail_on_no_match=True)", code="ERR_SINK_NO_MATCH")
+                    logger.warning(warn_msg)
+                    if log_fn and execution:
+                        log_fn(execution.id, "WARNING", warn_msg, node_id=phys_op.id, cell_id=cell_id)
                 return
             else:
                 raise DomainValidationError(

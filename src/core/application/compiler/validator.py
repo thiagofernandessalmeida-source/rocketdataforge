@@ -377,6 +377,54 @@ class GraphValidator:
                             message=f"O componente Data Mapper (tMap) '{node_id}' não possui conexão de fluxo principal (porta 'main')."
                         ))
 
+        # 4.2 Validação Semântica para nós Sink / Target (Ação DML e Chaves Obrigatórias - Regra 1)
+        for node_id, node in draft.nodes.items():
+            ctype = (node.component_type or "").lower()
+            is_sink = (
+                ctype.endswith(".output")
+                or "target" in ctype
+                or "sink" in ctype
+                or ctype in ("core.database.target", "connector.db.duckdb.output", "connector.db.postgresql.output", "core.duckdb.target")
+            )
+            if is_sink:
+                cfg = node.config or {}
+                raw_cfg = cfg.get("raw_config") if isinstance(cfg.get("raw_config"), dict) else {}
+                data_action = str(cfg.get("data_action") or raw_cfg.get("data_action") or "insert").lower().strip()
+                if data_action in ("update", "update_or_insert", "insert_or_update", "upsert", "delete"):
+                    use_fo = bool(cfg.get("use_field_options", raw_cfg.get("use_field_options", False)))
+                    fo_list = cfg.get("field_options") or raw_cfg.get("field_options") or []
+                    schema_defs = (
+                        getattr(node, "schema_definitions", None)
+                        or cfg.get("schema_definitions")
+                        or raw_cfg.get("schema_definitions")
+                        or cfg.get("schema")
+                        or raw_cfg.get("schema")
+                        or []
+                    )
+                    has_key = False
+                    if use_fo and fo_list:
+                        if data_action == "delete":
+                            has_key = any(f.get("deletion_key") for f in fo_list if isinstance(f, dict))
+                        else:
+                            has_key = any(f.get("update_key") for f in fo_list if isinstance(f, dict))
+                    else:
+                        legacy_keys = cfg.get("keys") or raw_cfg.get("keys") or []
+                        if legacy_keys:
+                            has_key = True
+                        elif schema_defs and isinstance(schema_defs, list):
+                            has_key = any(c.get("isPrimaryKey") or c.get("is_primary_key") for c in schema_defs if isinstance(c, dict))
+
+                    if not has_key:
+                        req_type = "Deletion Key" if data_action == "delete" else "Update Key"
+                        errors.append(ValidationErrorItem(
+                            code="ERR_SINK_KEYS_REQUIRED",
+                            node_id=node_id,
+                            message=(
+                                f"O componente '{node_id}' com ação '{data_action}' exige ao menos uma {req_type}. "
+                                "Defina as chaves em 'Configurações avançadas' (Field Options) ou marque a chave primária no Schema."
+                            )
+                        ))
+
         # 5. Validação de Políticas Corporativas ABAC (se policy fornecida)
         if policy is not None:
             evaluator: PolicyEvaluator

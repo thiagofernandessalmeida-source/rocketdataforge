@@ -144,7 +144,10 @@ DUCKDB_TARGET = ComponentDefinition(
             "table_action": {"type": "string", "enum": ["none", "drop_create", "create_if_not_exists", "drop_if_exists_create", "truncate", "delete_all"], "default": "none"},
             "data_action": {"type": "string", "enum": ["insert", "update", "upsert", "update_or_insert", "delete"], "default": "insert"},
             "use_batch_mode": {"type": "boolean", "default": True, "description": "Ativar escrita em lotes particionados (Batch Mode)"},
-            "batch_size": {"type": "integer", "default": 10000, "description": "Tamanho do lote para escrita particionada (Batch Size)"}
+            "batch_size": {"type": "integer", "default": 10000, "description": "Tamanho do lote para escrita particionada (Batch Size)"},
+            "use_field_options": {"type": "boolean", "default": False, "description": "Usar opções de campo para controle granular de gravação (Update Key, Deletion Key, Updatable, Insertable)"},
+            "field_options": {"type": "array", "items": {"type": "object"}, "default": []},
+            "fail_on_no_match": {"type": "boolean", "default": False, "description": "Lançar erro se nenhuma linha for atualizada"}
         }
     },
     capabilities=ComponentCapability(supports_bulk_write=True)
@@ -304,7 +307,10 @@ DATABASE_TARGET = ComponentDefinition(
             "table_action": {"type": "string", "enum": ["none", "drop_create", "create_if_not_exists", "drop_if_exists_create", "truncate", "delete_all"], "default": "none"},
             "data_action": {"type": "string", "enum": ["insert", "update", "upsert", "update_or_insert", "delete"], "default": "insert"},
             "use_batch_mode": {"type": "boolean", "default": True, "description": "Ativar inserção/atualização agrupada em lote (Batch Mode)"},
-            "batch_size": {"type": "integer", "default": 10000, "description": "Quantidade de registros por transação/lote de escrita com commit (Batch Size)"}
+            "batch_size": {"type": "integer", "default": 10000, "description": "Quantidade de registros por transação/lote de escrita com commit (Batch Size)"},
+            "use_field_options": {"type": "boolean", "default": False, "description": "Usar opções de campo para controle granular de gravação (Update Key, Deletion Key, Updatable, Insertable)"},
+            "field_options": {"type": "array", "items": {"type": "object"}, "default": []},
+            "fail_on_no_match": {"type": "boolean", "default": False, "description": "Lançar erro se nenhuma linha for atualizada"}
         }
     },
     capabilities=ComponentCapability(supports_bulk_write=True)
