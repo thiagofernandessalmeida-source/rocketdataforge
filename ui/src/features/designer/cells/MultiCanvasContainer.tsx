@@ -26,6 +26,7 @@ import { ExportCodegenModal } from "../codegen/ExportCodegenModal";
 import { checkCellSinkKeys } from "../utils/fieldOptionsUtils";
 import {
   jobStore,
+  healDuplicateCells,
   CanvasCellData,
   JobData,
   CellExecutionStatus,
@@ -67,10 +68,15 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
   const [isJobExportModalOpen, setIsJobExportModalOpen] = useState(false);
   const cancelOrchestrationRef = useRef(false);
 
-  const cells = job.cells && job.cells.length > 0 ? job.cells : [];
+  const cells = useMemo(() => {
+    const raw = job.cells && job.cells.length > 0 ? job.cells : [];
+    return healDuplicateCells(raw);
+  }, [job.cells]);
 
   // Sort cells by order
-  const sortedCells = [...cells].sort((a, b) => a.order - b.order);
+  const sortedCells = useMemo(() => {
+    return [...cells].sort((a, b) => a.order - b.order);
+  }, [cells]);
 
   // Serializa o job inteiro para compilação autônoma (Python / Airflow)
   const currentJobDef = useMemo(() => ({

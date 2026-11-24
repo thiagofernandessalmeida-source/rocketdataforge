@@ -659,6 +659,28 @@ export function cloneNodes(
 }
 
 /**
+ * Garante unicidade estrita de células dentro de um Job.
+ * Se houver elementos duplicados com o mesmo ID, mantém apenas a primeira ocorrência,
+ * prevenindo renderização espelhada e mutações colaterais concorrentes.
+ */
+export function healDuplicateCells(cells: CanvasCellData[]): CanvasCellData[] {
+  if (!Array.isArray(cells)) return [];
+  const seenIds = new Set<string>();
+  const uniqueCells: CanvasCellData[] = [];
+  for (const cell of cells) {
+    if (!cell || !cell.id) continue;
+    const lowerId = String(cell.id).toLowerCase();
+    if (seenIds.has(lowerId)) {
+      console.warn(`[jobStore] Removida célula duplicada com ID: ${cell.id}`);
+      continue;
+    }
+    seenIds.add(lowerId);
+    uniqueCells.push(cell);
+  }
+  return uniqueCells;
+}
+
+/**
  * Garante que todos os nós em todas as células de um Job possuam IDs únicos globais.
  * Se múltiplos nós possuírem o mesmo ID (por exemplo, criados em células distintas em versões anteriores),
  * desambigua gerando novos IDs únicos e ajustando as arestas conectadas da célula.
@@ -770,24 +792,22 @@ function loadState(): StoreState {
       // Migration: add environment, multi-canvas cells and heal unstyled nodes
       if (Array.isArray(parsed.jobs)) {
         parsed.jobs = parsed.jobs.map((j: any) => {
+          const rawCells = Array.isArray(j.cells) && j.cells.length > 0 ? healDuplicateCells(j.cells) : [];
+          const fallbackCell: CanvasCellData = {
+            id: "canvas-cell-01",
+            name: "canvas-cell-01",
+            description: "",
+            order: 1,
+            preconditions: [],
+            preconditionOperator: "AND",
+            nodes: Array.isArray(j.nodes) ? j.nodes : [],
+            edges: Array.isArray(j.edges) ? j.edges : [],
+            viewport: j.viewport,
+            nodeSchemas: j.nodeSchemas || {},
+            status: "idle",
+          };
           const cells: CanvasCellData[] = (
-            Array.isArray(j.cells) && j.cells.length > 0
-              ? j.cells
-              : [
-                  {
-                    id: "canvas-cell-01",
-                    name: "canvas-cell-01",
-                    description: "",
-                    order: 1,
-                    preconditions: [],
-                    preconditionOperator: "AND",
-                    nodes: Array.isArray(j.nodes) ? j.nodes : [],
-                    edges: Array.isArray(j.edges) ? j.edges : [],
-                    viewport: j.viewport,
-                    nodeSchemas: j.nodeSchemas || {},
-                    status: "idle",
-                  },
-                ]
+            rawCells.length > 0 ? rawCells : [fallbackCell]
           ).map((c: CanvasCellData) => {
             const isV2OrHigher = Boolean(
               j.schemaVersion && (j.schemaVersion.includes("v2") || j.schemaVersion >= "rdf.job/v2")
@@ -831,23 +851,24 @@ function loadState(): StoreState {
 
           // Garante unicidade de IDs de nós através de todas as células do Job
           const { cells: healedCells, repairedCount } = healDuplicateNodeIdsAcrossCells(cells);
+          const finalCells = healDuplicateCells(healedCells);
           if (repairedCount > 0) {
             console.info(`[jobStore] Desambiguados ${repairedCount} nó(s) com IDs duplicados no job '${j.name || j.id}'`);
           }
 
           const activeCellId =
-            j.activeCellId && healedCells.some((c) => c.id === j.activeCellId)
+            j.activeCellId && finalCells.some((c) => c.id === j.activeCellId)
               ? j.activeCellId
-              : healedCells[0]?.id || "canvas-cell-01";
-          const activeCell = healedCells.find((c) => c.id === activeCellId) || healedCells[0];
+              : finalCells[0]?.id || "canvas-cell-01";
+          const activeCell = finalCells.find((c) => c.id === activeCellId) || finalCells[0];
 
           return {
             ...j,
             environment: j.environment ?? "dev",
-            cells: healedCells,
+            cells: finalCells,
             activeCellId,
-            nodes: activeCell ? activeCell.nodes : healedCells.flatMap((c) => c.nodes),
-            edges: activeCell ? activeCell.edges : healedCells.flatMap((c) => c.edges),
+            nodes: activeCell ? activeCell.nodes : finalCells.flatMap((c) => c.nodes),
+            edges: activeCell ? activeCell.edges : finalCells.flatMap((c) => c.edges),
           };
         });
       } else {
@@ -997,9 +1018,13 @@ export async function hydrateFromActiveWorkspace(): Promise<{ success: boolean; 
       (Array.isArray(data.queryBank) && data.queryBank.length > 0);
 
     if (hasWorkspaceData) {
+      const sanitizedJobs = (Array.isArray(data.jobs) && data.jobs.length > 0 ? data.jobs : state.jobs).map((j: any) => ({
+        ...j,
+        cells: healDuplicateCells(j.cells || []),
+      }));
       state = {
         ...state,
-        jobs: Array.isArray(data.jobs) && data.jobs.length > 0 ? data.jobs : state.jobs,
+        jobs: sanitizedJobs,
         connections: Array.isArray(data.connections) && data.connections.length > 0 ? data.connections : state.connections,
         queryBank: Array.isArray(data.queryBank) && data.queryBank.length > 0 ? data.queryBank : state.queryBank,
         openTabIds: data.activeJobId ? [data.activeJobId] : state.openTabIds,
@@ -1553,13 +1578,13 @@ export const jobStore = {
       jobs: state.jobs.map((j) => {
         if (j.id !== jobId) return j;
 
-        let updatedCells = j.cells;
+        let updatedCells = healDuplicateCells(j.cells || []);
         if (targetCellId) {
           // Destino explícito de célula informado
-          updatedCells = (j.cells || []).map((c) =>
+          updatedCells = updatedCells.map((c) =>
             c.id === targetCellId ? { ...c, nodes, edges, viewport } : c
           );
-        } else if (!j.cells || j.cells.length === 0) {
+        } else if (!updatedCells || updatedCells.length === 0) {
           // Job sem células (canvas legado): cria a célula padrão
           updatedCells = [
             {
@@ -1579,8 +1604,8 @@ export const jobStore = {
           // Em multi-canvas sem targetCellId explícito:
           // As células já são salvas individualmente via saveCellGraph.
           // PRESERVA as células existentes sem sobrescrever nem zerar nós!
-          updatedCells = j.cells;
         }
+        updatedCells = healDuplicateCells(updatedCells);
 
         // Se os nós passados estiverem vazios mas o job possuir células,
         // deriva j.nodes e j.edges de todas as células do job para consistência.
@@ -1616,10 +1641,17 @@ export const jobStore = {
 
     takeSnapshot(jobId, true);
 
-    const existingCells = job.cells || [];
-    const nextIndex = existingCells.length + 1;
+    const existingCells = healDuplicateCells(job.cells || []);
+    const existingIds = new Set(existingCells.map((c) => c.id.toLowerCase()));
     const prefix = cellType === "PYTHON" ? "python-cell" : "canvas-cell";
-    const defaultId = `${prefix}-${String(nextIndex).padStart(2, "0")}`;
+
+    let counter = 1;
+    let candidateId = `${prefix}-${String(counter).padStart(2, "0")}`;
+    while (existingIds.has(candidateId.toLowerCase())) {
+      counter++;
+      candidateId = `${prefix}-${String(counter).padStart(2, "0")}`;
+    }
+    const defaultId = candidateId;
     const name = (customName?.trim() || defaultId).slice(0, 50);
 
     const maxOrder = existingCells.reduce((max, c) => Math.max(max, c.order || 0), 0);
@@ -1680,7 +1712,7 @@ print("Dados publicados com sucesso via context.write_output!")
         j.id === jobId
           ? {
               ...j,
-              cells: [...(j.cells || []), newCell],
+              cells: healDuplicateCells([...(j.cells || []), newCell]),
               activeCellId: newCell.id,
               updatedAt: new Date().toISOString(),
             }
@@ -1700,7 +1732,7 @@ print("Dados publicados com sucesso via context.write_output!")
       ...state,
       jobs: state.jobs.map((j) => {
         if (j.id !== jobId) return j;
-        const updatedCells = (j.cells || []).map((c) =>
+        const updatedCells = healDuplicateCells(j.cells || []).map((c) =>
           c.id === cellId ? { ...c, ...updates } : c
         );
         return {
@@ -1957,7 +1989,7 @@ print("Dados publicados com sucesso via context.write_output!")
       ...state,
       jobs: state.jobs.map((j) => {
         if (j.id !== jobId) return j;
-        const currentCells = j.cells || [];
+        const currentCells = healDuplicateCells(j.cells || []);
         const cellMap = new Map(currentCells.map((c) => [c.id, c]));
         const orderedCells: CanvasCellData[] = [];
 
@@ -1983,7 +2015,7 @@ print("Dados publicados com sucesso via context.write_output!")
 
         return {
           ...j,
-          cells: orderedCells,
+          cells: healDuplicateCells(orderedCells),
           nodes: activeCell ? activeCell.nodes : j.nodes,
           edges: activeCell ? activeCell.edges : j.edges,
           updatedAt: new Date().toISOString(),
@@ -2128,27 +2160,24 @@ print("Dados publicados com sucesso via context.write_output!")
     const job = state.jobs.find((j) => j.id === jobId);
     if (!job) return null;
 
-    const sourceCell = (job.cells || []).find((c) => c.id === cellId);
+    const existingCells = healDuplicateCells(job.cells || []);
+    const sourceCell = existingCells.find((c) => c.id === cellId);
     if (!sourceCell) return null;
 
-    const existingCells = job.cells || [];
     const maxOrder = existingCells.reduce((max, c) => Math.max(max, c.order || 0), 0);
 
     const isPython = sourceCell.cellType === "PYTHON";
     const prefix = isPython ? "python-cell" : "canvas-cell";
 
-    // Garante que o novo ID nunca se repete, mesmo após exclusão de células intermediárias
-    const regex = new RegExp(`^${prefix}-(\\d+)$`);
-    const usedNumbers = new Set<number>();
-    for (const c of existingCells) {
-      const m = c.id.match(regex);
-      if (m) usedNumbers.add(parseInt(m[1], 10));
-    }
+    // Garante que o novo ID nunca se repete em relação a qualquer célula existente
+    const existingIds = new Set(existingCells.map((c) => c.id.toLowerCase()));
     let candidateNum = 1;
-    while (usedNumbers.has(candidateNum)) {
+    let candidateId = `${prefix}-${String(candidateNum).padStart(2, "0")}`;
+    while (existingIds.has(candidateId.toLowerCase())) {
       candidateNum++;
+      candidateId = `${prefix}-${String(candidateNum).padStart(2, "0")}`;
     }
-    const newId = `${prefix}-${String(candidateNum).padStart(2, "0")}`;
+    const newId = candidateId;
     const newName = `Cópia de ${sourceCell.name}`.slice(0, 50);
 
     takeSnapshot(jobId, true);
@@ -2198,7 +2227,7 @@ print("Dados publicados com sucesso via context.write_output!")
         if (j.id !== jobId) return j;
         return {
           ...j,
-          cells: [...(j.cells || []), newCell],
+          cells: healDuplicateCells([...(j.cells || []), newCell]),
           activeCellId: newId,
           nodes: clonedNodes,
           edges: clonedEdges,
@@ -2451,7 +2480,8 @@ print("Dados publicados com sucesso via context.write_output!")
       ...state,
       jobs: state.jobs.map((j) => {
         if (j.id !== jobId) return j;
-        const updatedCells = (j.cells || []).map((c) => {
+        const uniqueCells = healDuplicateCells(j.cells || []);
+        const updatedCells = uniqueCells.map((c) => {
           if (c.id !== cellId) {
             return {
               ...c,
@@ -2548,7 +2578,7 @@ print("Dados publicados com sucesso via context.write_output!")
       ...state,
       jobs: state.jobs.map((j) => {
         if (j.id !== jobId) return j;
-        const updatedCells = (j.cells || []).map((c) =>
+        const updatedCells = healDuplicateCells(j.cells || []).map((c) =>
           c.id === cellId ? { ...c, nodes: reconciledNodes, edges: safeEdges, viewport } : c
         );
         const isActive = j.activeCellId === cellId;
@@ -2693,7 +2723,7 @@ print("Dados publicados com sucesso via context.write_output!")
       });
     };
 
-    const importedCells: CanvasCellData[] =
+    const importedCells: CanvasCellData[] = healDuplicateCells(
       Array.isArray(rawCells) && rawCells.length > 0
         ? rawCells.map((c: CanvasCellData) => {
             const normC = (c.nodes || []).map(inferAndNormalizeNode);
@@ -2723,7 +2753,8 @@ print("Dados publicados com sucesso via context.write_output!")
               nodeSchemas,
               status: "idle",
             },
-          ];
+          ]
+    );
     const activeCellId = (rawJob as any).activeCellId || importedCells[0]?.id || "canvas-cell-01";
     const activeCell = importedCells.find((c) => c.id === activeCellId) || importedCells[0];
 
