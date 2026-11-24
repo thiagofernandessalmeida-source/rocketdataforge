@@ -732,9 +732,9 @@ export function healDuplicateNodeIdsAcrossCells(cells: CanvasCellData[]): {
     const hasRenames = Object.keys(idMap).length > 0;
     const finalNodes = hasRenames
       ? newNodes.map((n) => ({
-          ...n,
-          data: remapNodeReferences(n.data, idMap),
-        }))
+        ...n,
+        data: remapNodeReferences(n.data, idMap),
+      }))
       : newNodes;
 
     const newEdges = (cell.edges || []).map((edge) => {
@@ -776,7 +776,7 @@ function loadState(): StoreState {
       } else {
         parsed.connections = [];
       }
-      
+
       // Migration: add scope/jobId/createdAt/updatedAt to old contextVariables
       if (Array.isArray(parsed.contextVariables)) {
         parsed.contextVariables = parsed.contextVariables.map((cv: any) => ({
@@ -788,7 +788,7 @@ function loadState(): StoreState {
       } else {
         parsed.contextVariables = [];
       }
-      
+
       // Migration: add environment, multi-canvas cells and heal unstyled nodes
       if (Array.isArray(parsed.jobs)) {
         parsed.jobs = parsed.jobs.map((j: any) => {
@@ -817,8 +817,8 @@ function loadState(): StoreState {
               c.edges && c.edges.length > 0
                 ? c.edges
                 : isV2OrHigher
-                ? []
-                : inferPipelineEdges(normNodes);
+                  ? []
+                  : inferPipelineEdges(normNodes);
 
             // Cura main_input_id desatualizado para nós Data Mapper (tMap)
             const healedTMapNodes = normNodes.map((n: any) => {
@@ -874,7 +874,7 @@ function loadState(): StoreState {
       } else {
         parsed.jobs = [];
       }
-      
+
       // Migration: add queryBank if missing and normalize existing entries
       if (!Array.isArray(parsed.queryBank)) {
         parsed.queryBank = [];
@@ -886,12 +886,12 @@ function loadState(): StoreState {
           usageCount: typeof q?.usageCount === "number" ? q.usageCount : 0,
         }));
       }
-      
+
       // Fix undefined properties that crash App
       if (!parsed.openTabIds) parsed.openTabIds = [];
       if (!parsed.activeEnvironment) parsed.activeEnvironment = "dev";
       if (!parsed.folders) parsed.folders = [];
-      
+
       return parsed;
     }
   } catch (e) {
@@ -956,15 +956,15 @@ export function syncWorkspaceDebounced(currentState: StoreState): void {
           connections: currentState.connections,
           queryBank: currentState.queryBank,
         }),
-      }).catch(() => {});
-    } catch (_) {}
+      }).catch(() => { });
+    } catch (_) { }
   }, 1000);
 }
 
 function saveState(state: StoreState): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch (_) {}
+  } catch (_) { }
   syncWorkspaceDebounced(state);
 }
 
@@ -1032,7 +1032,7 @@ export async function hydrateFromActiveWorkspace(): Promise<{ success: boolean; 
       };
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      } catch (_) {}
+      } catch (_) { }
       notify();
     } else {
       // Se for workspace novo/vazio, salva os itens padrão para persistir em disco
@@ -1661,12 +1661,12 @@ export const jobStore = {
     const prevCell = existingCells[existingCells.length - 1];
     const defaultPreconditions: CellPrecondition[] = prevCell
       ? [
-          {
-            id: `prec-${Date.now()}`,
-            targetCellId: prevCell.id,
-            expectedStatus: "OK",
-          },
-        ]
+        {
+          id: `prec-${Date.now()}`,
+          targetCellId: prevCell.id,
+          expectedStatus: "OK",
+        },
+      ]
       : [];
 
     const defaultCodeSnippet = cellType === "PYTHON"
@@ -2108,18 +2108,18 @@ print("Dados publicados com sucesso via context.write_output!")
                   cachedLk
                     ? { ...cachedLk, node_id: oldMainId }
                     : {
-                        node_id: oldMainId,
-                        label: oldMainNode?.data?.label || oldMainId,
-                        alias: "lkp1",
-                        join_type: "left",
-                        join_model: "left_outer",
-                        match_model: "unique",
-                        lookup_model: "Load once",
-                        schema: (oldMainNode?.data as any)?.schema || [],
-                        join_keys: [],
-                        left_keys: [],
-                        right_keys: [],
-                      }
+                      node_id: oldMainId,
+                      label: oldMainNode?.data?.label || oldMainId,
+                      alias: "lkp1",
+                      join_type: "left",
+                      join_model: "left_outer",
+                      match_model: "unique",
+                      lookup_model: "Load once",
+                      schema: (oldMainNode?.data as any)?.schema || [],
+                      join_keys: [],
+                      left_keys: [],
+                      right_keys: [],
+                    }
                 );
               }
             }
@@ -2726,19 +2726,19 @@ print("Dados publicados com sucesso via context.write_output!")
     const importedCells: CanvasCellData[] = healDuplicateCells(
       Array.isArray(rawCells) && rawCells.length > 0
         ? rawCells.map((c: CanvasCellData) => {
-            const normC = (c.nodes || []).map(inferAndNormalizeNode);
-            const edgeC =
-              c.edges && c.edges.length > 0
-                ? c.edges
-                : isV2OrHigher
+          const normC = (c.nodes || []).map(inferAndNormalizeNode);
+          const edgeC =
+            c.edges && c.edges.length > 0
+              ? c.edges
+              : isV2OrHigher
                 ? []
                 : inferPipelineEdges(normC);
-            return {
-              ...c,
-              nodes: healNodesInCell(normC, edgeC),
-              edges: edgeC,
-            };
-          })
+          return {
+            ...c,
+            nodes: healNodesInCell(normC, edgeC),
+            edges: edgeC,
+          };
+        })
         : [
             {
               id: "canvas-cell-01",
@@ -3048,7 +3048,7 @@ print("Dados publicados com sucesso via context.write_output!")
   setPythonCellsEnabled(enabled: boolean): void {
     try {
       localStorage.setItem("cellflow_enable_python_cells", enabled ? "true" : "false");
-    } catch (_) {}
+    } catch (_) { }
     notify();
   },
 };
