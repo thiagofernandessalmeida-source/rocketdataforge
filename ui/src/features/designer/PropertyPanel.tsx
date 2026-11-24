@@ -40,6 +40,8 @@ import { jobStore, ConnectionEntry, ContextVariable, SchemaColumn, Environment, 
 import { SqlAutocompleteTextarea, AutocompleteSource } from "../../components/common/SqlAutocompleteTextarea";
 import { FloatingMenu } from "../../components/common/FloatingMenu";
 import { extractNodeSchema } from "./utils/nodeSchemaUtils";
+import { AdvancedSettingsTab } from "./AdvancedSettingsTab";
+import { syncFieldOptionsWithSchema, validateSinkKeys } from "./utils/fieldOptionsUtils";
 
 export interface PropertyPanelProps {
   selectedNode: Node<CanvasNodeData> | null;
@@ -317,8 +319,43 @@ export const DebouncedInput: React.FC<{
 // ─── Seção de Ações de Tabela e Dados (Padrão Studio) ────────
 export const TableActionsSection: React.FC<{
   config: Record<string, any>;
+  schema?: SchemaColumn[];
   onChange: (key: string, val: any) => void;
-}> = ({ config, onChange }) => {
+  onMultipleChange?: (updates: Record<string, any>) => void;
+}> = ({ config, schema = [], onChange, onMultipleChange }) => {
+  const dataAction = String(config.data_action || "insert").toLowerCase();
+  const rawFieldOptions = Array.isArray(config.field_options) ? config.field_options : [];
+  const validation = validateSinkKeys(
+    dataAction,
+    Boolean(config.use_field_options),
+    rawFieldOptions,
+    schema,
+    config.keys
+  );
+
+  const handleShortcutMarkKeys = () => {
+    const isDelete = dataAction === "delete";
+    const synced = syncFieldOptionsWithSchema(rawFieldOptions, schema);
+    const pkCols = new Set((schema || []).filter((c) => c.isPrimaryKey).map((c) => c.name));
+    if (pkCols.size === 0 && schema && schema.length > 0) {
+      pkCols.add(schema[0].name);
+    }
+    const updated = synced.map((fo) => ({
+      ...fo,
+      update_key: !isDelete && pkCols.has(fo.column),
+      deletion_key: isDelete && pkCols.has(fo.column),
+    }));
+    if (onMultipleChange) {
+      onMultipleChange({
+        use_field_options: true,
+        field_options: updated,
+      });
+    } else {
+      onChange("use_field_options", true);
+      onChange("field_options", updated);
+    }
+  };
+
   return (
     <>
       <div className="form-group">
@@ -345,42 +382,48 @@ export const TableActionsSection: React.FC<{
           onChange={(e) => onChange("data_action", e.target.value)}
         >
           <option value="insert">Inserir registros (Insert)</option>
-          <option value="update">Atualizar registros por Chave Primária (Update)</option>
-          <option value="upsert">Inserir ou Atualizar (Upsert / Insert or Update)</option>
-          <option value="update_or_insert">Atualizar ou Inserir (Update or Insert)</option>
-          <option value="delete">Deletar registros por Chave Primária (Delete)</option>
+          <option value="update">Atualizar registros por chave (Update)</option>
+          <option value="update_or_insert">Atualizar ou inserir (Update or insert)</option>
+          <option value="insert_or_update">Inserir ou atualizar (Insert or update)</option>
+          <option value="delete">Remover registros por chave (Delete)</option>
         </select>
-      </div>
-
-      {/* Advanced Settings: Batch Mode & Batch Size */}
-      <div className="form-group" style={{ background: "var(--bg-card)", padding: 10, borderRadius: 6, border: "1px solid var(--border-subtle)" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "0.75rem", fontWeight: 600 }}>
-            <input
-              type="checkbox"
-              checked={config.use_batch_mode !== false}
-              onChange={(e) => onChange("use_batch_mode", e.target.checked)}
-            />
-            <span>📦 Ativar Modo em Lote (Use Batch Mode)</span>
-          </label>
-        </div>
-        {config.use_batch_mode !== false && (
-          <div>
-            <label className="form-label" style={{ fontSize: "0.7rem", display: "flex", justifyContent: "space-between" }}>
-              <span>Tamanho do Lote de Escrita (Batch Size)</span>
-              <span style={{ color: "var(--text-muted)" }}>Registros por Commit</span>
-            </label>
-            <input
-              type="number"
-              className="form-input"
-              style={{ fontSize: "0.75rem", fontFamily: "var(--font-mono)" }}
-              value={config.batch_size ?? 10000}
-              placeholder="10000"
-              onChange={(e) => onChange("batch_size", parseInt(e.target.value, 10) || 10000)}
-            />
-            <div style={{ fontSize: "0.66rem", color: "var(--text-muted)", marginTop: 4 }}>
-              Agrupa instruções INSERT/UPDATE em lotes de N registros antes do commit no banco para alta performance de rede.
+        {!validation.isValid && (
+          <div
+            style={{
+              background: "rgba(234, 179, 8, 0.12)",
+              border: "1px solid rgba(234, 179, 8, 0.35)",
+              borderRadius: 6,
+              padding: "8px 12px",
+              marginTop: 8,
+              fontSize: "0.72rem",
+              color: "#facc15",
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span>⚠️</span>
+              <span>Esta ação requer ao menos uma chave definida nas Configurações avançadas.</span>
             </div>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{
+                alignSelf: "flex-start",
+                fontSize: "0.68rem",
+                padding: "2px 8px",
+                background: "rgba(234, 179, 8, 0.2)",
+                color: "#fef08a",
+                border: "1px solid rgba(234, 179, 8, 0.5)",
+                cursor: "pointer",
+              }}
+              onClick={handleShortcutMarkKeys}
+            >
+              {dataAction === "delete"
+                ? "Marcar chave primária do schema como Deletion Key"
+                : "Marcar chave primária do schema como Update Key"}
+            </button>
           </div>
         )}
       </div>
@@ -452,7 +495,7 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
   const [showTMapModal, setShowTMapModal] = useState(false);
   const [isFileBrowserOpen, setIsFileBrowserOpen] = useState(false);
   const [fileBrowserField, setFileBrowserField] = useState<string>("path");
-  const [activeTab, setActiveTab] = useState<"config" | "schema" | "documentation">("config");
+  const [activeTab, setActiveTab] = useState<"config" | "schema" | "documentation" | "advanced">("config");
   const [editingNodeId, setEditingNodeId] = useState<string>("");
   const [isRenamingId, setIsRenamingId] = useState(false);
   const [inferringDirect, setInferringDirect] = useState(false);
@@ -479,6 +522,11 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
       setProfileData(null);
       setProfileError(null);
       setShowProfilingPanel(false);
+      const ct = (selectedNode.data?.componentType || "").toLowerCase();
+      const nodeIsTarget = ct.includes(".output") || ct === "core.database.target" || ct.includes("duckdb.output") || selectedNode.data?.category === "target";
+      if (!nodeIsTarget && activeTab === "advanced") {
+        setActiveTab("config");
+      }
     }
   }, [selectedNode?.id]);
 
@@ -504,8 +552,13 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
     (newSchema: SchemaColumn[]) => {
       if (!selectedNode) return;
       onUpdateSchema?.(selectedNode.id, newSchema);
+      const currentConfig = (allNodes.find((n) => n.id === selectedNode.id) || selectedNode).data.config || {};
+      if (currentConfig.field_options || currentConfig.use_field_options) {
+        const synced = syncFieldOptionsWithSchema(currentConfig.field_options, newSchema);
+        handleChange("field_options", synced);
+      }
     },
-    [selectedNode, onUpdateSchema]
+    [selectedNode, allNodes, onUpdateSchema, handleChange]
   );
 
   const handleApplyNodeId = () => {
@@ -878,6 +931,7 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
     ct.includes("connector.api");
   const isDbTarget =
     (ct.includes(".output") && !isScyllaOutput) || ct === "core.database.target" || isDuckDbOutput;
+  const isTarget = isDbTarget || data.category === "target";
 
   return (
     <>
@@ -992,6 +1046,14 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
           >
             Documentação
           </button>
+          {isTarget && (
+            <button
+              className={`prop-tab ${activeTab === "advanced" ? "active" : ""}`}
+              onClick={() => setActiveTab("advanced")}
+            >
+              Configurações avançadas
+            </button>
+          )}
           {activeTab === "schema" && (
             <button
               className="icon-btn"
@@ -1650,7 +1712,12 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                     }}
                   />
                 </div>
-                <TableActionsSection config={config} onChange={handleChange} />
+                <TableActionsSection
+                  config={config}
+                  schema={schema}
+                  onChange={handleChange}
+                  onMultipleChange={handleMultipleChange}
+                />
               </>
             )}
 
@@ -2312,7 +2379,12 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                     }}
                   />
                 </div>
-                <TableActionsSection config={config} onChange={handleChange} />
+                <TableActionsSection
+                  config={config}
+                  schema={schema}
+                  onChange={handleChange}
+                  onMultipleChange={handleMultipleChange}
+                />
               </>
             )}
 
@@ -2676,6 +2748,15 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
               />
             </div>
           </div>
+        )}
+
+        {activeTab === "advanced" && isTarget && (
+          <AdvancedSettingsTab
+            config={config}
+            schema={schema}
+            onChange={handleChange}
+            onMultipleChange={handleMultipleChange}
+          />
         )}
           </>
         )}

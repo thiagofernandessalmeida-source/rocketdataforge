@@ -454,7 +454,7 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
       { name: "main", direction: "output", type: "dataset" },
       { name: "reject", direction: "output", type: "reject" },
     ],
-    config_schema: { database_path: "string", table: "string", table_action: "string", data_action: "string" },
+    config_schema: { database_path: "string", table: "string", table_action: "string", data_action: "string", use_batch_mode: "boolean", batch_size: "number", use_field_options: "boolean", field_options: "array", fail_on_no_match: "boolean", keys: "array" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: true },
   },
   {
@@ -483,7 +483,7 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
       { name: "main", direction: "output", type: "dataset" },
       { name: "reject", direction: "output", type: "reject" },
     ],
-    config_schema: { connection_ref: "string", table: "string", write_mode: "string", batch_size: "number" },
+    config_schema: { connection_ref: "string", table: "string", table_action: "string", data_action: "string", write_mode: "string", use_batch_mode: "boolean", batch_size: "number", use_field_options: "boolean", field_options: "array", fail_on_no_match: "boolean", keys: "array" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: true },
   },
   {
@@ -497,7 +497,7 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
       { name: "main", direction: "output", type: "dataset" },
       { name: "reject", direction: "output", type: "reject" },
     ],
-    config_schema: { connection_ref: "string", table: "string", schema: "string", write_mode: "string", use_batch_mode: "boolean", batch_size: "number" },
+    config_schema: { connection_ref: "string", table: "string", schema: "string", table_action: "string", data_action: "string", write_mode: "string", use_batch_mode: "boolean", batch_size: "number", use_field_options: "boolean", field_options: "array", fail_on_no_match: "boolean", keys: "array" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: true },
   },
   {
@@ -511,7 +511,7 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
       { name: "main", direction: "output", type: "dataset" },
       { name: "reject", direction: "output", type: "reject" },
     ],
-    config_schema: { connection_ref: "string", table: "string", schema: "string", write_mode: "string", use_batch_mode: "boolean", batch_size: "number" },
+    config_schema: { connection_ref: "string", table: "string", schema: "string", table_action: "string", data_action: "string", write_mode: "string", use_batch_mode: "boolean", batch_size: "number", use_field_options: "boolean", field_options: "array", fail_on_no_match: "boolean", keys: "array" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: true },
   },
   {
@@ -525,7 +525,7 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
       { name: "main", direction: "output", type: "dataset" },
       { name: "reject", direction: "output", type: "reject" },
     ],
-    config_schema: { connection_ref: "string", table: "string", write_mode: "string", use_batch_mode: "boolean", batch_size: "number" },
+    config_schema: { connection_ref: "string", table: "string", table_action: "string", data_action: "string", write_mode: "string", use_batch_mode: "boolean", batch_size: "number", use_field_options: "boolean", field_options: "array", fail_on_no_match: "boolean", keys: "array" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: true },
   },
   {
@@ -539,7 +539,7 @@ export const EXPANDED_CATALOG: ComponentDefinition[] = [
       { name: "main", direction: "output", type: "dataset" },
       { name: "reject", direction: "output", type: "reject" },
     ],
-    config_schema: { connection_ref: "string", table: "string", schema: "string", write_mode: "string", use_batch_mode: "boolean", batch_size: "number" },
+    config_schema: { connection_ref: "string", table: "string", schema: "string", table_action: "string", data_action: "string", write_mode: "string", use_batch_mode: "boolean", batch_size: "number", use_field_options: "boolean", field_options: "array", fail_on_no_match: "boolean", keys: "array" },
     capabilities: { supports_filter_pushdown: false, supports_projection_pushdown: false, supports_chunked_read: false, supports_bulk_write: true },
   },
   {

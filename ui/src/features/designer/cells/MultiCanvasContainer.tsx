@@ -23,6 +23,7 @@ import {
 
 import { CanvasCellCard } from "./CanvasCellCard";
 import { ExportCodegenModal } from "../codegen/ExportCodegenModal";
+import { checkCellSinkKeys } from "../utils/fieldOptionsUtils";
 import {
   jobStore,
   CanvasCellData,
@@ -263,6 +264,12 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
   // ─── Single Cell Run (Isolated) ───────────────────────────────
 
   const handleRunSingleCell = async (cell: CanvasCellData) => {
+    const sinkError = checkCellSinkKeys(cell);
+    if (sinkError) {
+      showToast?.("error", `Impossível executar célula: ${sinkError}`);
+      return;
+    }
+
     jobStore.setCellStatus(job.id, cell.id, "running");
     showToast?.("info", `Executando célula isolada: ${cell.name}...`);
 
@@ -332,6 +339,16 @@ export const MultiCanvasContainer: React.FC<MultiCanvasContainerProps> = ({
     if (orderErrors && orderErrors.length > 0) {
       showToast?.("error", `Impossível executar: ${orderErrors[0]}`);
       return;
+    }
+
+    // Check for missing sink keys (Tarefa 2)
+    for (const c of sortedCells) {
+      if (c.is_active === false) continue;
+      const sinkError = checkCellSinkKeys(c);
+      if (sinkError) {
+        showToast?.("error", `Impossível executar job: ${sinkError}`);
+        return;
+      }
     }
 
     cancelOrchestrationRef.current = false;

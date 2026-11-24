@@ -49,6 +49,7 @@ import { CellPreconditionsModal } from "./CellPreconditionsModal";
 import { ScheduleModal } from "../scheduler/ScheduleModal";
 import { ExportCodegenModal } from "../codegen/ExportCodegenModal";
 import { useEdgeStyle } from "../hooks/useEdgeStyle";
+import { checkCellSinkKeys } from "../utils/fieldOptionsUtils";
 
 interface CanvasCellCardProps {
   cell: CanvasCellData;
@@ -485,6 +486,10 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
   const currentStatus = cell.status || "idle";
   const statusMeta = statusConfig[currentStatus];
   const isCellActive = cell.is_active !== false;
+  const sinkKeyValidationError = useMemo(() => {
+    return checkCellSinkKeys(cell);
+  }, [cell.nodes, cell.nodeSchemas]);
+  const isRunCellDisabled = !isCellActive || Boolean(sinkKeyValidationError);
   const isCellMinimized = Boolean(cell.is_minimized);
 
   // Card outline glow style
@@ -939,35 +944,59 @@ export const CanvasCellCard: React.FC<CanvasCellCardProps> = ({
               Parar Célula
             </button>
           ) : (
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={!isCellActive}
-              style={{
-                fontSize: "0.72rem",
-                padding: "3px 9px",
-                display: "flex",
-                alignItems: "center",
-                gap: 4,
-                color: isCellActive ? "var(--status-success)" : "var(--text-muted)",
-                borderColor: isCellActive ? "rgba(16, 185, 129, 0.4)" : "var(--border-subtle)",
-                opacity: isCellActive ? 1 : 0.45,
-                cursor: isCellActive ? "pointer" : "not-allowed",
-              }}
-              title={
-                !isCellActive
-                  ? "Célula desativada. Ative-a para poder executar."
-                  : "Executar apenas esta célula de forma isolada"
-              }
-              onClick={(e) => {
-                e.stopPropagation();
-                if (!isCellActive) return;
-                onRunSingleCell(cell);
-              }}
-            >
-              <Play size={11} fill="currentColor" />
-              Executar Célula
-            </button>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={isRunCellDisabled}
+                style={{
+                  fontSize: "0.72rem",
+                  padding: "3px 9px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 4,
+                  color: !isRunCellDisabled ? "var(--status-success)" : "var(--text-muted)",
+                  borderColor: !isRunCellDisabled ? "rgba(16, 185, 129, 0.4)" : "var(--border-subtle)",
+                  opacity: !isRunCellDisabled ? 1 : 0.45,
+                  cursor: !isRunCellDisabled ? "pointer" : "not-allowed",
+                }}
+                title={
+                  !isCellActive
+                    ? "Célula desativada. Ative-a para poder executar."
+                    : sinkKeyValidationError
+                    ? `⚠️ Execução bloqueada: ${sinkKeyValidationError}`
+                    : "Executar apenas esta célula de forma isolada"
+                }
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (isRunCellDisabled) return;
+                  onRunSingleCell(cell);
+                }}
+              >
+                <Play size={11} fill="currentColor" />
+                Executar Célula
+              </button>
+              {sinkKeyValidationError && (
+                <span
+                  style={{
+                    fontSize: "0.68rem",
+                    color: "#facc15",
+                    background: "rgba(234, 179, 8, 0.15)",
+                    padding: "2px 6px",
+                    borderRadius: 4,
+                    border: "1px solid rgba(234, 179, 8, 0.3)",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    cursor: "help",
+                  }}
+                  title={sinkKeyValidationError}
+                >
+                  <AlertCircle size={11} />
+                  Chave ausente
+                </span>
+              )}
+            </div>
           )}
 
           {/* Menu Suspenso de Ações da Célula (Exportar Código, Agendamentos) */}
