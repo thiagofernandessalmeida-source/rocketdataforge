@@ -9,6 +9,8 @@ export interface SchemaColumn {
   [key: string]: any;
 }
 
+export type MatchModel = "all" | "unique" | "first" | "last";
+
 export interface TMapLookupConfig {
   node_id: string;
   label: string;
@@ -16,7 +18,7 @@ export interface TMapLookupConfig {
   join_type?: string;
   join_model?: string;
   lookup_model?: string;
-  match_model?: string;
+  match_model?: MatchModel | string;
   left_keys?: string[];
   right_keys?: string[];
   join_keys?: { expr_key: string; column: string }[];
@@ -86,8 +88,13 @@ export function normalizeJoinType(joinType?: string, joinModel?: string): "left"
   return "left";
 }
 
-export function normalizeMatchModel(matchModel?: string): "first" | "last" | "all" {
-  if (matchModel === "first" || matchModel === "last") return matchModel;
+export function normalizeMatchModel(matchModel?: string | null): MatchModel {
+  if (!matchModel) return "all";
+  const m = matchModel.trim().toLowerCase();
+  if (m === "unique" || m.includes("unique")) return "unique";
+  if (m === "first" || m.includes("first")) return "first";
+  if (m === "last" || m.includes("last")) return "last";
+  if (m === "all" || m.includes("all")) return "all";
   return "all";
 }
 

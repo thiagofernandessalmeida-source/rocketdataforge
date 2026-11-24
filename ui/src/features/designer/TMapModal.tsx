@@ -21,6 +21,7 @@ import {
   getMainInputNode,
   normalizeJoinType,
   normalizeMatchModel,
+  MatchModel,
 } from "./utils/tmapLookupUtils";
 
 // ─── Interfaces ────────────────────────────────────────────────
@@ -37,7 +38,7 @@ export interface TMapLookupConfig {
   join_type: "left" | "inner";
   join_model?: string;
   lookup_model?: "Load once" | "Reload at each row" | string;
-  match_model?: "All matches" | "Unique match" | "First match" | string;
+  match_model?: MatchModel | string;
   left_keys: string[];
   right_keys: string[];
   join_keys?: TMapJoinKey[];
@@ -250,7 +251,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
           label: oldMainNode.label || oldMainNode.id,
           alias: oldMainNode.alias || "row2",
           join_type: "left",
-          match_model: "All matches",
+          match_model: "unique",
           left_keys: [],
           right_keys: [],
           schema: oldMainNode.schema || [],
@@ -1125,9 +1126,7 @@ export const TMapModal: React.FC<TMapModalProps> = ({
       const isInner = lk.join_type === "inner" || lk.join_model === "inner";
       const joinType = isInner ? "inner" : "left";
       const joinModel = isInner ? "inner" : "left_outer";
-      let matchModel = "all";
-      if (lk.match_model?.toLowerCase().includes("first")) matchModel = "first";
-      else if (lk.match_model?.toLowerCase().includes("unique")) matchModel = "unique";
+      const matchModel = normalizeMatchModel(lk.match_model);
 
       const flowAlias = lk.alias || lk.label || `row${idx + 2}`;
 
@@ -1593,20 +1592,20 @@ export const TMapModal: React.FC<TMapModalProps> = ({
                           <span className="prop-label">Match Model</span>
                           <select
                             className="prop-select"
-                            value={normalizeMatchModel(lk.match_model)}
+                            value={normalizeMatchModel(lk.match_model) === "last" ? "unique" : normalizeMatchModel(lk.match_model)}
                             onChange={(e) =>
                               setLookups(
                                 lookups.map((l) =>
                                   l.node_id === lk.node_id
-                                    ? { ...l, match_model: e.target.value as any }
+                                    ? { ...l, match_model: normalizeMatchModel(e.target.value) }
                                     : l
                                 )
                               )
                             }
                           >
-                            <option value="all">All matches (all)</option>
-                            <option value="unique">Unique match (unique)</option>
-                            <option value="first">First match (first)</option>
+                            <option value="all">All matches</option>
+                            <option value="unique">Unique match (última linha)</option>
+                            <option value="first">First match (primeira linha)</option>
                           </select>
                         </div>
 
